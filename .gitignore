@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 输出与缓存数据
+output/
+cache/
+data/trades.json
+stock_hist_data/
+*.csv
+!docs/**/*.csv
+
+# 系统文件
+.DS_Store
+Thumbs.db

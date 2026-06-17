@@ -1,0 +1,277 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+每日顾问：超短个股捕捉 + 个人操作学习 + 优化建议
+
+用法:
+  python daily_advisor.py              # 生成今日完整报告
+  python daily_advisor.py scan         # 仅超短扫描
+  python daily_advisor.py learn        # 仅学习建议（基于交易日记）
+  python daily_advisor.py record       # 录入一笔交易
+  python daily_advisor.py stats        # 查看近期绩效
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+from trade_journal import TradeJournal, interactive_record
+from ultra_short_scanner import UltraShortScanner
+
+OUTPUT_DIR = Path("output")
+REPORT_DIR = OUTPUT_DIR / "daily_reports"
+
+
+def _ensure_dirs() -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _format_ultra_short_table(df: pd.DataFrame, top_n: int = 20) -> str:
+    if df.empty:
+        return "（今日未捕捉到符合条件的超短标的）\n"
+
+    lines = [
+        f"| 排名 | 代码 | 名称 | 评分 | 涨幅% | 换手% | 连板 | 标签 |",
+        f"|------|------|------|------|-------|-------|------|------|",
+    ]
+    for i, (_, row) in enumerate(df.head(top_n).iterrows(), 1):
+        lines.append(
+            f"| {i} | {row['code']} | {row['name']} | {row['ultra_short_score']} "
+            f"| {row['pct_chg']} | {row['turnover']} | {row['consecutive_boards']} "
+            f"| {row['tags']} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _cross_reference_suggestions(journal: TradeJournal, ultra_df: pd.DataFrame) -> list[str]:
+    """结合交易历史与今日机会，给出交叉建议。"""
+    extra: list[str] = []
+    stats = journal.analyze(days=30)
+    if not stats.get("has_data") or ultra_df.empty:
+        return extra
+
+    recent_codes = set(stats.get("recent_codes", []))
+    top_codes = set(ultra_df.head(10)["code"].astype(str).tolist())
+    overlap = recent_codes & top_codes
+
+    if overlap:
+        extra.append(
+            f"你近期交易过的 {', '.join(overlap)} 出现在今日超短榜，"
+            "若已持仓注意止盈/止损；未持仓避免情绪化追高。"
+        )
+
+    loss_codes = set()
+    df = journal.list_trades(days=30)
+    if not df.empty:
+        loss_codes = set(df[df["profit_pct"] < 0]["code"].astype(str).tolist())
+    repeat_loss = loss_codes & top_codes
+    if repeat_loss:
+        extra.append(
+            f"警告：{', '.join(repeat_loss)} 曾给你带来亏损，今日再次走强。"
+            "建议复盘上次失误，勿盲目重复同一错误。"
+        )
+
+    return extra
+
+
+def run_ultra_short_scan(top_prefilter: int = 300, min_score: int = 35) -> pd.DataFrame:
+    print("=" * 60)
+    print("超短个股捕捉")
+    print("=" * 60)
+    scanner = UltraShortScanner()
+    df = scanner.scan_market(
+        top_prefilter=top_prefilter,
+        min_score=min_score,
+        max_workers=8,
+        show_progress=True,
+    )
+    print(f"\n捕捉完成: {len(df)} 只超短标的")
+    if not df.empty:
+        print("\nTOP 10:")
+        cols = ["code", "name", "ultra_short_score", "pct_chg", "turnover", "tags"]
+        print(df[cols].head(10).to_string(index=False))
+
+        csv_path = OUTPUT_DIR / f"ultra_short_{datetime.now().strftime('%Y%m%d')}.csv"
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        print(f"\n已保存: {csv_path}")
+    return df
+
+
+def run_learning_report(days: int = 30) -> tuple[dict, list[str]]:
+    journal = TradeJournal()
+    stats = journal.analyze(days=days)
+    suggestions = journal.generate_suggestions(days=days)
+    return stats, suggestions
+
+
+def generate_daily_report(
+    days: int = 30,
+    top_prefilter: int = 300,
+    min_score: int = 35,
+) -> Path:
+    _ensure_dirs()
+    today = datetime.now().strftime("%Y-%m-%d")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    print("=" * 60)
+    print(f"每日顾问报告  {today}")
+    print("=" * 60)
+
+    # 1. 超短扫描
+    ultra_df = run_ultra_short_scan(top_prefilter=top_prefilter, min_score=min_score)
+
+    # 2. 学习分析
+    print("\n" + "=" * 60)
+    print("个人操作学习")
+    print("=" * 60)
+    journal = TradeJournal()
+    stats, suggestions = run_learning_report(days=days)
+    cross = _cross_reference_suggestions(journal, ultra_df)
+    all_suggestions = suggestions + cross
+
+    if stats.get("has_data"):
+        print(f"\n近{days}日交易 {stats['trade_count']} 笔 | "
+              f"胜率 {stats['win_rate']}% | 均收益 {stats['avg_profit_pct']}% | "
+              f"均持仓 {stats['avg_hold_days']} 天")
+    else:
+        print("\n暂无交易记录，建议先录入历史操作。")
+
+    print("\n【优化建议】")
+    for i, s in enumerate(all_suggestions, 1):
+        print(f"  {i}. {s}")
+
+    # 3. 生成 Markdown 报告
+    report_path = REPORT_DIR / f"daily_report_{datetime.now().strftime('%Y%m%d')}.md"
+    md_parts = [
+        f"# 每日顾问报告\n",
+        f"**生成时间**: {now_str}\n",
+        f"---\n",
+        f"## 一、超短个股 TOP 20\n",
+        _format_ultra_short_table(ultra_df, top_n=20),
+        f"\n## 二、个人绩效（近{days}日）\n",
+    ]
+
+    if stats.get("has_data"):
+        md_parts.append(
+            f"- 交易笔数: {stats['trade_count']}\n"
+            f"- 胜率: {stats['win_rate']}%\n"
+            f"- 平均收益: {stats['avg_profit_pct']}%\n"
+            f"- 平均持仓: {stats['avg_hold_days']} 天\n"
+            f"- 累计盈亏: {stats['total_profit_amount']} 元\n"
+        )
+        if stats.get("by_strategy"):
+            md_parts.append("\n### 按策略统计\n\n")
+            md_parts.append("| 策略 | 笔数 | 胜率% | 均收益% | 均持仓天 |\n")
+            md_parts.append("|------|------|-------|---------|----------|\n")
+            for row in stats["by_strategy"]:
+                md_parts.append(
+                    f"| {row['strategy']} | {row['count']} | {row['win_rate']} "
+                    f"| {row['avg_profit']} | {row['avg_hold']} |\n"
+                )
+    else:
+        md_parts.append("暂无交易记录。运行 `python daily_advisor.py record` 录入。\n")
+
+    md_parts.append(f"\n## 三、优化建议\n\n")
+    for i, s in enumerate(all_suggestions, 1):
+        md_parts.append(f"{i}. {s}\n")
+
+    md_parts.append(
+        f"\n## 四、超短操作要点\n\n"
+        f"1. **涨停不破开**：10日内有涨停且收盘不破涨停日开盘价，偏强势整理。\n"
+        f"2. **连板龙头**：2-3连板 + 高换手优于盲目追首板。\n"
+        f"3. **止损纪律**：超短单笔亏损超 -3% 考虑离场。\n"
+        f"4. **仓位控制**：单票不超过总仓位 20%，分散风险。\n"
+        f"\n---\n*仅供参考，不构成投资建议。*\n"
+    )
+
+    report_path.write_text("".join(md_parts), encoding="utf-8")
+
+    # JSON 摘要
+    summary_path = REPORT_DIR / f"daily_summary_{datetime.now().strftime('%Y%m%d')}.json"
+    summary = {
+        "date": today,
+        "generated_at": now_str,
+        "ultra_short_count": len(ultra_df),
+        "ultra_short_top10": ultra_df.head(10).to_dict("records") if not ultra_df.empty else [],
+        "trade_stats": stats,
+        "suggestions": all_suggestions,
+    }
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"\n报告已保存:")
+    print(f"  {report_path}")
+    print(f"  {summary_path}")
+    return report_path
+
+
+def show_stats(days: int = 30) -> None:
+    journal = TradeJournal()
+    stats = journal.analyze(days=days)
+    df = journal.list_trades(days=days)
+
+    print("=" * 60)
+    print(f"近 {days} 日交易绩效")
+    print("=" * 60)
+
+    if df.empty:
+        print("暂无记录。使用: python daily_advisor.py record")
+        return
+
+    print(df[["code", "name", "buy_date", "sell_date", "profit_pct", "hold_days", "strategy"]].to_string())
+    print(f"\n胜率: {stats['win_rate']}% | 均收益: {stats['avg_profit_pct']}% | "
+          f"总盈亏: {stats['total_profit_amount']} 元")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="每日顾问：超短捕捉 + 操作学习")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="report",
+        choices=["report", "scan", "learn", "record", "stats"],
+        help="report=完整报告, scan=超短扫描, learn=学习建议, record=录入交易, stats=绩效",
+    )
+    parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
+    parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
+    parser.add_argument("--min-score", type=int, default=35, help="超短最低评分")
+
+    args = parser.parse_args()
+
+    try:
+        if args.command == "report":
+            generate_daily_report(
+                days=args.days,
+                top_prefilter=args.prefilter,
+                min_score=args.min_score,
+            )
+        elif args.command == "scan":
+            _ensure_dirs()
+            run_ultra_short_scan(top_prefilter=args.prefilter, min_score=args.min_score)
+        elif args.command == "learn":
+            stats, suggestions = run_learning_report(days=args.days)
+            print("【绩效】" if stats.get("has_data") else "【暂无数据】")
+            if stats.get("has_data"):
+                print(f"  交易 {stats['trade_count']} 笔, 胜率 {stats['win_rate']}%, "
+                      f"均收益 {stats['avg_profit_pct']}%")
+            print("\n【建议】")
+            for i, s in enumerate(suggestions, 1):
+                print(f"  {i}. {s}")
+        elif args.command == "record":
+            interactive_record()
+        elif args.command == "stats":
+            show_stats(days=args.days)
+    except KeyboardInterrupt:
+        print("\n已取消")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
