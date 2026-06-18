@@ -54,7 +54,10 @@ class TradeRecord:
             return 0
 
     def to_dict(self) -> dict:
-        d = asdict(self)
+        return asdict(self)
+
+    def to_summary(self) -> dict:
+        d = self.to_dict()
         d["profit_pct"] = round(self.profit_pct, 2)
         d["profit_amount"] = round(self.profit_amount, 2)
         d["hold_days"] = self.hold_days
@@ -74,7 +77,12 @@ class TradeJournal:
             return []
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            return [TradeRecord(**item) for item in raw.get("trades", [])]
+            fields = set(TradeRecord.__dataclass_fields__.keys())
+            trades = []
+            for item in raw.get("trades", []):
+                payload = {k: v for k, v in item.items() if k in fields}
+                trades.append(TradeRecord(**payload))
+            return trades
         except (json.JSONDecodeError, TypeError, KeyError):
             return []
 
@@ -118,7 +126,7 @@ class TradeJournal:
     def list_trades(self, days: Optional[int] = None) -> pd.DataFrame:
         if not self._trades:
             return pd.DataFrame()
-        rows = [t.to_dict() for t in self._trades]
+        rows = [t.to_summary() for t in self._trades]
         df = pd.DataFrame(rows)
         if days is not None and "sell_date" in df.columns:
             cutoff = (datetime.now() - pd.Timedelta(days=days)).strftime("%Y-%m-%d")

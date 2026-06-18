@@ -236,12 +236,12 @@ def main() -> None:
         "command",
         nargs="?",
         default="report",
-        choices=["report", "scan", "learn", "record", "stats"],
-        help="report=完整报告, scan=超短扫描, learn=学习建议, record=录入交易, stats=绩效",
+        choices=["report", "scan", "learn", "record", "stats", "import"],
+        help="report=完整报告, scan=超短扫描, learn=学习建议, record=录入, stats=绩效, import=CSV导入",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
-    parser.add_argument("--min-score", type=int, default=35, help="超短最低评分")
+    parser.add_argument("--file", type=str, default="data/trades_template.csv", help="import 命令的 CSV 路径")
 
     args = parser.parse_args()
 
@@ -268,6 +268,14 @@ def main() -> None:
             interactive_record()
         elif args.command == "stats":
             show_stats(days=args.days)
+        elif args.command == "import":
+            journal = TradeJournal()
+            path = Path(args.file)
+            if not path.exists():
+                print(f"文件不存在: {path}")
+                sys.exit(1)
+            n = journal.import_from_csv(str(path))
+            print(f"已导入 {n} 笔交易")
     except KeyboardInterrupt:
         print("\n已取消")
         sys.exit(0)

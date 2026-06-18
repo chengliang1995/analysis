@@ -9,6 +9,7 @@ from qstock_selector import QStockSelector
 from qstock_strategy_optimizer import StrategyOptimizer
 import pandas as pd
 import os
+import sys
 
 
 def quick_selection():
@@ -264,7 +265,7 @@ def main():
             from trade_journal import interactive_record
             interactive_record()
         else:
-            print("未知命令: {command}")
+            print(f"未知命令: {command}")
             print("可用命令: select, backtest, technical, optimize, limitup, daily, record")
     else:
         # 交互式菜单

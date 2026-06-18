@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
 from qstock_strategy_optimizer import StrategyOptimizer
