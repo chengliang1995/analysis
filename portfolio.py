@@ -1,6 +1,9 @@
 """
 个人仓位管理
 记录总资金、当前持仓，并结合行情计算市值、浮盈亏、仓位占比。
+
+持仓与总资金配置见 data/portfolio_config.json（编辑后运行 portfolio --init 同步）。
+运行时数据保存在 data/portfolio.json（git 忽略）。
 """
 
 from __future__ import annotations
@@ -9,13 +12,14 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import pandas as pd
 
-from stock_data import get_latest_price, get_market_spot, get_realtime_quotes
+from stock_data import get_latest_price, get_realtime_quotes
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
+PORTFOLIO_CONFIG_FILE = DATA_DIR / "portfolio_config.json"
 PORTFOLIO_FILE = DATA_DIR / "portfolio.json"
 
 
@@ -36,33 +40,60 @@ class Position:
 
 @dataclass
 class Portfolio:
-    total_capital: float = 170000.0
+    total_capital: float = 200000.0
     positions: List[Position] = field(default_factory=list)
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
+def load_portfolio_config(path: Path = PORTFOLIO_CONFIG_FILE) -> dict:
+    """读取持仓配置文件。"""
+    if not path.exists():
+        return {"total_capital": 200000.0, "positions": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _parse_positions(raw_positions: list) -> List[Position]:
+    positions = []
+    for p in raw_positions:
+        positions.append(
+            Position(**{k: v for k, v in p.items() if k in Position.__dataclass_fields__})
+        )
+    return positions
+
+
+def portfolio_from_dict(raw: dict) -> Portfolio:
+    return Portfolio(
+        total_capital=float(raw.get("total_capital", 200000)),
+        positions=_parse_positions(raw.get("positions", [])),
+        updated_at=raw.get("updated_at", datetime.now().isoformat()),
+    )
+
+
 class PortfolioManager:
-    def __init__(self, path: Path = PORTFOLIO_FILE):
+    def __init__(
+        self,
+        path: Path = PORTFOLIO_FILE,
+        config_path: Path = PORTFOLIO_CONFIG_FILE,
+    ):
         self.path = path
+        self.config_path = config_path
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._portfolio = self._load()
 
     def _load(self) -> Portfolio:
-        if not self.path.exists():
-            return Portfolio()
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            positions = [
-                Position(**{k: v for k, v in p.items() if k in Position.__dataclass_fields__})
-                for p in raw.get("positions", [])
-            ]
-            return Portfolio(
-                total_capital=float(raw.get("total_capital", 170000)),
-                positions=positions,
-                updated_at=raw.get("updated_at", datetime.now().isoformat()),
-            )
-        except (json.JSONDecodeError, TypeError, KeyError):
-            return Portfolio()
+        if self.path.exists():
+            try:
+                return portfolio_from_dict(json.loads(self.path.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+
+        if self.config_path.exists():
+            portfolio = portfolio_from_dict(load_portfolio_config(self.config_path))
+            self._portfolio = portfolio
+            self.save()
+            return portfolio
+
+        return Portfolio()
 
     def save(self) -> None:
         self._portfolio.updated_at = datetime.now().isoformat()
@@ -72,6 +103,17 @@ class PortfolioManager:
             "positions": [asdict(p) for p in self._portfolio.positions],
         }
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def apply_config(self, config: Optional[Union[dict, Path]] = None) -> None:
+        """从配置文件或字典加载并写入 portfolio.json。"""
+        if config is None:
+            raw = load_portfolio_config(self.config_path)
+        elif isinstance(config, Path):
+            raw = load_portfolio_config(config)
+        else:
+            raw = config
+        self._portfolio = portfolio_from_dict(raw)
+        self.save()
 
     def set_total_capital(self, amount: float) -> None:
         self._portfolio.total_capital = float(amount)
@@ -197,6 +239,7 @@ class PortfolioManager:
             "quote_time": str(quote_map["quote_time"].iloc[0]) if not quote_map.empty and "quote_time" in quote_map.columns else "",
             "trade_date": str(quote_map["trade_date"].iloc[0]) if not quote_map.empty and "trade_date" in quote_map.columns else "",
             "updated_at": self._portfolio.updated_at,
+            "config_path": str(self.config_path),
         }
 
     def generate_suggestions(self, spot_df: Optional[pd.DataFrame] = None) -> List[str]:
@@ -204,7 +247,10 @@ class PortfolioManager:
         suggestions: List[str] = []
 
         if not stats.get("has_data"):
-            suggestions.append("尚未录入持仓。使用 `python daily_advisor.py portfolio` 查看或编辑。")
+            suggestions.append(
+                "尚未录入持仓。编辑 data/portfolio_config.json 后运行 "
+                "`python daily_advisor.py portfolio --init`。"
+            )
             return suggestions
 
         total_capital = stats["total_capital"]
@@ -256,6 +302,7 @@ class PortfolioManager:
         print("=" * 60)
         print("个人仓位")
         print("=" * 60)
+        print(f"配置文件:   {self.config_path}")
         print(f"总资金:     {stats['total_capital']:,.0f} 元 ({stats['total_capital']/10000:.1f} 万)")
         print(f"持仓成本:   {stats['total_cost']:,.0f} 元 ({stats['invested_pct']:.1f}%)")
         print(f"持仓市值:   {stats['total_market_value']:,.0f} 元")
@@ -277,22 +324,31 @@ class PortfolioManager:
         return stats
 
 
-def init_default_portfolio() -> PortfolioManager:
-    """初始化用户默认仓位（总资金 17 万 + 三只持仓）。"""
+def init_from_config(config_path: Optional[Path] = None) -> PortfolioManager:
+    """从 portfolio_config.json 初始化并写入 portfolio.json。"""
     pm = PortfolioManager()
-    pm.set_total_capital(170000)
-    pm.set_positions([
-        Position("603379", "三美股份", 300, 66.5),
-        # 成本 42.2 与 002472 双环传动现价吻合（非 000707 双环科技）
-        Position("002472", "双环传动", 1200, 42.2, note="用户称双环科技，代码002472"),
-        Position("603606", "东方电缆", 500, 41.3),
-    ])
+    pm.apply_config(config_path)
     return pm
+
+
+# 兼容旧调用
+init_default_portfolio = init_from_config
+
+__all__ = [
+    "Position",
+    "Portfolio",
+    "PortfolioManager",
+    "PORTFOLIO_CONFIG_FILE",
+    "PORTFOLIO_FILE",
+    "load_portfolio_config",
+    "init_from_config",
+    "init_default_portfolio",
+]
 
 
 if __name__ == "__main__":
     pm = PortfolioManager()
     if not pm.list_positions():
-        pm = init_default_portfolio()
-        print("已写入默认仓位到 data/portfolio.json")
+        pm = init_from_config()
+        print(f"已从配置写入: {PORTFOLIO_FILE}")
     pm.print_summary()

@@ -1,18 +1,33 @@
-# 实验与诊断脚本
+# 脚本目录
 
-本目录存放开发过程中的实验脚本，核心功能请使用根目录模块：
+## 定时任务（推荐）
 
 | 脚本 | 说明 |
 |------|------|
-| `get_stocks_*.py` | 各数据源获取股票列表的实验版本（已整合到 `stock_data.py`） |
-| `get_all_a_stocks.py` | 批量获取 A 股列表与历史数据 |
-| `test_*.py` / `diagnose_qstock.py` | qstock 连通性与 API 诊断 |
-| `run_test.bat` | Windows 批量测试入口 |
+| `setup_scheduled_tasks.ps1` | 注册 Windows 计划任务（早盘/收盘/日报） |
+| `remove_scheduled_tasks.ps1` | 删除计划任务 |
+| `daily_runner.ps1` | 任务执行器（morning / close / report） |
+| `run_daily_morning.bat` | 手动运行早盘任务 |
+| `run_daily_close.bat` | 手动运行收盘任务 |
 
-推荐入口：
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_scheduled_tasks.ps1
+powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
+```
+
+## 实验与诊断
+
+| 脚本 | 说明 |
+|------|------|
+| `get_stocks_*.py` | 各数据源实验（已整合到 `stock_data.py`） |
+| `test_*.py` / `diagnose_qstock.py` | 连通性诊断 |
+| `run_test.bat` | Windows 批量测试 |
+
+## 推荐入口
 
 ```bash
 python quick_start_qstock.py
+python web_app.py
+python daily_advisor.py
 python scan_limit_up_stocks.py
-python scan_limit_up_simple.py
 ```

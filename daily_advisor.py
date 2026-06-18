@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from trade_journal import TradeJournal, interactive_record
-from portfolio import PortfolioManager, init_default_portfolio
+from portfolio import PortfolioManager
 from stock_data import collect_daily_market_close, get_market_spot
 from sim_replay import (
     run_sim_backtest,
@@ -34,6 +34,7 @@ from sim_replay import (
     run_sim_review,
     run_sim_status,
 )
+from report_format import format_markdown_table
 from ultra_short_scanner import UltraShortScanner
 
 OUTPUT_DIR = Path("output")
@@ -49,17 +50,24 @@ def _format_ultra_short_table(df: pd.DataFrame, top_n: int = 20) -> str:
     if df.empty:
         return "（今日未捕捉到符合条件的超短标的）\n"
 
-    lines = [
-        f"| 排名 | 代码 | 名称 | 评分 | 涨幅% | 换手% | 连板 | 标签 |",
-        f"|------|------|------|------|-------|-------|------|------|",
-    ]
+    headers = ["排名", "代码", "名称", "评分", "涨幅%", "换手%", "连板", "标签"]
+    rows = []
     for i, (_, row) in enumerate(df.head(top_n).iterrows(), 1):
-        lines.append(
-            f"| {i} | {row['code']} | {row['name']} | {row['ultra_short_score']} "
-            f"| {row['pct_chg']} | {row['turnover']} | {row['consecutive_boards']} "
-            f"| {row['tags']} |"
-        )
-    return "\n".join(lines) + "\n"
+        rows.append([
+            i,
+            row["code"],
+            row["name"],
+            row["ultra_short_score"],
+            row["pct_chg"],
+            row["turnover"],
+            row["consecutive_boards"],
+            row["tags"],
+        ])
+    return format_markdown_table(
+        headers,
+        rows,
+        aligns=["right", "left", "left", "right", "right", "right", "right", "left"],
+    )
 
 
 def _cross_reference_suggestions(journal: TradeJournal, ultra_df: pd.DataFrame) -> list[str]:
@@ -114,11 +122,18 @@ def _portfolio_holdings_suggestions(pm: PortfolioManager, ultra_df: pd.DataFrame
     return extra
 
 
+def _sync_portfolio_from_config() -> PortfolioManager:
+    """从 data/portfolio_config.json 同步到 portfolio.json。"""
+    pm = PortfolioManager()
+    pm.apply_config()
+    return pm
+
+
 def show_portfolio(init: bool = False) -> dict:
     pm = PortfolioManager()
     if init or not pm.list_positions():
-        pm = init_default_portfolio()
-        print("已保存仓位到 data/portfolio.json\n")
+        pm = _sync_portfolio_from_config()
+        print("已从 data/portfolio_config.json 同步到 data/portfolio.json\n")
     stats = pm.print_summary()
     print("\n【仓位建议】")
     for i, s in enumerate(pm.generate_suggestions(), 1):
@@ -180,7 +195,7 @@ def generate_daily_report(
     print("=" * 60)
     pm = PortfolioManager()
     if not pm.list_positions():
-        init_default_portfolio()
+        _sync_portfolio_from_config()
         pm = PortfolioManager()
     portfolio_stats = pm.print_summary()
     portfolio_suggestions = _portfolio_holdings_suggestions(pm, ultra_df)
@@ -222,13 +237,25 @@ def generate_daily_report(
             f"- 浮动盈亏: {portfolio_stats['total_float_pnl']:+.0f} 元 "
             f"({portfolio_stats['total_float_pnl_pct']:+.2f}%)\n\n"
         )
-        md_parts.append("| 代码 | 名称 | 数量 | 成本 | 现价 | 浮盈% | 占比% |\n")
-        md_parts.append("|------|------|------|------|------|-------|-------|\n")
-        for p in portfolio_stats["positions"]:
-            md_parts.append(
-                f"| {p['code']} | {p['name']} | {p['quantity']} | {p['cost_price']} "
-                f"| {p['current_price']} | {p['profit_pct']:+.2f} | {p['weight_pct']} |\n"
+        portfolio_rows = [
+            [
+                p["code"],
+                p["name"],
+                p["quantity"],
+                p["cost_price"],
+                p["current_price"],
+                f"{p['profit_pct']:+.2f}",
+                p["weight_pct"],
+            ]
+            for p in portfolio_stats["positions"]
+        ]
+        md_parts.append(
+            format_markdown_table(
+                ["代码", "名称", "数量", "成本", "现价", "浮盈%", "占比%"],
+                portfolio_rows,
+                aligns=["left", "left", "right", "right", "right", "right", "right"],
             )
+        )
     md_parts.append(f"\n## 三、个人绩效（近{days}日）\n")
 
     if stats.get("has_data"):
@@ -241,13 +268,17 @@ def generate_daily_report(
         )
         if stats.get("by_strategy"):
             md_parts.append("\n### 按策略统计\n\n")
-            md_parts.append("| 策略 | 笔数 | 胜率% | 均收益% | 均持仓天 |\n")
-            md_parts.append("|------|------|-------|---------|----------|\n")
-            for row in stats["by_strategy"]:
-                md_parts.append(
-                    f"| {row['strategy']} | {row['count']} | {row['win_rate']} "
-                    f"| {row['avg_profit']} | {row['avg_hold']} |\n"
+            strategy_rows = [
+                [row["strategy"], row["count"], row["win_rate"], row["avg_profit"], row["avg_hold"]]
+                for row in stats["by_strategy"]
+            ]
+            md_parts.append(
+                format_markdown_table(
+                    ["策略", "笔数", "胜率%", "均收益%", "均持仓天"],
+                    strategy_rows,
+                    aligns=["left", "right", "right", "right", "right"],
                 )
+            )
     else:
         md_parts.append("暂无交易记录。运行 `python daily_advisor.py record` 录入。\n")
 
@@ -311,7 +342,7 @@ def main() -> None:
         default="report",
         choices=[
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
-            "sim", "sim-backtest", "sim-review", "sim-status",
+            "sim", "sim-backtest", "sim-review", "sim-status", "web",
         ],
         help="sim=模拟复盘, sim-backtest=历史回测, sim-review=复盘, sim-status=模拟账户",
     )
@@ -321,7 +352,9 @@ def main() -> None:
     parser.add_argument("--file", type=str, default="data/trades_template.csv", help="import 命令的 CSV 路径")
     parser.add_argument("--force", action="store_true", help="sim 命令：非 9:30-9:45 也强制选股")
 
-    parser.add_argument("--init", action="store_true", help="portfolio 命令：强制写入默认仓位")
+    parser.add_argument("--port", type=int, default=5050, help="web 命令：监听端口")
+
+    parser.add_argument("--init", action="store_true", help="portfolio 命令：从 portfolio_config.json 重新加载")
 
     args = parser.parse_args()
 
@@ -373,6 +406,10 @@ def main() -> None:
             run_sim_review()
         elif args.command == "sim-status":
             run_sim_status()
+        elif args.command == "web":
+            from web_app import main as run_web
+
+            run_web(port=args.port)
     except KeyboardInterrupt:
         print("\n已取消")
         sys.exit(0)

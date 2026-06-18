@@ -1,0 +1,32 @@
+{
+  "total_capital": 200000,
+  "positions": [
+    {
+      "code": "603379",
+      "name": "三美股份",
+      "quantity": 300,
+      "cost_price": 66.5,
+      "buy_date": "",
+      "strategy": "手动",
+      "note": ""
+    },
+    {
+      "code": "002472",
+      "name": "双环传动",
+      "quantity": 1200,
+      "cost_price": 42.2,
+      "buy_date": "",
+      "strategy": "手动",
+      "note": "用户称双环科技，代码002472"
+    },
+    {
+      "code": "603606",
+      "name": "东方电缆",
+      "quantity": 500,
+      "cost_price": 41.3,
+      "buy_date": "",
+      "strategy": "手动",
+      "note": ""
+    }
+  ]
+}

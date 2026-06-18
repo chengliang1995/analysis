@@ -259,14 +259,23 @@ def main():
             print("\n涨停策略请使用专用脚本:")
             print("  python scan_limit_up_stocks.py")
         elif command == 'daily' or command == 'd':
-            print("\n每日顾问（超短捕捉 + 学习建议）:")
-            print("  python daily_advisor.py")
+            import subprocess
+            subprocess.run([sys.executable, "daily_advisor.py"])
+        elif command == 'web' or command == 'w':
+            from web_app import main as run_web
+            run_web()
+        elif command == 'portfolio' or command == 'p':
+            import subprocess
+            subprocess.run([sys.executable, "daily_advisor.py", "portfolio"])
+        elif command == 'sim':
+            import subprocess
+            subprocess.run([sys.executable, "daily_advisor.py", "sim", "--force"])
         elif command == 'record' or command == 'r':
             from trade_journal import interactive_record
             interactive_record()
         else:
             print(f"未知命令: {command}")
-            print("可用命令: select, backtest, technical, optimize, limitup, daily, record")
+            print("可用命令: select, backtest, technical, optimize, limitup, daily, web, portfolio, sim, record")
     else:
         # 交互式菜单
         print("\n请选择功能:")
@@ -277,12 +286,15 @@ def main():
         print("5. 涨停策略扫描")
         print("6. 每日顾问（超短+学习）")
         print("7. 录入交易记录")
-        print("8. 运行全部（选股/回测/技术/优化）")
+        print("8. Web 仪表盘（持仓+模拟）")
+        print("9. 查看个人仓位")
+        print("10. 模拟复盘选股")
+        print("11. 运行全部（选股/回测/技术/优化）")
         print("0. 退出")
         print()
 
         try:
-            choice = input("请输入选项 (0-8): ").strip()
+            choice = input("请输入选项 (0-11): ").strip()
 
             if choice == '1':
                 quick_selection()
@@ -303,6 +315,15 @@ def main():
                 from trade_journal import interactive_record
                 interactive_record()
             elif choice == '8':
+                from web_app import main as run_web
+                run_web()
+            elif choice == '9':
+                import subprocess
+                subprocess.run([sys.executable, "daily_advisor.py", "portfolio"])
+            elif choice == '10':
+                import subprocess
+                subprocess.run([sys.executable, "daily_advisor.py", "sim", "--force"])
+            elif choice == '11':
                 quick_selection()
                 quick_backtest()
                 quick_technical_analysis()
