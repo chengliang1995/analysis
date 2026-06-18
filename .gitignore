@@ -13,8 +13,12 @@ venv/
 
 # 输出与缓存数据
 output/
+logs/
 cache/
+cache/daily_close/
 data/trades.json
+data/portfolio.json
+data/sim_state.json
 stock_hist_data/
 *.csv
 !docs/**/*.csv

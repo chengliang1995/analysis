@@ -8,7 +8,10 @@
   python daily_advisor.py scan         # 仅超短扫描
   python daily_advisor.py learn        # 仅学习建议（基于交易日记）
   python daily_advisor.py record       # 录入一笔交易
-  python daily_advisor.py stats        # 查看近期绩效
+  python daily_advisor.py sim            # 模拟复盘（9:30-9:45选股）
+  python daily_advisor.py sim-backtest   # 历史模拟回测
+  python daily_advisor.py sim-review     # 手动触发复盘
+  python daily_advisor.py sim-status       # 模拟账户状态
 """
 
 from __future__ import annotations
@@ -23,6 +26,14 @@ from pathlib import Path
 import pandas as pd
 
 from trade_journal import TradeJournal, interactive_record
+from portfolio import PortfolioManager, init_default_portfolio
+from stock_data import collect_daily_market_close, get_market_spot
+from sim_replay import (
+    run_sim_backtest,
+    run_sim_daily,
+    run_sim_review,
+    run_sim_status,
+)
 from ultra_short_scanner import UltraShortScanner
 
 OUTPUT_DIR = Path("output")
@@ -82,10 +93,45 @@ def _cross_reference_suggestions(journal: TradeJournal, ultra_df: pd.DataFrame) 
     return extra
 
 
+def _portfolio_holdings_suggestions(pm: PortfolioManager, ultra_df: pd.DataFrame) -> list[str]:
+    """持仓与超短机会的交叉建议。"""
+    extra: list[str] = []
+    stats = pm.analyze()
+    if not stats.get("has_data"):
+        return extra
+
+    held_codes = {str(p["code"]) for p in stats["positions"]}
+    if not ultra_df.empty:
+        hot = ultra_df.head(10)
+        held_hot = hot[hot["code"].astype(str).isin(held_codes)]
+        for _, row in held_hot.iterrows():
+            extra.append(
+                f"持仓 {row['name']}({row['code']}) 登上超短榜（评分 {row['ultra_short_score']}），"
+                f"标签：{row['tags']}。可结合浮盈情况决定是否持有或止盈。"
+            )
+
+    extra.extend(pm.generate_suggestions())
+    return extra
+
+
+def show_portfolio(init: bool = False) -> dict:
+    pm = PortfolioManager()
+    if init or not pm.list_positions():
+        pm = init_default_portfolio()
+        print("已保存仓位到 data/portfolio.json\n")
+    stats = pm.print_summary()
+    print("\n【仓位建议】")
+    for i, s in enumerate(pm.generate_suggestions(), 1):
+        print(f"  {i}. {s}")
+    return stats
+
+
 def run_ultra_short_scan(top_prefilter: int = 300, min_score: int = 35) -> pd.DataFrame:
     print("=" * 60)
     print("超短个股捕捉")
     print("=" * 60)
+    print("刷新全市场最新价...")
+    get_market_spot(verbose=True, force_refresh=False)
     scanner = UltraShortScanner()
     df = scanner.scan_market(
         top_prefilter=top_prefilter,
@@ -128,14 +174,25 @@ def generate_daily_report(
     # 1. 超短扫描
     ultra_df = run_ultra_short_scan(top_prefilter=top_prefilter, min_score=min_score)
 
-    # 2. 学习分析
+    # 2. 当前仓位
+    print("\n" + "=" * 60)
+    print("当前持仓")
+    print("=" * 60)
+    pm = PortfolioManager()
+    if not pm.list_positions():
+        init_default_portfolio()
+        pm = PortfolioManager()
+    portfolio_stats = pm.print_summary()
+    portfolio_suggestions = _portfolio_holdings_suggestions(pm, ultra_df)
+
+    # 3. 学习分析
     print("\n" + "=" * 60)
     print("个人操作学习")
     print("=" * 60)
     journal = TradeJournal()
     stats, suggestions = run_learning_report(days=days)
     cross = _cross_reference_suggestions(journal, ultra_df)
-    all_suggestions = suggestions + cross
+    all_suggestions = portfolio_suggestions + suggestions + cross
 
     if stats.get("has_data"):
         print(f"\n近{days}日交易 {stats['trade_count']} 笔 | "
@@ -156,8 +213,23 @@ def generate_daily_report(
         f"---\n",
         f"## 一、超短个股 TOP 20\n",
         _format_ultra_short_table(ultra_df, top_n=20),
-        f"\n## 二、个人绩效（近{days}日）\n",
+        f"\n## 二、当前持仓（总资金 {portfolio_stats['total_capital']/10000:.1f} 万）\n\n",
     ]
+    if portfolio_stats.get("has_data"):
+        md_parts.append(
+            f"- 持仓成本: {portfolio_stats['total_cost']:.0f} 元 ({portfolio_stats['invested_pct']}%)\n"
+            f"- 持仓市值: {portfolio_stats['total_market_value']:.0f} 元\n"
+            f"- 浮动盈亏: {portfolio_stats['total_float_pnl']:+.0f} 元 "
+            f"({portfolio_stats['total_float_pnl_pct']:+.2f}%)\n\n"
+        )
+        md_parts.append("| 代码 | 名称 | 数量 | 成本 | 现价 | 浮盈% | 占比% |\n")
+        md_parts.append("|------|------|------|------|------|-------|-------|\n")
+        for p in portfolio_stats["positions"]:
+            md_parts.append(
+                f"| {p['code']} | {p['name']} | {p['quantity']} | {p['cost_price']} "
+                f"| {p['current_price']} | {p['profit_pct']:+.2f} | {p['weight_pct']} |\n"
+            )
+    md_parts.append(f"\n## 三、个人绩效（近{days}日）\n")
 
     if stats.get("has_data"):
         md_parts.append(
@@ -179,12 +251,12 @@ def generate_daily_report(
     else:
         md_parts.append("暂无交易记录。运行 `python daily_advisor.py record` 录入。\n")
 
-    md_parts.append(f"\n## 三、优化建议\n\n")
+    md_parts.append(f"\n## 四、优化建议\n\n")
     for i, s in enumerate(all_suggestions, 1):
         md_parts.append(f"{i}. {s}\n")
 
     md_parts.append(
-        f"\n## 四、超短操作要点\n\n"
+        f"\n## 五、超短操作要点\n\n"
         f"1. **涨停不破开**：10日内有涨停且收盘不破涨停日开盘价，偏强势整理。\n"
         f"2. **连板龙头**：2-3连板 + 高换手优于盲目追首板。\n"
         f"3. **止损纪律**：超短单笔亏损超 -3% 考虑离场。\n"
@@ -202,6 +274,7 @@ def generate_daily_report(
         "ultra_short_count": len(ultra_df),
         "ultra_short_top10": ultra_df.head(10).to_dict("records") if not ultra_df.empty else [],
         "trade_stats": stats,
+        "portfolio": portfolio_stats,
         "suggestions": all_suggestions,
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -236,12 +309,19 @@ def main() -> None:
         "command",
         nargs="?",
         default="report",
-        choices=["report", "scan", "learn", "record", "stats", "import"],
-        help="report=完整报告, scan=超短扫描, learn=学习建议, record=录入, stats=绩效, import=CSV导入",
+        choices=[
+            "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
+            "sim", "sim-backtest", "sim-review", "sim-status",
+        ],
+        help="sim=模拟复盘, sim-backtest=历史回测, sim-review=复盘, sim-status=模拟账户",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
+    parser.add_argument("--min-score", type=int, default=35, help="超短最低评分")
     parser.add_argument("--file", type=str, default="data/trades_template.csv", help="import 命令的 CSV 路径")
+    parser.add_argument("--force", action="store_true", help="sim 命令：非 9:30-9:45 也强制选股")
+
+    parser.add_argument("--init", action="store_true", help="portfolio 命令：强制写入默认仓位")
 
     args = parser.parse_args()
 
@@ -276,6 +356,23 @@ def main() -> None:
                 sys.exit(1)
             n = journal.import_from_csv(str(path))
             print(f"已导入 {n} 笔交易")
+        elif args.command == "portfolio":
+            show_portfolio(init=args.init)
+        elif args.command == "refresh":
+            print("=" * 60)
+            print("采集全市场最新收盘/现价")
+            print("=" * 60)
+            quotes = collect_daily_market_close(verbose=True)
+            print(f"完成，共 {len(quotes)} 只股票")
+            show_portfolio(init=False)
+        elif args.command == "sim":
+            run_sim_daily(force=args.force)
+        elif args.command == "sim-backtest":
+            run_sim_backtest(days=args.days)
+        elif args.command == "sim-review":
+            run_sim_review()
+        elif args.command == "sim-status":
+            run_sim_status()
     except KeyboardInterrupt:
         print("\n已取消")
         sys.exit(0)

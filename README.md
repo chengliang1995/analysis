@@ -44,8 +44,13 @@ python daily_advisor.py record
 # 涨停策略扫描（全市场，并发加速）
 python scan_limit_up_stocks.py
 
-# 指定股票快速扫描
-python scan_limit_up_simple.py
+# 模拟复盘（20万 · 最多3仓 · 9:30-9:45选股 · 每5日复盘）
+python daily_advisor.py sim --force
+python daily_advisor.py sim-status
+
+# 定时任务（Windows 计划任务，周一至周五自动执行）
+powershell -ExecutionPolicy Bypass -File scripts/setup_scheduled_tasks.ps1
+powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
 ```
 
 ## 核心模块
@@ -58,6 +63,43 @@ python scan_limit_up_simple.py
 | `ultra_short_scanner.py` | 超短评分：涨停、连板、高换手、放量、涨停不破开 |
 | `trade_journal.py` | 记录买卖，统计胜率/持仓习惯，生成个性化建议 |
 | `daily_advisor.py` | 每日报告：超短 TOP + 绩效复盘 + 优化建议 |
+| `sim_replay.py` | 模拟复盘：20万/3仓、9:45选股、止盈止损、每5日自动复盘 |
+
+## 模拟复盘
+
+| 规则 | 说明 |
+|------|------|
+| 资金 | 20 万模拟账户 |
+| 选股时间 | 9:30-9:45（可用 `--force` 非交易时段测试） |
+| 最多持仓 | 3 只，均分可用现金 |
+| 买入价 | 开盘价 +0.5% 估算（9:45 介入） |
+| 止损/止盈 | -3% / +8%，最长持有 3 日 |
+| 复盘 | 每 5 个交易日自动复盘并微调参数 |
+
+早盘选股增强：理想高开 1-4%、排除急拉追高、叠加超短评分。
+
+## 定时任务（Windows）
+
+| 时间 | 任务 | 内容 |
+|------|------|------|
+| 周一至周五 09:35 | QuantPyStock-Morning | 刷新行情 + 模拟早盘选股 |
+| 周一至周五 15:10 | QuantPyStock-Close | 采集收盘 + 模拟卖出检查 |
+| 周一至周五 15:25 | QuantPyStock-Report | 每日报告 + 个人仓位 |
+
+```powershell
+# 一键注册计划任务
+powershell -ExecutionPolicy Bypass -File scripts/setup_scheduled_tasks.ps1
+
+# 手动测试
+powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
+powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase close
+powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase report
+
+# 删除计划任务
+powershell -ExecutionPolicy Bypass -File scripts/remove_scheduled_tasks.ps1
+```
+
+日志目录：`logs/daily_*.log`
 
 ## 学习功能
 

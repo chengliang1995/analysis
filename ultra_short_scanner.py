@@ -12,7 +12,12 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from qstock_strategy_optimizer import StrategyOptimizer
-from stock_data import get_all_stocks, get_stock_code_column, get_stock_hist, get_stock_name_column
+from stock_data import (
+    get_market_spot,
+    get_stock_code_column,
+    get_stock_hist,
+    get_stock_name_column,
+)
 
 
 class UltraShortScanner:
@@ -190,8 +195,8 @@ class UltraShortScanner:
     """
     if stock_list is None:
       if show_progress:
-        print("加载股票列表...")
-      stock_list = get_all_stocks(verbose=show_progress)
+        print("加载股票列表并刷新最新价...")
+      stock_list = get_market_spot(verbose=show_progress, force_refresh=False)
 
     if stock_list.empty:
       return pd.DataFrame()
