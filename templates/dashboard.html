@@ -150,9 +150,23 @@
     }
     .modal-body {
       padding: 20px; overflow-y: auto; font-size: 0.875rem;
-      font-family: Consolas, "Courier New", monospace; white-space: pre-wrap;
-      color: #cbd5e1;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      color: #cbd5e1; line-height: 1.6;
     }
+    .modal-body pre.report-text {
+      font-family: "Cascadia Mono", "Microsoft YaHei Mono", Consolas, monospace;
+      white-space: pre-wrap; margin: 0 0 1rem;
+    }
+    .report-table {
+      width: 100%; border-collapse: collapse; margin: 12px 0 16px;
+      font-size: 0.8125rem;
+    }
+    .report-table th, .report-table td {
+      border: 1px solid var(--border); padding: 6px 10px; text-align: left;
+    }
+    .report-table th { background: #1e293b; color: #e2e8f0; white-space: nowrap; }
+    .report-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .report-table td.tags { color: var(--muted); max-width: 280px; }
     .tag-list { font-size: 0.75rem; color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   </style>
 </head>
@@ -162,7 +176,7 @@
       <div>
         <h1>QuantPy 持仓仪表盘</h1>
         <p class="sub" id="server-time">加载中…</p>
-        <p class="sub" style="font-size:0.75rem;color:#64748b">版本 v{{ app_version|default('2.3') }} · 交易同步持仓</p>
+        <p class="sub" style="font-size:0.75rem;color:#64748b">版本 v{{ app_version|default('2.4') }} · AI策略学习</p>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <button class="secondary" id="btn-report" type="button">查看日报</button>
@@ -176,6 +190,7 @@
       <button type="button" data-action="report">生成日报</button>
       <button type="button" data-action="sim" data-force="true">模拟选股</button>
       <button type="button" data-action="sim-review">模拟复盘</button>
+      <button type="button" data-action="ai-learn">AI策略学习</button>
       <button type="button" data-action="sim-backtest" class="secondary">模拟回测(20日)</button>
     </div>
 
@@ -395,7 +410,8 @@
       el.innerHTML =
         renderSuggestionGroup("实盘操作建议", groups.portfolio_actions, "暂无持仓或待刷新行情") +
         renderSuggestionGroup("仓位分析", groups.portfolio_summary, "—") +
-        renderSuggestionGroup("历史学习", groups.learn, "录入交易后可获得个性化学习建议");
+        renderSuggestionGroup("历史学习", groups.learn, "录入交易后可获得个性化学习建议") +
+        renderSuggestionGroup("AI 策略学习", groups.ai_learn, "每5交易日自动学习，或点击「AI策略学习」");
     }
 
     function renderRecentTrades(trades) {
@@ -615,12 +631,85 @@
       return data;
     }
 
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function isTableSeparator(cells) {
+      return cells.length > 0 && cells.every((c) => /^[\s:-]+$/.test(c) && c.includes("-"));
+    }
+
+    function renderReportContent(text) {
+      const body = document.getElementById("report-body");
+      if (!text) {
+        body.innerHTML = '<p class="empty">暂无报告，请先点击「生成日报」</p>';
+        return;
+      }
+
+      const lines = String(text).split(/\r?\n/);
+      const parts = [];
+      let tableRows = [];
+
+      function flushTable() {
+        if (tableRows.length < 2) {
+          tableRows.forEach((row) => parts.push(`<pre class="report-text">${escapeHtml(row.join("\n"))}</pre>`));
+          tableRows = [];
+          return;
+        }
+        const header = tableRows[0];
+        const dataStart = isTableSeparator(tableRows[1]) ? 2 : 1;
+        const numericCols = new Set([0, 3, 4, 5, 6]);
+        let html = '<table class="report-table"><thead><tr>';
+        header.forEach((cell, idx) => {
+          const cls = numericCols.has(idx) ? ' class="num"' : "";
+          html += `<th${cls}>${escapeHtml(cell.trim())}</th>`;
+        });
+        html += "</tr></thead><tbody>";
+        for (let i = dataStart; i < tableRows.length; i++) {
+          html += "<tr>";
+          tableRows[i].forEach((cell, idx) => {
+            let cls = "";
+            if (idx === header.length - 1) cls = ' class="tags"';
+            else if (numericCols.has(idx)) cls = ' class="num"';
+            html += `<td${cls}>${escapeHtml(cell.trim())}</td>`;
+          });
+          html += "</tr>";
+        }
+        html += "</tbody></table>";
+        parts.push(html);
+        tableRows = [];
+      }
+
+      let textBuf = [];
+      function flushText() {
+        if (!textBuf.length) return;
+        parts.push(`<pre class="report-text">${escapeHtml(textBuf.join("\n"))}</pre>`);
+        textBuf = [];
+      }
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+          flushText();
+          tableRows.push(trimmed.slice(1, -1).split("|"));
+        } else {
+          if (tableRows.length) flushTable();
+          textBuf.push(line);
+        }
+      }
+      if (tableRows.length) flushTable();
+      flushText();
+      body.innerHTML = parts.join("");
+    }
+
     function showReportModal(reportData) {
       const modal = document.getElementById("report-modal");
       modal.classList.add("open");
       document.getElementById("report-title").textContent = reportData?.name || "每日报告";
-      document.getElementById("report-body").textContent =
-        reportData?.content || "暂无报告，请先点击「生成日报」";
+      renderReportContent(reportData?.content || "");
     }
 
     async function openReport(prefetched) {
@@ -628,7 +717,7 @@
         showReportModal(prefetched);
         return;
       }
-      document.getElementById("report-body").textContent = "加载中…";
+      document.getElementById("report-body").innerHTML = "加载中…";
       document.getElementById("report-modal").classList.add("open");
       try {
         const res = await fetch("/api/report/latest");

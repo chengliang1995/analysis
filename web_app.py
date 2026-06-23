@@ -23,13 +23,14 @@ from flask import Flask, jsonify, render_template, request
 
 from portfolio import PortfolioManager
 from sim_replay import SimReplayEngine
+from ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from stock_data import collect_daily_market_close, get_realtime_quotes
 from trade_journal import TradeJournal
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 REPORT_DIR = OUTPUT_DIR / "daily_reports"
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
@@ -98,9 +99,19 @@ def get_suggestions() -> dict:
     journal = TradeJournal()
     learn = journal.generate_suggestions(days=30)
 
+    ai_learn: list[str] = []
+    ai_meta = load_latest_ai_learning()
+    if ai_meta.get("suggestions"):
+        ai_learn = list(ai_meta["suggestions"][:8])
+        if ai_meta.get("param_changes"):
+            ai_learn.append(
+                "最近 AI 参数调整: "
+                + ", ".join(f"{k} {v}" for k, v in ai_meta["param_changes"].items())
+            )
+
     all_suggestions: list[str] = []
     seen: set[str] = set()
-    for s in portfolio_actions + portfolio_summary + learn:
+    for s in portfolio_actions + portfolio_summary + learn + ai_learn:
         if s not in seen:
             seen.add(s)
             all_suggestions.append(s)
@@ -109,6 +120,7 @@ def get_suggestions() -> dict:
         "portfolio_actions": portfolio_actions,
         "portfolio_summary": portfolio_summary,
         "learn": learn,
+        "ai_learn": ai_learn,
         "all": all_suggestions,
     }
 
@@ -175,6 +187,7 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
             "max_positions": engine.config.max_positions,
         },
         "updated_at": engine.state.get("updated_at", ""),
+        "ai_learning": load_latest_ai_learning(),
     }
 
 
@@ -372,7 +385,13 @@ def api_action(action: str):
                 extra["review"] = {
                     "round": review.get("round"),
                     "suggestions": review.get("suggestions", []),
+                    "ai_learning": review.get("ai_learning"),
                 }
+        elif action == "ai-learn":
+            result, log = _run_quiet(run_ai_learning, show_progress=False, auto_apply=True)
+            round_no = result.get("round", 0) if isinstance(result, dict) else 0
+            message = f"AI 策略学习完成（第 {round_no} 轮）"
+            extra["ai_learning"] = result
         elif action == "sim-backtest":
             engine = SimReplayEngine()
             result, log = _run_quiet(engine.replay_backtest, days=days, show_progress=False)

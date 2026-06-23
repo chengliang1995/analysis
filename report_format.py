@@ -7,13 +7,32 @@ from typing import Iterable, List, Sequence
 
 
 def display_width(text: object) -> int:
+    """计算终端显示宽度；中文等宽字符按 2 计。"""
     width = 0
     for ch in str(text):
-        if unicodedata.east_asian_width(ch) in ("F", "W"):
+        if unicodedata.east_asian_width(ch) in ("F", "W", "A"):
             width += 2
         else:
             width += 1
     return width
+
+
+def truncate_display(text: object, max_width: int, ellipsis: str = "…") -> str:
+    """按显示宽度截断文本。"""
+    s = str(text)
+    if display_width(s) <= max_width:
+        return s
+    ell_w = display_width(ellipsis)
+    limit = max(0, max_width - ell_w)
+    out: List[str] = []
+    used = 0
+    for ch in s:
+        ch_w = 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+        if used + ch_w > limit:
+            break
+        out.append(ch)
+        used += ch_w
+    return "".join(out) + ellipsis
 
 
 def pad_cell(text: object, width: int, align: str = "left") -> str:
@@ -25,6 +44,25 @@ def pad_cell(text: object, width: int, align: str = "left") -> str:
         left = padding // 2
         return " " * left + text + " " * (padding - left)
     return text + " " * padding
+
+
+def _pad_cell_to_char_len(
+    text: object,
+    display_target: int,
+    char_target: int,
+    align: str = "left",
+) -> str:
+    """在显示宽度对齐后，再补齐字符长度，保证各行列宽一致。"""
+    inner = pad_cell(text, display_target, align)
+    extra = char_target - len(inner)
+    if extra <= 0:
+        return inner
+    if align == "right":
+        return " " * extra + inner
+    if align == "center":
+        left = extra // 2
+        return " " * left + inner + " " * (extra - left)
+    return inner + " " * extra
 
 
 def format_markdown_table(
@@ -42,14 +80,32 @@ def format_markdown_table(
         for i in range(len(headers))
     ]
 
-    def _format_row(cells: Sequence[str]) -> str:
-        parts = [
-            f" {pad_cell(cells[i], col_widths[i], aligns[i] if i < len(aligns) else 'left')} "
-            for i in range(len(headers))
+    col_char_lens: List[int] = []
+    for col_idx in range(len(headers)):
+        align = aligns[col_idx] if col_idx < len(aligns) else "left"
+        part_lens = [
+            len(f" {pad_cell(row[col_idx], col_widths[col_idx], align)} ")
+            for row in all_rows
         ]
-        return "|" + "|".join(parts) + "|"
+        col_char_lens.append(max(part_lens))
 
-    lines = [_format_row(headers)]
-    lines.append("|" + "|".join("-" * (w + 2) for w in col_widths) + "|")
-    lines.extend(_format_row(row) for row in str_rows)
+    def _format_row(cells: Sequence[str]) -> tuple[str, List[str]]:
+        parts: List[str] = []
+        for col_idx in range(len(headers)):
+            align = aligns[col_idx] if col_idx < len(aligns) else "left"
+            inner = _pad_cell_to_char_len(
+                cells[col_idx],
+                col_widths[col_idx],
+                col_char_lens[col_idx] - 2,
+                align,
+            )
+            parts.append(f" {inner} ")
+        return "|" + "|".join(parts) + "|", parts
+
+    header_line, header_parts = _format_row(headers)
+    lines = [header_line]
+    lines.append("|" + "|".join("-" * len(part) for part in header_parts) + "|")
+    for row in str_rows:
+        line, _ = _format_row(row)
+        lines.append(line)
     return "\n".join(lines) + "\n"

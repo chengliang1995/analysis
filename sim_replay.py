@@ -464,7 +464,29 @@ class SimReplayEngine:
             }
             suggestions = self._generate_review_suggestions(df, stats)
 
-        param_changes = self._auto_tune_params(stats if recent else {})
+        param_changes: dict = {}
+        ai_learning = None
+        if recent:
+            try:
+                from ai_learning_optimizer import AILearningOptimizer
+
+                ai_opt = AILearningOptimizer(auto_apply=True)
+                ai_learning = ai_opt.run_learning_cycle(
+                    self,
+                    review_round=int(self.state.get("review_round", 0)) + 1,
+                    show_progress=show_progress,
+                )
+                param_changes = ai_learning.get("param_changes", {})
+                ai_suggestions = ai_learning.get("suggestions", [])
+                seen = set(suggestions)
+                for s in ai_suggestions:
+                    if s not in seen:
+                        suggestions.append(s)
+                        seen.add(s)
+            except Exception as exc:
+                if show_progress:
+                    print(f"  AI 学习回退规则引擎: {exc}")
+                param_changes = self._auto_tune_params(stats)
 
         review = {
             "date": today,
@@ -473,6 +495,7 @@ class SimReplayEngine:
             "suggestions": suggestions,
             "param_changes": param_changes,
             "config_after": asdict(self.config),
+            "ai_learning": ai_learning,
         }
 
         self.state["review_round"] = review["round"]
@@ -578,6 +601,12 @@ class SimReplayEngine:
             lines.append("\n## 参数调整\n")
             for k, v in review["param_changes"].items():
                 lines.append(f"- {k}: {v}\n")
+        ai = review.get("ai_learning")
+        if ai and ai.get("suggestions"):
+            lines.append("\n## AI 策略学习\n")
+            lines.append(f"引擎: {ai.get('engine', 'statistical')} | 样本: {ai.get('sample_count', 0)} 笔\n\n")
+            for i, s in enumerate(ai["suggestions"][:8], 1):
+                lines.append(f"{i}. {s}\n")
         fname.write_text("".join(lines), encoding="utf-8")
         return fname
 

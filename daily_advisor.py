@@ -34,7 +34,8 @@ from sim_replay import (
     run_sim_review,
     run_sim_status,
 )
-from report_format import format_markdown_table
+from report_format import format_markdown_table, truncate_display
+from ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from ultra_short_scanner import UltraShortScanner
 
 OUTPUT_DIR = Path("output")
@@ -53,15 +54,16 @@ def _format_ultra_short_table(df: pd.DataFrame, top_n: int = 20) -> str:
     headers = ["排名", "代码", "名称", "评分", "涨幅%", "换手%", "连板", "标签"]
     rows = []
     for i, (_, row) in enumerate(df.head(top_n).iterrows(), 1):
+        tags = truncate_display(str(row.get("tags", "") or ""), 30)
         rows.append([
             i,
             row["code"],
             row["name"],
             row["ultra_short_score"],
-            row["pct_chg"],
-            row["turnover"],
+            f"{float(row['pct_chg']):.2f}",
+            f"{float(row['turnover']):.2f}",
             row["consecutive_boards"],
-            row["tags"],
+            tags,
         ])
     return format_markdown_table(
         headers,
@@ -242,10 +244,10 @@ def generate_daily_report(
                 p["code"],
                 p["name"],
                 p["quantity"],
-                p["cost_price"],
-                p["current_price"],
+                f"{float(p['cost_price']):.2f}",
+                f"{float(p['current_price']):.2f}",
                 f"{p['profit_pct']:+.2f}",
-                p["weight_pct"],
+                f"{float(p['weight_pct']):.2f}",
             ]
             for p in portfolio_stats["positions"]
         ]
@@ -286,8 +288,26 @@ def generate_daily_report(
     for i, s in enumerate(all_suggestions, 1):
         md_parts.append(f"{i}. {s}\n")
 
+    ai_latest = load_latest_ai_learning()
+    if ai_latest.get("suggestions"):
+        md_parts.append(f"\n## 五、AI 策略学习（第 {ai_latest.get('round', 0)} 轮）\n\n")
+        md_parts.append(
+            f"*引擎: {ai_latest.get('engine', 'statistical')} · "
+            f"样本 {ai_latest.get('sample_count', 0)} 笔 · "
+            f"{ai_latest.get('date', '')}*\n\n"
+        )
+        for i, s in enumerate(ai_latest["suggestions"][:8], 1):
+            md_parts.append(f"{i}. {s}\n")
+        if ai_latest.get("param_changes"):
+            md_parts.append("\n**参数调整:** ")
+            md_parts.append(", ".join(f"{k} {v}" for k, v in ai_latest["param_changes"].items()))
+            md_parts.append("\n")
+        section_num = "六"
+    else:
+        section_num = "五"
+
     md_parts.append(
-        f"\n## 五、超短操作要点\n\n"
+        f"\n## {section_num}、超短操作要点\n\n"
         f"1. **涨停不破开**：10日内有涨停且收盘不破涨停日开盘价，偏强势整理。\n"
         f"2. **连板龙头**：2-3连板 + 高换手优于盲目追首板。\n"
         f"3. **止损纪律**：超短单笔亏损超 -3% 考虑离场。\n"
@@ -307,6 +327,7 @@ def generate_daily_report(
         "trade_stats": stats,
         "portfolio": portfolio_stats,
         "suggestions": all_suggestions,
+        "ai_learning": ai_latest if ai_latest else None,
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -342,9 +363,9 @@ def main() -> None:
         default="report",
         choices=[
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
-            "sim", "sim-backtest", "sim-review", "sim-status", "web",
+            "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn", "web",
         ],
-        help="sim=模拟复盘, sim-backtest=历史回测, sim-review=复盘, sim-status=模拟账户",
+        help="sim=模拟复盘, ai-learn=AI策略学习, sim-review=复盘, sim-status=模拟账户",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -404,6 +425,8 @@ def main() -> None:
             run_sim_backtest(days=args.days)
         elif args.command == "sim-review":
             run_sim_review()
+        elif args.command == "ai-learn":
+            run_ai_learning(show_progress=True, auto_apply=True)
         elif args.command == "sim-status":
             run_sim_status()
         elif args.command == "web":
