@@ -2,6 +2,7 @@
 模拟复盘系统
 - 每个交易日 9:30-9:45 超短选股（最多 3 只）
 - 模拟资金 20 万，自动买卖与持仓管理
+- A 股 T+1：当日买入次日方可卖出
 - 每 5 个交易日自动复盘，优化选票与买卖点参数
 """
 
@@ -40,6 +41,7 @@ class SimConfig:
     min_open_gap_pct: float = 0.5
     buy_premium_pct: float = 0.5  # 9:45 买入相对开盘价溢价估算
     top_prefilter: int = 200
+    t_plus_one: bool = True  # A股 T+1：买入当日不可卖出
 
 
 @dataclass
@@ -175,6 +177,7 @@ class SimReplayEngine:
     def __init__(self, config: Optional[SimConfig] = None):
         self.config = config or SimConfig()
         self.selector = MorningSelector(self.config)
+        self.scanner = UltraShortScanner()
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         self.state = self._load_state()
@@ -209,6 +212,20 @@ class SimReplayEngine:
 
     def _today(self) -> str:
         return datetime.now().strftime("%Y-%m-%d")
+
+    def _norm_date(self, value: Optional[str]) -> str:
+        return str(value or "")[:10]
+
+    def _is_sellable(self, buy_date: str, as_of_date: Optional[str] = None) -> bool:
+        """A股 T+1：买入当日不可卖，次日及以后可卖。"""
+        if not self.config.t_plus_one:
+            return True
+        return self._norm_date(buy_date) < self._norm_date(as_of_date or self._today())
+
+    def _hold_calendar_days(self, buy_date: str, as_of_date: Optional[str] = None) -> int:
+        buy = pd.Timestamp(self._norm_date(buy_date))
+        as_of = pd.Timestamp(self._norm_date(as_of_date or self._today()))
+        return max(int((as_of - buy).days), 0)
 
     def _is_select_window(self) -> bool:
         now = datetime.now().time()
@@ -319,8 +336,27 @@ class SimReplayEngine:
             price = float(q["close"])
             low = float(q.get("low", price))
             high = float(q.get("high", price))
-            buy_date = pd.Timestamp(p["buy_date"])
-            hold_days = (pd.Timestamp(today) - buy_date).days
+            buy_date = self._norm_date(p["buy_date"])
+            hold_days = self._hold_calendar_days(buy_date, today)
+
+            if not self._is_sellable(buy_date, today):
+                remain.append(p)
+                if show_progress:
+                    print(
+                        f"  持有 {p['name']}({code}) T+1锁仓"
+                        f"（{buy_date} 买入，次日可卖）"
+                    )
+                continue
+
+            strength = self.scanner.check_live_strength(code, q)
+            if strength.get("hold_no_sell"):
+                remain.append(p)
+                if show_progress:
+                    print(
+                        f"  持有 {p['name']}({code}) 当日强势封板"
+                        f"（+{strength.get('pct_chg', 0):.1f}%），暂不卖"
+                    )
+                continue
 
             sell_price = None
             reason = ""
@@ -375,7 +411,7 @@ class SimReplayEngine:
         return trade
 
     def run_daily(self, force_select: bool = False, show_progress: bool = True) -> dict:
-        """每日流程：检查卖出 → 早盘选股 → 判断是否复盘。"""
+        """每日流程：可卖持仓检查卖出 → 早盘选股买入 → 判断是否复盘。"""
         if show_progress:
             print("=" * 60)
             print("模拟复盘 - 每日运行")
@@ -491,6 +527,10 @@ class SimReplayEngine:
         suggestions.append(
             "买卖点优化：买入控制在开盘价 +0.5% 附近；卖出优先止损→止盈→到期顺序判定。"
         )
+        if self.config.t_plus_one:
+            suggestions.append(
+                "A股 T+1：当日买入无法当日卖出，止损/止盈自次一交易日生效。"
+            )
         return suggestions
 
     def _auto_tune_params(self, stats: dict) -> dict:
@@ -573,14 +613,18 @@ class SimReplayEngine:
         print(f"持仓市值:   {s['market_value']:,.2f}")
         print(f"总权益:     {s['equity']:,.2f}  ({s['total_return_pct']:+.2f}%)")
         print(f"已平仓:     {s['closed_count']} 笔 | 交易日计数: {s['trading_day_count']}")
-        print(f"参数: 止损{self.config.stop_loss_pct}% 止盈{self.config.take_profit_pct}% "
+        t1 = "开启" if self.config.t_plus_one else "关闭"
+        print(f"参数: T+1={t1} 止损{self.config.stop_loss_pct}% 止盈{self.config.take_profit_pct}% "
               f"最长{self.config.max_hold_days}日 min_score={self.config.min_score}")
         print("-" * 60)
+        today = self._today()
         if s["positions"]:
             for p in s["positions"]:
+                sellable = self._is_sellable(p["buy_date"], today)
+                lock = " T+1锁仓" if not sellable else ""
                 print(
                     f"  {p['name']}({p['code']}) {p['quantity']}股 @{p['buy_price']} "
-                    f"止损{p['stop_loss']} 止盈{p['take_profit']} {p['buy_date']}"
+                    f"止损{p['stop_loss']} 止盈{p['take_profit']} {p['buy_date']}{lock}"
                 )
         else:
             print("  （空仓）")
@@ -608,9 +652,10 @@ class SimReplayEngine:
         self.state = self._default_state()
         self.config = SimConfig()
         self.selector = MorningSelector(self.config)
+        self.scanner = UltraShortScanner()
 
         for day_idx, day in enumerate(trading_days):
-            # 模拟当日卖出
+            # 先卖（仅 T+1 可卖持仓）再买，贴合 A 股日内顺序
             self._backtest_exits(day)
 
             if len(self.state["positions"]) < self.config.max_positions:
@@ -643,7 +688,26 @@ class SimReplayEngine:
             low = float(bar["low"])
             high = float(bar["high"])
             close = float(bar["close"])
-            hold_days = (pd.Timestamp(day) - pd.Timestamp(p["buy_date"])).days
+            bar_pct = float(bar.get("pct_chg", 0) or 0)
+            pre_close = float(bar.get("pre_close", 0) or 0)
+            if pre_close <= 0:
+                prev = hist[hist["date"] < day]
+                if not prev.empty:
+                    pre_close = float(prev.iloc[-1]["close"])
+            buy_date = self._norm_date(p["buy_date"])
+            hold_days = self._hold_calendar_days(buy_date, day)
+
+            if not self._is_sellable(buy_date, day):
+                remain.append(p)
+                continue
+
+            vol_ratio = self.scanner._volume_ratio(hist)
+            strength = self.scanner.check_bar_strength(
+                p["code"], close, high, low, bar_pct, pre_close, vol_ratio
+            )
+            if strength.get("hold_no_sell"):
+                remain.append(p)
+                continue
 
             sell_price = None
             reason = ""

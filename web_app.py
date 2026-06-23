@@ -29,13 +29,27 @@ from trade_journal import TradeJournal
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 REPORT_DIR = OUTPUT_DIR / "daily_reports"
+APP_VERSION = "2.3"
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+
+@app.after_request
+def _no_cache(response):
+    if request.path == "/" or request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def _ultra_short_records(df: pd.DataFrame, top_n: int = 10) -> list[dict]:
     if df is None or df.empty:
         return []
-    cols = ["code", "name", "ultra_short_score", "pct_chg", "turnover", "consecutive_boards", "tags"]
+    cols = [
+        "code", "name", "ultra_short_score", "pct_chg", "turnover",
+        "consecutive_boards", "strength_factor", "is_sealed_board",
+        "is_strong_today", "hold_no_sell", "tags",
+    ]
     available = [c for c in cols if c in df.columns]
     rows = df.head(top_n)[available].copy()
     if "code" in rows.columns:
@@ -74,14 +88,39 @@ def load_latest_report_content() -> dict:
     return {"name": path.name, "content": path.read_text(encoding="utf-8")}
 
 
-def get_suggestions() -> list[str]:
-    suggestions: list[str] = []
+def get_suggestions() -> dict:
     pm = PortfolioManager()
-    if pm.list_positions():
-        suggestions.extend(pm.generate_suggestions())
+    ultra = load_cached_ultra_short(top_n=10)
+
+    portfolio_actions = pm.generate_action_suggestions(ultra_short=ultra)
+    portfolio_summary = pm.generate_suggestions() if pm.list_positions() else []
+
     journal = TradeJournal()
-    suggestions.extend(journal.generate_suggestions(days=30))
-    return suggestions
+    learn = journal.generate_suggestions(days=30)
+
+    all_suggestions: list[str] = []
+    seen: set[str] = set()
+    for s in portfolio_actions + portfolio_summary + learn:
+        if s not in seen:
+            seen.add(s)
+            all_suggestions.append(s)
+
+    return {
+        "portfolio_actions": portfolio_actions,
+        "portfolio_summary": portfolio_summary,
+        "learn": learn,
+        "all": all_suggestions,
+    }
+
+
+def get_trades_data(days: int = 30) -> dict:
+    journal = TradeJournal()
+    df = journal.list_trades(days=days)
+    stats = journal.analyze(days=days)
+    return {
+        "trades": df.to_dict("records") if not df.empty else [],
+        "stats": stats,
+    }
 
 
 def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
@@ -90,6 +129,7 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
     positions = summary.get("positions", [])
     quotes = get_realtime_quotes([p["code"] for p in positions]) if positions else None
     qmap = quotes.set_index("code") if quotes is not None and not quotes.empty else None
+    today = datetime.now().strftime("%Y-%m-%d")
 
     enriched = []
     for p in positions:
@@ -98,6 +138,7 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
         cost_amount = p["buy_price"] * p["quantity"]
         market_value = current * p["quantity"]
         profit_pct = (current - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0.0
+        sellable = engine._is_sellable(p["buy_date"], today)
         enriched.append({
             **p,
             "current_price": round(current, 2),
@@ -105,6 +146,8 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
             "profit_amount": round(market_value - cost_amount, 2),
             "profit_pct": round(profit_pct, 2),
             "weight_pct": round(market_value / equity * 100, 2),
+            "sellable_today": sellable,
+            "t_plus_one_locked": engine.config.t_plus_one and not sellable,
         })
 
     initial = float(engine.state.get("initial_capital", engine.config.capital))
@@ -124,6 +167,7 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
         "positions": enriched,
         "closed_trades": closed[:10],
         "config": {
+            "t_plus_one": engine.config.t_plus_one,
             "stop_loss_pct": engine.config.stop_loss_pct,
             "take_profit_pct": engine.config.take_profit_pct,
             "max_hold_days": engine.config.max_hold_days,
@@ -143,11 +187,14 @@ def get_sim_data() -> dict:
 
 
 def get_dashboard_data() -> dict:
+    sug = get_suggestions()
     return {
         "portfolio": get_portfolio_data(),
         "sim": get_sim_data(),
         "ultra_short": load_cached_ultra_short(),
-        "suggestions": get_suggestions(),
+        "suggestions": sug["all"],
+        "suggestion_groups": sug,
+        "trades": get_trades_data(),
         "report": load_latest_report_meta(),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -165,7 +212,7 @@ def _run_quiet(func, *args, **kwargs) -> tuple[Any, str]:
 
 @app.route("/")
 def index():
-    return render_template("dashboard.html")
+    return render_template("dashboard.html", app_version=APP_VERSION)
 
 
 @app.route("/api/dashboard")
@@ -176,6 +223,107 @@ def api_dashboard():
 @app.route("/api/report/latest")
 def api_report_latest():
     return jsonify(load_latest_report_content())
+
+
+@app.route("/api/trades", methods=["GET"])
+def api_trades_list():
+    days = request.args.get("days", 30, type=int)
+    return jsonify(get_trades_data(days=days))
+
+
+@app.route("/api/trades", methods=["POST"])
+def api_trades_add():
+    data = request.get_json(silent=True) or {}
+    required = ("code", "name", "buy_date", "buy_price", "sell_date", "sell_price")
+    missing = [k for k in required if not str(data.get(k, "")).strip()]
+    if missing:
+        return jsonify({"ok": False, "message": f"缺少字段: {', '.join(missing)}"}), 400
+
+    try:
+        journal = TradeJournal()
+        record = journal.add_trade(
+            code=str(data["code"]).zfill(6),
+            name=str(data["name"]).strip(),
+            buy_date=str(data["buy_date"])[:10],
+            buy_price=float(data["buy_price"]),
+            sell_date=str(data["sell_date"])[:10],
+            sell_price=float(data["sell_price"]),
+            quantity=int(data.get("quantity") or 100),
+            strategy=str(data.get("strategy") or "手动"),
+            note=str(data.get("note") or ""),
+        )
+        message = f"已录入 {record.name} 收益 {record.profit_pct:+.2f}%"
+        sync_portfolio = data.get("sync_portfolio", True)
+        if sync_portfolio not in (False, "false", 0, "0"):
+            pm = PortfolioManager()
+            trade_action = str(data.get("trade_action") or "sell").lower()
+            if trade_action == "buy":
+                ok, sync_msg = pm.apply_buy(
+                    record.code,
+                    record.name,
+                    record.quantity,
+                    record.buy_price,
+                    buy_date=record.buy_date,
+                    strategy=record.strategy,
+                    note=record.note,
+                )
+            else:
+                ok, sync_msg = pm.apply_sell(record.code, record.quantity)
+            message += f"；{sync_msg}"
+
+        return jsonify({
+            "ok": True,
+            "message": message,
+            "trade": record.to_summary(),
+            "data": get_dashboard_data(),
+        })
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "message": f"数据格式错误: {exc}"}), 400
+
+
+@app.route("/api/portfolio/position", methods=["POST"])
+def api_portfolio_upsert():
+    data = request.get_json(silent=True) or {}
+    required = ("code", "name", "quantity", "cost_price")
+    missing = [k for k in required if str(data.get(k, "")).strip() == ""]
+    if missing:
+        return jsonify({"ok": False, "message": f"缺少字段: {', '.join(missing)}"}), 400
+
+    try:
+        pm = PortfolioManager()
+        if data.get("total_capital") not in (None, ""):
+            pm.set_total_capital(float(data["total_capital"]))
+        pm.upsert_position(
+            code=str(data["code"]).zfill(6),
+            name=str(data["name"]).strip(),
+            quantity=int(data["quantity"]),
+            cost_price=float(data["cost_price"]),
+            buy_date=str(data.get("buy_date") or "")[:10],
+            strategy=str(data.get("strategy") or "手动"),
+            note=str(data.get("note") or ""),
+        )
+        stats = pm.analyze()
+        return jsonify({
+            "ok": True,
+            "message": f"已更新持仓 {data['name']}({str(data['code']).zfill(6)})，已同步配置",
+            "portfolio": stats,
+            "data": get_dashboard_data(),
+        })
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "message": f"数据格式错误: {exc}"}), 400
+
+
+@app.route("/api/portfolio/position/<code>", methods=["DELETE"])
+def api_portfolio_remove(code: str):
+    pm = PortfolioManager()
+    code = str(code).zfill(6)
+    if not pm.remove_position(code):
+        return jsonify({"ok": False, "message": f"未找到持仓 {code}"}), 404
+    return jsonify({
+        "ok": True,
+        "message": f"已删除持仓 {code}，已同步配置",
+        "data": get_dashboard_data(),
+    })
 
 
 @app.route("/api/actions/<action>", methods=["POST"])
@@ -199,10 +347,16 @@ def api_action(action: str):
                 min_score=35,
                 days=30,
             )
+            if path is None:
+                return jsonify({
+                    "ok": False,
+                    "message": "日报生成失败，请查看日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
             message = "日报已生成"
             extra["report"] = load_latest_report_meta()
-            if path:
-                extra["report"]["path"] = str(path).replace("\\", "/")
+            extra["report_content"] = load_latest_report_content()
         elif action == "sim":
             engine = SimReplayEngine()
             result, log = _run_quiet(engine.run_daily, force_select=force, show_progress=False)

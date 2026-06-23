@@ -5,19 +5,19 @@
       "code": "603379",
       "name": "三美股份",
       "quantity": 300,
-      "cost_price": 66.5,
-      "buy_date": "",
+      "cost_price": 66.8333,
+      "buy_date": "2026-06-22",
       "strategy": "手动",
       "note": ""
     },
     {
       "code": "002472",
       "name": "双环传动",
-      "quantity": 1200,
+      "quantity": 1600,
       "cost_price": 42.2,
-      "buy_date": "",
+      "buy_date": "2026-06-22",
       "strategy": "手动",
-      "note": "用户称双环科技，代码002472"
+      "note": ""
     },
     {
       "code": "603606",
@@ -25,6 +25,15 @@
       "quantity": 500,
       "cost_price": 41.3,
       "buy_date": "",
+      "strategy": "手动",
+      "note": ""
+    },
+    {
+      "code": "300418",
+      "name": "昆仑万维",
+      "quantity": 400,
+      "cost_price": 44.15,
+      "buy_date": "2026-06-22",
       "strategy": "手动",
       "note": ""
     }

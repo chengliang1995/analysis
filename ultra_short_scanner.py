@@ -55,6 +55,121 @@ class UltraShortScanner:
       return 1.0
     return float(vol.iloc[-1] / avg)
 
+  def _close_near_high(self, close: float, high: float, tolerance: float = 0.002) -> bool:
+    if high <= 0 or close <= 0:
+      return False
+    return close >= high * (1 - tolerance)
+
+  def _is_sealed_limit_up(
+    self,
+    code: str,
+    pct: float,
+    close: float,
+    high: float,
+    pre_close: float = 0,
+  ) -> bool:
+    """封板：涨停且收盘贴近最高价。"""
+    threshold = self._limit_threshold(code)
+    if pct < threshold - 0.25:
+      return False
+    if not self._close_near_high(close, high):
+      return False
+    if pre_close > 0:
+      limit_price = pre_close * (1 + threshold / 100)
+      if close < limit_price * 0.995:
+        return False
+    return True
+
+  def _is_strong_today(
+    self,
+    code: str,
+    pct: float,
+    close: float,
+    high: float,
+    low: float,
+    vol_ratio: float,
+  ) -> bool:
+    """当日强势：涨停/大涨/放量/收盘在日内高位。"""
+    threshold = self._limit_threshold(code)
+    if pct >= threshold - 0.3:
+      return True
+    if pct >= 7:
+      return True
+    if pct >= 5 and vol_ratio >= 1.5:
+      return True
+    if high > low and close > 0:
+      pos_in_range = (close - low) / (high - low)
+      if pos_in_range >= 0.85 and pct >= 4:
+        return True
+    return False
+
+  def _evaluate_strength(
+    self,
+    code: str,
+    pct: float,
+    close: float,
+    high: float,
+    low: float,
+    vol_ratio: float,
+    pre_close: float = 0,
+  ) -> Dict:
+    is_sealed = self._is_sealed_limit_up(code, pct, close, high, pre_close)
+    is_strong = self._is_strong_today(code, pct, close, high, low, vol_ratio)
+
+    strength_factor = 0
+    tags: List[str] = []
+    if is_sealed and is_strong:
+      strength_factor = 25
+      tags.append("强势封板")
+    elif is_sealed:
+      strength_factor = 18
+      tags.append("封板")
+    elif is_strong:
+      strength_factor = 12
+      tags.append("当日强势")
+
+    return {
+      "is_sealed_board": is_sealed,
+      "is_strong_today": is_strong,
+      "strength_factor": strength_factor,
+      "hold_no_sell": is_sealed and is_strong,
+      "strength_tags": tags,
+    }
+
+  def check_live_strength(self, code: str, quote) -> Dict:
+    """根据实时行情判断强势/封板（持仓与模拟盘退出用）。"""
+    if hasattr(quote, "to_dict"):
+      q = quote.to_dict()
+    else:
+      q = dict(quote or {})
+
+    close = float(q.get("close") or q.get("price") or 0)
+    high = float(q.get("high") or close)
+    low = float(q.get("low") or close)
+    pre_close = float(q.get("pre_close") or 0)
+    pct = float(q.get("pct_chg") or q.get("changepercent") or 0)
+    if pct == 0 and pre_close > 0 and close > 0:
+      pct = (close - pre_close) / pre_close * 100
+
+    strength = self._evaluate_strength(code, pct, close, high, low, 1.0, pre_close)
+    strength["pct_chg"] = round(pct, 2)
+    return strength
+
+  def check_bar_strength(
+    self,
+    code: str,
+    close: float,
+    high: float,
+    low: float,
+    pct_chg: float,
+    pre_close: float = 0,
+    vol_ratio: float = 1.0,
+  ) -> Dict:
+    """根据 K 线单日 OHLC 判断强势/封板（回测退出用）。"""
+    strength = self._evaluate_strength(code, pct_chg, close, high, low, vol_ratio, pre_close)
+    strength["pct_chg"] = round(pct_chg, 2)
+    return strength
+
   def _analyze_single(
     self,
     code: str,
@@ -73,6 +188,13 @@ class UltraShortScanner:
     spot_pct = float(spot.get("changepercent", pct_chg)) if spot else pct_chg
     turnover = float(spot.get("turnover", spot.get("turnoverratio", 0)) or 0) if spot else 0
     price = float(spot.get("price", latest["close"]) or latest["close"]) if spot else float(latest["close"])
+    bar_high = float(latest.get("high", price) or price)
+    bar_low = float(latest.get("low", price) or price)
+    high = float(spot.get("high", bar_high) or bar_high) if spot else bar_high
+    low = float(spot.get("low", bar_low) or bar_low) if spot else bar_low
+    pre_close = float(spot.get("pre_close", 0) or 0) if spot else 0
+    if pre_close <= 0 and len(hist) >= 2:
+      pre_close = float(hist["close"].iloc[-2])
 
     consecutive = self._count_consecutive_limit_ups(hist, code)
     vol_ratio = self._volume_ratio(hist)
@@ -136,6 +258,12 @@ class UltraShortScanner:
       score += 8
       tags.append("3日强势")
 
+    strength = self._evaluate_strength(
+      code, spot_pct, price, high, low, vol_ratio, pre_close
+    )
+    score += strength["strength_factor"]
+    tags.extend(strength["strength_tags"])
+
     # 超短入选门槛
     if score < 25:
       return None
@@ -150,6 +278,10 @@ class UltraShortScanner:
       "volume_ratio": round(vol_ratio, 2),
       "gain_3d": round(gain_3d, 2),
       "ultra_short_score": score,
+      "strength_factor": strength["strength_factor"],
+      "is_sealed_board": strength["is_sealed_board"],
+      "is_strong_today": strength["is_strong_today"],
+      "hold_no_sell": strength["hold_no_sell"],
       "tags": ",".join(tags),
       "has_limit_hold": bool(limit_signal),
       "limit_date": str(limit_signal["limit_date"]) if limit_signal else "",
@@ -216,6 +348,9 @@ class UltraShortScanner:
         "changepercent": row.get("_pct", 0),
         "turnover": row.get("_turnover", 0),
         "price": row.get("price", row.get("trade", 0)),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "pre_close": row.get("pre_close"),
       }
       tasks.append((code, name, spot))
 

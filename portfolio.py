@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Union
 import pandas as pd
 
 from stock_data import get_latest_price, get_realtime_quotes
+from ultra_short_scanner import UltraShortScanner
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 PORTFOLIO_CONFIG_FILE = DATA_DIR / "portfolio_config.json"
@@ -104,6 +105,20 @@ class PortfolioManager:
         }
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def save_to_config(self) -> None:
+        """同步写入 portfolio.json 与 portfolio_config.json。"""
+        self.save()
+        config_payload = {
+            "total_capital": int(self._portfolio.total_capital)
+            if self._portfolio.total_capital == int(self._portfolio.total_capital)
+            else self._portfolio.total_capital,
+            "positions": [asdict(p) for p in self._portfolio.positions],
+        }
+        self.config_path.write_text(
+            json.dumps(config_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def apply_config(self, config: Optional[Union[dict, Path]] = None) -> None:
         """从配置文件或字典加载并写入 portfolio.json。"""
         if config is None:
@@ -113,15 +128,15 @@ class PortfolioManager:
         else:
             raw = config
         self._portfolio = portfolio_from_dict(raw)
-        self.save()
+        self.save_to_config()
 
     def set_total_capital(self, amount: float) -> None:
         self._portfolio.total_capital = float(amount)
-        self.save()
+        self.save_to_config()
 
     def set_positions(self, positions: List[Position]) -> None:
         self._portfolio.positions = positions
-        self.save()
+        self.save_to_config()
 
     def upsert_position(
         self,
@@ -145,21 +160,86 @@ class PortfolioManager:
                     strategy=strategy,
                     note=note,
                 )
-                self.save()
+                self.save_to_config()
                 return
         self._portfolio.positions.append(
             Position(code, name, int(quantity), float(cost_price), buy_date, strategy, note)
         )
-        self.save()
+        self.save_to_config()
 
     def remove_position(self, code: str) -> bool:
         code = str(code).zfill(6)
         before = len(self._portfolio.positions)
         self._portfolio.positions = [p for p in self._portfolio.positions if p.code != code]
         if len(self._portfolio.positions) < before:
-            self.save()
+            self.save_to_config()
             return True
         return False
+
+    def apply_sell(self, code: str, quantity: int) -> tuple[bool, str]:
+        """交易卖出后扣减实盘持仓，数量归零则移除。"""
+        code = str(code).zfill(6)
+        quantity = int(quantity)
+        if quantity <= 0:
+            return False, "卖出数量无效"
+
+        for p in self._portfolio.positions:
+            if p.code != code:
+                continue
+            old_qty = p.quantity
+            new_qty = old_qty - quantity
+            if new_qty <= 0:
+                self.remove_position(code)
+                return True, f"实盘已移除 {p.name}({code})（卖出 {quantity} 股）"
+            self.upsert_position(
+                code=p.code,
+                name=p.name,
+                quantity=new_qty,
+                cost_price=p.cost_price,
+                buy_date=p.buy_date,
+                strategy=p.strategy,
+                note=p.note,
+            )
+            return True, f"实盘 {p.name} 数量 {old_qty} → {new_qty}（卖出 {quantity} 股）"
+
+        return False, f"实盘无 {code}，仅记录交易日记"
+
+    def apply_buy(self, code: str, name: str, quantity: int, cost_price: float, **kwargs) -> tuple[bool, str]:
+        """交易买入后增加或合并实盘持仓（加权成本）。"""
+        code = str(code).zfill(6)
+        quantity = int(quantity)
+        cost_price = float(cost_price)
+        if quantity <= 0 or cost_price <= 0:
+            return False, "买入数量或价格无效"
+
+        for p in self._portfolio.positions:
+            if p.code == code:
+                old_qty = p.quantity
+                old_cost = p.cost_price
+                total_cost = old_cost * old_qty + cost_price * quantity
+                new_qty = old_qty + quantity
+                avg_cost = round(total_cost / new_qty, 4)
+                self.upsert_position(
+                    code=code,
+                    name=name or p.name,
+                    quantity=new_qty,
+                    cost_price=avg_cost,
+                    buy_date=kwargs.get("buy_date", p.buy_date),
+                    strategy=kwargs.get("strategy", p.strategy),
+                    note=kwargs.get("note", p.note),
+                )
+                return True, f"实盘 {p.name} 数量 {old_qty} → {new_qty}，成本 {old_cost} → {avg_cost}"
+
+        self.upsert_position(
+            code=code,
+            name=name,
+            quantity=quantity,
+            cost_price=cost_price,
+            buy_date=kwargs.get("buy_date", ""),
+            strategy=kwargs.get("strategy", "手动"),
+            note=kwargs.get("note", ""),
+        )
+        return True, f"实盘已新增 {name}({code}) {quantity} 股 @{cost_price}"
 
     def list_positions(self) -> List[Position]:
         return list(self._portfolio.positions)
@@ -296,6 +376,130 @@ class PortfolioManager:
             )
 
         return suggestions
+
+    def generate_action_suggestions(
+        self,
+        ultra_short: Optional[List[dict]] = None,
+        spot_df: Optional[pd.DataFrame] = None,
+    ) -> List[str]:
+        """基于实盘持仓浮盈/占比/超短榜，给出可执行操作建议。"""
+        stats = self.analyze(spot_df)
+        if not stats.get("has_data"):
+            return ["暂无实盘持仓。请编辑 data/portfolio_config.json 并同步。"]
+
+        ultra_map = {str(u.get("code", "")).zfill(6): u for u in (ultra_short or [])}
+        actions: List[str] = []
+        positions = stats["positions"]
+        scanner = UltraShortScanner()
+        codes = [str(p["code"]).zfill(6) for p in positions]
+        quote_map = get_realtime_quotes(codes) if codes else pd.DataFrame()
+        qindex = quote_map.set_index("code") if not quote_map.empty else pd.DataFrame()
+
+        for p in positions:
+            code = str(p["code"]).zfill(6)
+            name = p["name"]
+            pct = p["profit_pct"]
+            weight = p["weight_pct"]
+            price = p["current_price"]
+
+            hold_no_sell = False
+            if code in qindex.index:
+                strength = scanner.check_live_strength(code, qindex.loc[code])
+                hold_no_sell = bool(strength.get("hold_no_sell"))
+                if hold_no_sell:
+                    actions.append(
+                        f"【{name}({code})】当日强势封板（+{strength.get('pct_chg', 0):.1f}%），"
+                        f"建议继续持有，不做卖出。"
+                    )
+                elif strength.get("is_sealed_board"):
+                    actions.append(
+                        f"【{name}({code})】封板中（+{strength.get('pct_chg', 0):.1f}%），"
+                        f"可持有观望，关注封板质量与次日竞价。"
+                    )
+                elif strength.get("is_strong_today"):
+                    actions.append(
+                        f"【{name}({code})】当日强势（+{strength.get('pct_chg', 0):.1f}%），"
+                        f"可持有观望，不宜追涨杀跌。"
+                    )
+
+            if hold_no_sell:
+                if code in ultra_map:
+                    u = ultra_map[code]
+                    actions.append(
+                        f"【{name}】超短榜评分 {u.get('ultra_short_score', 0)}，"
+                        f"标签：{u.get('tags', '')}。强势封板优先持有。"
+                    )
+                if weight > 35:
+                    actions.append(
+                        f"【{name}】单票占比 {weight:.1f}% 偏高，"
+                        f"封板强势时可暂不减仓，开板后再评估。"
+                    )
+                continue
+
+            if pct <= -8:
+                actions.append(
+                    f"【{name}({code})】浮亏 {pct:.1f}%，现价 {price}。"
+                    f"建议：评估逻辑是否破坏，-8% 附近考虑止损或减半仓。"
+                )
+            elif pct <= -3:
+                actions.append(
+                    f"【{name}({code})】浮亏 {pct:.1f}%，触及超短止损区。"
+                    f"建议：无新催化则减量，勿情绪化补仓。"
+                )
+            elif pct >= 15:
+                actions.append(
+                    f"【{name}({code})】浮盈 {pct:.1f}%。"
+                    f"建议：分批止盈，先落袋 1/3~1/2 锁定利润。"
+                )
+            elif pct >= 8:
+                actions.append(
+                    f"【{name}({code})】浮盈 {pct:.1f}%。"
+                    f"建议：上移止损至成本+3%，或减半仓保护利润。"
+                )
+            elif abs(pct) < 2:
+                actions.append(
+                    f"【{name}({code})】横盘 {pct:+.1f}%。"
+                    f"建议：设定突破/跌破条件，避免无效持仓占资金。"
+                )
+
+            if weight > 35:
+                actions.append(
+                    f"【{name}】单票占比 {weight:.1f}% 偏高，"
+                    f"可考虑反弹时减至 25% 以内分散风险。"
+                )
+
+            if code in ultra_map:
+                u = ultra_map[code]
+                actions.append(
+                    f"【{name}】登上超短榜（评分 {u.get('ultra_short_score', 0)}），"
+                    f"标签：{u.get('tags', '')}。持有者可紧盯换手与封板质量。"
+                )
+
+        total_pnl = stats["total_float_pnl_pct"]
+        invested = stats["invested_pct"]
+        if total_pnl <= -2:
+            actions.insert(
+                0,
+                f"组合浮亏 {total_pnl:.2f}%，仓位 {invested:.0f}%。"
+                f"建议：收缩战线，优先处理浮亏最大且逻辑破位的标的。",
+            )
+        elif total_pnl >= 5:
+            actions.insert(
+                0,
+                f"组合浮盈 {total_pnl:.2f}%。建议：整体上移止损，避免利润大幅回吐。",
+            )
+
+        if invested > 90:
+            actions.append("整体仓位接近满仓，保留现金应对波动或新机会。")
+
+        losers = [p for p in positions if p["profit_pct"] < -3]
+        if len(losers) >= 2:
+            actions.append(
+                f"多只持仓同时走弱（{len(losers)} 只浮亏>3%），"
+                f"建议先处理最弱标的，避免组合拖累。"
+            )
+
+        return actions
 
     def print_summary(self, spot_df: Optional[pd.DataFrame] = None) -> Dict:
         stats = self.analyze(spot_df)
