@@ -632,10 +632,18 @@
     }
 
     async function loadDashboard() {
-      const res = await fetch("/api/dashboard");
-      const data = await parseJsonResponse(res);
-      renderAll(data);
-      return data;
+      const timeEl = document.getElementById("server-time");
+      timeEl.textContent = "加载中…";
+      try {
+        const res = await fetch("/api/dashboard", { signal: AbortSignal.timeout(120000) });
+        const data = await parseJsonResponse(res);
+        renderAll(data);
+        return data;
+      } catch (e) {
+        timeEl.textContent = "加载失败";
+        showToast("仪表盘加载失败: " + e.message, true);
+        throw e;
+      }
     }
 
     async function parseJsonResponse(res) {

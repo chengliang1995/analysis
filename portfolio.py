@@ -390,7 +390,7 @@ class PortfolioManager:
             return ["暂无实盘持仓。请编辑 data/portfolio_config.json 并同步。"]
 
         if midterm_advice is None:
-            midterm_advice = MidtermPortfolioAdvisor().run_full_advice(stats, show_progress=False)
+            midterm_advice = MidtermPortfolioAdvisor().run_quick_advice(stats)
 
         actions: List[str] = []
         actions.extend(midterm_advice.get("review_summaries", [])[:6])

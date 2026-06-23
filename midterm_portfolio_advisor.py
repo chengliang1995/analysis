@@ -385,7 +385,7 @@ class MidtermPortfolioAdvisor:
         self,
         exclude_codes: Optional[List[str]] = None,
         top_n: int = 8,
-        prefilter: int = 400,
+        prefilter: int = 150,
         show_progress: bool = False,
     ) -> pd.DataFrame:
         """中线个股推荐（排除已持仓）。"""
@@ -430,6 +430,26 @@ class MidtermPortfolioAdvisor:
 
         out = pd.DataFrame(results).sort_values("midterm_score", ascending=False).head(top_n)
         return out.reset_index(drop=True)
+
+    def run_quick_advice(self, portfolio_stats: dict) -> dict:
+        """轻量分析：仅持仓复盘 + 优化（不扫全市场推荐）。"""
+        positions = portfolio_stats.get("positions", [])
+        reviews = self.review_holdings(positions)
+        optimization = self.optimize_positions(portfolio_stats, reviews)
+        review_summaries = [r["summary"] for r in reviews if r.get("ok")]
+        opt_suggestions = optimization.get("suggestions", [])
+
+        return {
+            "generated_at": datetime.now().isoformat(),
+            "style": "中线",
+            "quick": True,
+            "reviews": reviews,
+            "optimization": optimization,
+            "recommendations": [],
+            "suggestions": review_summaries + opt_suggestions,
+            "review_summaries": review_summaries,
+            "optimize_suggestions": opt_suggestions,
+        }
 
     def run_full_advice(self, portfolio_stats: dict, show_progress: bool = False) -> dict:
         """完整实盘中线分析：复盘 + 优化 + 推荐。"""
@@ -490,10 +510,16 @@ def load_latest_midterm_advice() -> dict:
         return {}
 
 
-def run_midterm_advice(portfolio_stats: Optional[dict] = None, show_progress: bool = True) -> dict:
+def run_midterm_advice(
+    portfolio_stats: Optional[dict] = None,
+    show_progress: bool = True,
+    full: bool = True,
+) -> dict:
     from portfolio import PortfolioManager
 
     if portfolio_stats is None:
         portfolio_stats = PortfolioManager().analyze()
     advisor = MidtermPortfolioAdvisor()
-    return advisor.run_full_advice(portfolio_stats, show_progress=show_progress)
+    if full:
+        return advisor.run_full_advice(portfolio_stats, show_progress=show_progress)
+    return advisor.run_quick_advice(portfolio_stats)
