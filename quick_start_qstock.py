@@ -5,8 +5,8 @@ qstock 快速启动脚本
 一行命令开始使用
 """
 
-from qstock_selector import QStockSelector
-from qstock_strategy_optimizer import StrategyOptimizer
+from quantpy.qstock_selector import QStockSelector
+from quantpy.qstock_strategy_optimizer import StrategyOptimizer
 import pandas as pd
 import os
 import sys
@@ -257,12 +257,12 @@ def main():
             quick_optimization()
         elif command == 'limitup' or command == 'l' or command == 'limit':
             print("\n涨停策略请使用专用脚本:")
-            print("  python scan_limit_up_stocks.py")
+            print("  python examples/scan_limit_up_stocks.py")
         elif command == 'daily' or command == 'd':
             import subprocess
             subprocess.run([sys.executable, "daily_advisor.py"])
         elif command == 'web' or command == 'w':
-            from web_app import main as run_web
+            from quantpy.web_app import main as run_web
             run_web()
         elif command == 'portfolio' or command == 'p':
             import subprocess
@@ -271,7 +271,7 @@ def main():
             import subprocess
             subprocess.run([sys.executable, "daily_advisor.py", "sim", "--force"])
         elif command == 'record' or command == 'r':
-            from trade_journal import interactive_record
+            from quantpy.trade_journal import interactive_record
             interactive_record()
         else:
             print(f"未知命令: {command}")
@@ -307,15 +307,15 @@ def main():
             elif choice == '5':
                 print("\n运行涨停策略扫描:")
                 import subprocess
-                subprocess.run([sys.executable, "scan_limit_up_stocks.py"])
+                subprocess.run([sys.executable, "examples/scan_limit_up_stocks.py"])
             elif choice == '6':
                 import subprocess
                 subprocess.run([sys.executable, "daily_advisor.py"])
             elif choice == '7':
-                from trade_journal import interactive_record
+                from quantpy.trade_journal import interactive_record
                 interactive_record()
             elif choice == '8':
-                from web_app import main as run_web
+                from quantpy.web_app import main as run_web
                 run_web()
             elif choice == '9':
                 import subprocess

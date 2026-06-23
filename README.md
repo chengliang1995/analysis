@@ -6,26 +6,24 @@
 
 ```
 quantpy-stock-analysis/
-├── stock_data.py                # 统一数据获取（多数据源降级）
-├── qstock_selector.py           # 基本面选股与回测
-├── qstock_strategy_optimizer.py # 技术指标、涨停策略、参数优化
-├── quick_start_qstock.py        # 交互式快速入口
-├── qstock_demo.py               # 完整功能演示
-├── daily_advisor.py             # 每日顾问（超短捕捉 + 学习建议）
-├── web_app.py                   # Web 仪表盘（持仓 + 模拟 + 一键操作）
-├── portfolio.py                 # 个人仓位管理
-├── sim_replay.py                # 模拟复盘（20万/3仓）
-├── report_format.py             # 报告表格对齐
-├── trade_journal.py             # 个人交易日记
-├── ultra_short_scanner.py       # 超短个股扫描
-├── scan_limit_up_stocks.py      # 全市场涨停策略扫描
-├── data/portfolio_config.json    # 个人持仓配置（总资金、股票列表）
-├── data/trades_template.csv     # 交易记录导入模板
-├── scan_limit_up_simple.py      # 指定股票列表快速扫描
+├── daily_advisor.py             # CLI 入口（每日顾问）
+├── web_app.py                   # Web 入口（仪表盘）
+├── quick_start_qstock.py        # 交互式菜单入口
+├── quantpy/                     # 核心代码包
+│   ├── paths.py                 # 统一路径（data / output / templates）
+│   ├── stock_data.py            # 多数据源行情
+│   ├── portfolio.py             # 个人持仓（超短+中线）
+│   ├── sim_replay.py            # 模拟复盘
+│   ├── ultra_short_scanner.py   # 超短扫描
+│   ├── daily_advisor.py         # 日报逻辑
+│   ├── web_app.py               # Flask 应用
+│   └── ...
+├── examples/                    # 演示与涨停扫描示例
 ├── scripts/                     # 定时任务与实验脚本
-├── templates/dashboard.html     # Web 仪表盘页面
+├── templates/dashboard.html     # Web 页面
+├── data/portfolio_config.json   # 持仓配置
 ├── docs/                        # 使用指南
-├── output/                      # 运行结果输出
+├── output/                      # 运行输出
 └── requirements.txt
 ```
 
@@ -47,8 +45,8 @@ python daily_advisor.py scan
 # 录入一笔交易
 python daily_advisor.py record
 
-# 涨停策略扫描（全市场，并发加速）
-python scan_limit_up_stocks.py
+# 涨停策略扫描（示例脚本）
+python examples/scan_limit_up_stocks.py
 
 # 模拟复盘（20万 · 最多3仓 · 9:30-9:45选股 · 每5日复盘）
 python daily_advisor.py sim --force
@@ -68,15 +66,15 @@ powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
 
 | 模块 | 说明 |
 |------|------|
-| `stock_data.py` | 统一获取股票列表与历史 K 线，AKShare → qstock → 东方财富 → baostock 自动降级 |
-| `qstock_selector.py` | PE/PB/市值等多条件选股、持有期回测 |
-| `qstock_strategy_optimizer.py` | MA/RSI/MACD/KDJ 策略、涨停策略、参数优化 |
-| `ultra_short_scanner.py` | 超短评分：涨停、连板、高换手、放量、涨停不破开 |
-| `trade_journal.py` | 记录买卖，统计胜率/持仓习惯，生成个性化建议 |
-| `daily_advisor.py` | 每日报告：超短 TOP + 绩效复盘 + 优化建议 |
-| `sim_replay.py` | 模拟复盘：20万/3仓、9:45选股、止盈止损、每5日自动复盘 |
-| `portfolio.py` | 个人仓位：总资金、持仓、浮盈、仓位建议 |
-| `web_app.py` | 本地 Web 页：双持仓展示、超短TOP、日报、一键操作 |
+| `quantpy.stock_data` | 统一获取股票列表与历史 K 线，AKShare → qstock → 东方财富 → baostock 自动降级 |
+| `quantpy.qstock_selector` | PE/PB/市值等多条件选股、持有期回测 |
+| `quantpy.qstock_strategy_optimizer` | MA/RSI/MACD/KDJ 策略、涨停策略、参数优化 |
+| `quantpy.ultra_short_scanner` | 超短评分：涨停、连板、高换手、放量、涨停不破开 |
+| `quantpy.trade_journal` | 记录买卖，统计胜率/持仓习惯，生成个性化建议 |
+| `quantpy.daily_advisor` | 每日报告：超短 TOP + 绩效复盘 + 优化建议 |
+| `quantpy.sim_replay` | 模拟复盘：20万/3仓、9:45选股、止盈止损、每5日自动复盘 |
+| `quantpy.portfolio` | 个人仓位：超短2万+中线15万、浮盈、仓位建议 |
+| `quantpy.web_app` | 本地 Web 页：双持仓展示、超短TOP、日报、一键操作 |
 
 ## 模拟复盘
 
@@ -93,7 +91,7 @@ powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
 
 ## 个人持仓配置
 
-编辑 `data/portfolio_config.json` 设置总资金与持仓，修改后同步：
+编辑 `data/portfolio_config.json` 设置超短/中线资金与持仓，修改后同步：
 
 ```bash
 python daily_advisor.py portfolio --init
@@ -101,9 +99,11 @@ python daily_advisor.py portfolio --init
 
 ```json
 {
-  "total_capital": 200000,
+  "ultra_short_capital": 20000,
+  "midterm_capital": 150000,
+  "total_capital": 170000,
   "positions": [
-    {"code": "603379", "name": "三美股份", "quantity": 300, "cost_price": 66.5}
+    {"code": "603379", "name": "三美股份", "quantity": 300, "cost_price": 66.5, "strategy": "中线"}
   ]
 }
 ```
@@ -143,8 +143,8 @@ powershell -ExecutionPolicy Bypass -File scripts/remove_scheduled_tasks.ps1
 ## 编程示例
 
 ```python
-from stock_data import get_all_stocks, get_stock_hist
-from qstock_strategy_optimizer import StrategyOptimizer
+from quantpy.stock_data import get_all_stocks, get_stock_hist
+from quantpy.qstock_strategy_optimizer import StrategyOptimizer
 
 optimizer = StrategyOptimizer()
 stocks = get_all_stocks()

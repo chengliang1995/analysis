@@ -19,7 +19,7 @@ powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
 
 | 脚本 | 说明 |
 |------|------|
-| `get_stocks_*.py` | 各数据源实验（已整合到 `stock_data.py`） |
+| `get_stocks_*.py` | 各数据源实验（已整合到 `quantpy/stock_data.py`） |
 | `test_*.py` / `diagnose_qstock.py` | 连通性诊断 |
 | `run_test.bat` | Windows 批量测试 |
 
@@ -29,5 +29,5 @@ powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
 python quick_start_qstock.py
 python web_app.py
 python daily_advisor.py
-python scan_limit_up_stocks.py
+python examples/scan_limit_up_stocks.py
 ```

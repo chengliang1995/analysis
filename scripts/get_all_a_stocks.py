@@ -3,7 +3,7 @@
 使用 qstock 库获取所有A股列表和历史数据
 """
 
-from qstock_strategy_optimizer import StrategyOptimizer
+from quantpy.qstock_strategy_optimizer import StrategyOptimizer
 import pandas as pd
 from datetime import datetime
 import os
@@ -66,7 +66,7 @@ def get_all_stocks_list():
     # 方法2: 备用方法 - 使用qstock的优化器
     print("\n正在尝试使用 qstock 获取股票列表...")
     try:
-        from qstock_strategy_optimizer import StrategyOptimizer
+        from quantpy.qstock_strategy_optimizer import StrategyOptimizer
         optimizer = StrategyOptimizer()
         stock_list = optimizer.get_all_stocks()
         

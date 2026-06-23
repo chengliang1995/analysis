@@ -1,5 +1,7 @@
 {
-  "total_capital": 200000,
+  "ultra_short_capital": 20000,
+  "midterm_capital": 150000,
+  "total_capital": 170000,
   "positions": [
     {
       "code": "603379",
@@ -7,7 +9,7 @@
       "quantity": 300,
       "cost_price": 66.8333,
       "buy_date": "2026-06-22",
-      "strategy": "手动",
+      "strategy": "中线",
       "note": ""
     },
     {
@@ -16,7 +18,16 @@
       "quantity": 1600,
       "cost_price": 42.2,
       "buy_date": "2026-06-22",
-      "strategy": "手动",
+      "strategy": "中线",
+      "note": ""
+    },
+    {
+      "code": "603380",
+      "name": "易德龙",
+      "quantity": 400,
+      "cost_price": 43.25,
+      "buy_date": "",
+      "strategy": "中线",
       "note": ""
     }
   ]
