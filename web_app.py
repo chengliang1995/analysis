@@ -24,13 +24,14 @@ from flask import Flask, jsonify, render_template, request
 from portfolio import PortfolioManager
 from sim_replay import SimReplayEngine
 from ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
+from midterm_portfolio_advisor import load_latest_midterm_advice, run_midterm_advice
 from stock_data import collect_daily_market_close, get_realtime_quotes
 from trade_journal import TradeJournal
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 REPORT_DIR = OUTPUT_DIR / "daily_reports"
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
@@ -92,8 +93,18 @@ def load_latest_report_content() -> dict:
 def get_suggestions() -> dict:
     pm = PortfolioManager()
     ultra = load_cached_ultra_short(top_n=10)
+    portfolio_stats = pm.analyze() if pm.list_positions() else {}
 
-    portfolio_actions = pm.generate_action_suggestions(ultra_short=ultra)
+    midterm = load_latest_midterm_advice()
+    if portfolio_stats.get("has_data") and not midterm.get("reviews"):
+        try:
+            midterm = run_midterm_advice(portfolio_stats, show_progress=False)
+        except Exception:
+            midterm = {}
+
+    portfolio_actions = pm.generate_action_suggestions(
+        ultra_short=ultra, midterm_advice=midterm if midterm else None
+    )
     portfolio_summary = pm.generate_suggestions() if pm.list_positions() else []
 
     journal = TradeJournal()
@@ -109,16 +120,29 @@ def get_suggestions() -> dict:
                 + ", ".join(f"{k} {v}" for k, v in ai_meta["param_changes"].items())
             )
 
+    midterm_review = [r.get("summary", "") for r in midterm.get("reviews", []) if r.get("ok")][:6]
+    midterm_optimize = list(midterm.get("optimize_suggestions", []))[:5]
+    midterm_recommend = [
+        f"【推荐】{r['name']}({r['code']}) 评分{r['midterm_score']} · {r.get('reason', '')}"
+        for r in midterm.get("recommendations", [])[:5]
+    ]
+
     all_suggestions: list[str] = []
     seen: set[str] = set()
-    for s in portfolio_actions + portfolio_summary + learn + ai_learn:
-        if s not in seen:
+    for s in (
+        portfolio_actions + portfolio_summary + midterm_review
+        + midterm_optimize + midterm_recommend + learn + ai_learn
+    ):
+        if s and s not in seen:
             seen.add(s)
             all_suggestions.append(s)
 
     return {
         "portfolio_actions": portfolio_actions,
         "portfolio_summary": portfolio_summary,
+        "midterm_review": midterm_review,
+        "midterm_optimize": midterm_optimize,
+        "midterm_recommend": midterm_recommend,
         "learn": learn,
         "ai_learn": ai_learn,
         "all": all_suggestions,
@@ -192,7 +216,22 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
 
 
 def get_portfolio_data() -> dict:
-    return PortfolioManager().analyze()
+    stats = PortfolioManager().analyze()
+    midterm = load_latest_midterm_advice()
+    if stats.get("has_data") and not midterm.get("reviews"):
+        try:
+            midterm = run_midterm_advice(stats, show_progress=False)
+        except Exception:
+            midterm = {}
+    if stats.get("has_data"):
+        review_map = {r["code"]: r for r in midterm.get("reviews", []) if r.get("ok")}
+        for p in stats.get("positions", []):
+            r = review_map.get(str(p["code"]).zfill(6), {})
+            p["midterm_trend"] = r.get("trend", "")
+            p["midterm_score"] = r.get("midterm_score", "")
+            p["midterm_action"] = r.get("action", "")
+            p["midterm_rsi"] = r.get("rsi", "")
+    return {**stats, "midterm": midterm}
 
 
 def get_sim_data() -> dict:
@@ -392,6 +431,14 @@ def api_action(action: str):
             round_no = result.get("round", 0) if isinstance(result, dict) else 0
             message = f"AI 策略学习完成（第 {round_no} 轮）"
             extra["ai_learning"] = result
+        elif action == "midterm":
+            pm_stats = PortfolioManager().analyze()
+            if not pm_stats.get("has_data"):
+                return jsonify({"ok": False, "message": "暂无实盘持仓"}), 400
+            result, log = _run_quiet(run_midterm_advice, pm_stats, show_progress=False)
+            rec_n = len(result.get("recommendations", [])) if isinstance(result, dict) else 0
+            message = f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只"
+            extra["midterm"] = result
         elif action == "sim-backtest":
             engine = SimReplayEngine()
             result, log = _run_quiet(engine.replay_backtest, days=days, show_progress=False)

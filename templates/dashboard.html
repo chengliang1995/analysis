@@ -176,7 +176,7 @@
       <div>
         <h1>QuantPy 持仓仪表盘</h1>
         <p class="sub" id="server-time">加载中…</p>
-        <p class="sub" style="font-size:0.75rem;color:#64748b">版本 v{{ app_version|default('2.4') }} · AI策略学习</p>
+        <p class="sub" style="font-size:0.75rem;color:#64748b">版本 v{{ app_version|default('2.5') }} · 实盘中线</p>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <button class="secondary" id="btn-report" type="button">查看日报</button>
@@ -188,6 +188,7 @@
       <button type="button" data-action="refresh">刷新行情</button>
       <button type="button" data-action="scan">超短扫描</button>
       <button type="button" data-action="report">生成日报</button>
+      <button type="button" data-action="midterm">中线分析</button>
       <button type="button" data-action="sim" data-force="true">模拟选股</button>
       <button type="button" data-action="sim-review">模拟复盘</button>
       <button type="button" data-action="ai-learn">AI策略学习</button>
@@ -196,9 +197,14 @@
 
     <div class="grid">
       <section class="panel">
-        <div class="panel-head"><h2>个人持仓</h2><span class="badge">实盘记录</span></div>
+        <div class="panel-head"><h2>个人持仓</h2><span class="badge">实盘中线</span></div>
         <div class="stats" id="portfolio-stats"></div>
         <div class="table-wrap" id="portfolio-table"></div>
+        <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+          <h2 style="font-size:0.95rem">中线个股推荐</h2>
+          <span class="badge">未持仓</span>
+        </div>
+        <div class="table-wrap" id="midterm-rec-table"></div>
       </section>
       <section class="panel">
         <div class="panel-head"><h2>模拟持仓</h2><span class="badge">20万 · 最多3仓 · T+1</span></div>
@@ -215,7 +221,7 @@
       <section class="panel" id="panel-suggest">
         <div class="panel-head">
           <h2>优化建议</h2>
-          <span class="badge">实盘 + 学习</span>
+          <span class="badge">中线 + 超短</span>
         </div>
         <div class="form-tabs">
           <button type="button" class="active" data-tab="portfolio">持仓管理</button>
@@ -236,7 +242,7 @@
             <div>
               <label>策略</label>
               <select id="pf-strategy">
-                <option>手动</option><option>超短</option><option>涨停</option><option>趋势</option>
+                <option>中线</option><option>手动</option><option>趋势</option><option>波段</option><option>超短</option><option>涨停</option>
               </select>
             </div>
             <div style="grid-column:1/-1"><label>备注</label><input id="pf-note" placeholder="可选" /></div>
@@ -344,12 +350,26 @@
       ]);
       renderTable(
         document.getElementById("portfolio-table"),
-        ["代码", "名称", "数量", "成本", "现价", "浮盈%", "占比%"],
+        ["代码", "名称", "趋势", "评分", "建议", "浮盈%", "占比%"],
         (p.positions || []).map((x) => [
-          x.code, x.name, x.quantity, x.cost_price, x.current_price,
+          x.code, x.name,
+          x.midterm_trend || "—",
+          x.midterm_score || "—",
+          x.midterm_action || "—",
           fmtPct(x.profit_pct), `${x.weight_pct}%`,
         ]),
         "暂无个人持仓。请编辑 data/portfolio_config.json 后运行 portfolio --init"
+      );
+      const rec = (p.midterm && p.midterm.recommendations) || [];
+      renderTable(
+        document.getElementById("midterm-rec-table"),
+        ["代码", "名称", "评分", "涨幅%", "RSI", "理由"],
+        rec.map((x) => [
+          x.code, x.name, x.midterm_score,
+          fmtPct(x.pct_chg), x.rsi || "—",
+          `<span class="tag-list" title="${x.reason || ""}">${x.reason || ""}</span>`,
+        ]),
+        "点击「中线分析」生成推荐"
       );
     }
 
@@ -408,7 +428,10 @@
       const groups = data.suggestion_groups || {};
       const el = document.getElementById("suggest-groups");
       el.innerHTML =
-        renderSuggestionGroup("实盘操作建议", groups.portfolio_actions, "暂无持仓或待刷新行情") +
+        renderSuggestionGroup("个股复盘", groups.midterm_review, "点击「中线分析」") +
+        renderSuggestionGroup("持仓优化", groups.midterm_optimize, "—") +
+        renderSuggestionGroup("中线推荐", groups.midterm_recommend, "暂无推荐标的") +
+        renderSuggestionGroup("实盘操作", groups.portfolio_actions, "暂无持仓或待刷新行情") +
         renderSuggestionGroup("仓位分析", groups.portfolio_summary, "—") +
         renderSuggestionGroup("历史学习", groups.learn, "录入交易后可获得个性化学习建议") +
         renderSuggestionGroup("AI 策略学习", groups.ai_learn, "每5交易日自动学习，或点击「AI策略学习」");

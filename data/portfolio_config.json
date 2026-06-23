@@ -18,24 +18,6 @@
       "buy_date": "2026-06-22",
       "strategy": "手动",
       "note": ""
-    },
-    {
-      "code": "603606",
-      "name": "东方电缆",
-      "quantity": 500,
-      "cost_price": 41.3,
-      "buy_date": "",
-      "strategy": "手动",
-      "note": ""
-    },
-    {
-      "code": "300418",
-      "name": "昆仑万维",
-      "quantity": 400,
-      "cost_price": 44.15,
-      "buy_date": "2026-06-22",
-      "strategy": "手动",
-      "note": ""
     }
   ]
 }

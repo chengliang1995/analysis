@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Union
 import pandas as pd
 
 from stock_data import get_latest_price, get_realtime_quotes
+from midterm_portfolio_advisor import MidtermPortfolioAdvisor
 from ultra_short_scanner import UltraShortScanner
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -381,14 +382,21 @@ class PortfolioManager:
         self,
         ultra_short: Optional[List[dict]] = None,
         spot_df: Optional[pd.DataFrame] = None,
+        midterm_advice: Optional[dict] = None,
     ) -> List[str]:
-        """基于实盘持仓浮盈/占比/超短榜，给出可执行操作建议。"""
+        """实盘中线为主：个股复盘 + 持仓优化；超短逻辑仅用于超短策略持仓。"""
         stats = self.analyze(spot_df)
         if not stats.get("has_data"):
             return ["暂无实盘持仓。请编辑 data/portfolio_config.json 并同步。"]
 
-        ultra_map = {str(u.get("code", "")).zfill(6): u for u in (ultra_short or [])}
+        if midterm_advice is None:
+            midterm_advice = MidtermPortfolioAdvisor().run_full_advice(stats, show_progress=False)
+
         actions: List[str] = []
+        actions.extend(midterm_advice.get("review_summaries", [])[:6])
+        actions.extend(midterm_advice.get("optimize_suggestions", []))
+
+        ultra_map = {str(u.get("code", "")).zfill(6): u for u in (ultra_short or [])}
         positions = stats["positions"]
         scanner = UltraShortScanner()
         codes = [str(p["code"]).zfill(6) for p in positions]
@@ -397,83 +405,33 @@ class PortfolioManager:
 
         for p in positions:
             code = str(p["code"]).zfill(6)
-            name = p["name"]
-            pct = p["profit_pct"]
-            weight = p["weight_pct"]
-            price = p["current_price"]
-
-            hold_no_sell = False
-            if code in qindex.index:
-                strength = scanner.check_live_strength(code, qindex.loc[code])
-                hold_no_sell = bool(strength.get("hold_no_sell"))
-                if hold_no_sell:
-                    actions.append(
-                        f"【{name}({code})】当日强势封板（+{strength.get('pct_chg', 0):.1f}%），"
-                        f"建议继续持有，不做卖出。"
-                    )
-                elif strength.get("is_sealed_board"):
-                    actions.append(
-                        f"【{name}({code})】封板中（+{strength.get('pct_chg', 0):.1f}%），"
-                        f"可持有观望，关注封板质量与次日竞价。"
-                    )
-                elif strength.get("is_strong_today"):
-                    actions.append(
-                        f"【{name}({code})】当日强势（+{strength.get('pct_chg', 0):.1f}%），"
-                        f"可持有观望，不宜追涨杀跌。"
-                    )
-
-            if hold_no_sell:
-                if code in ultra_map:
-                    u = ultra_map[code]
-                    actions.append(
-                        f"【{name}】超短榜评分 {u.get('ultra_short_score', 0)}，"
-                        f"标签：{u.get('tags', '')}。强势封板优先持有。"
-                    )
-                if weight > 35:
-                    actions.append(
-                        f"【{name}】单票占比 {weight:.1f}% 偏高，"
-                        f"封板强势时可暂不减仓，开板后再评估。"
-                    )
+            strategy = str(p.get("strategy", "手动"))
+            if strategy not in ("超短", "涨停"):
                 continue
-
-            if pct <= -8:
+            name = p["name"]
+            weight = p["weight_pct"]
+            if code not in qindex.index:
+                continue
+            strength = scanner.check_live_strength(code, qindex.loc[code])
+            if strength.get("hold_no_sell"):
                 actions.append(
-                    f"【{name}({code})】浮亏 {pct:.1f}%，现价 {price}。"
-                    f"建议：评估逻辑是否破坏，-8% 附近考虑止损或减半仓。"
+                    f"【超短仓·{name}】强势封板，超短策略可继续持有；"
+                    f"若按中线管理请切换策略标签。"
                 )
-            elif pct <= -3:
-                actions.append(
-                    f"【{name}({code})】浮亏 {pct:.1f}%，触及超短止损区。"
-                    f"建议：无新催化则减量，勿情绪化补仓。"
-                )
-            elif pct >= 15:
-                actions.append(
-                    f"【{name}({code})】浮盈 {pct:.1f}%。"
-                    f"建议：分批止盈，先落袋 1/3~1/2 锁定利润。"
-                )
-            elif pct >= 8:
-                actions.append(
-                    f"【{name}({code})】浮盈 {pct:.1f}%。"
-                    f"建议：上移止损至成本+3%，或减半仓保护利润。"
-                )
-            elif abs(pct) < 2:
-                actions.append(
-                    f"【{name}({code})】横盘 {pct:+.1f}%。"
-                    f"建议：设定突破/跌破条件，避免无效持仓占资金。"
-                )
-
-            if weight > 35:
-                actions.append(
-                    f"【{name}】单票占比 {weight:.1f}% 偏高，"
-                    f"可考虑反弹时减至 25% 以内分散风险。"
-                )
-
-            if code in ultra_map:
+            elif code in ultra_map:
                 u = ultra_map[code]
                 actions.append(
-                    f"【{name}】登上超短榜（评分 {u.get('ultra_short_score', 0)}），"
-                    f"标签：{u.get('tags', '')}。持有者可紧盯换手与封板质量。"
+                    f"【超短仓·{name}】超短榜评分 {u.get('ultra_short_score', 0)}，"
+                    f"标签：{u.get('tags', '')}。"
                 )
+            if weight > 35:
+                actions.append(f"【超短仓·{name}】单票占比 {weight:.1f}% 偏高。")
+
+        for r in midterm_advice.get("recommendations", [])[:5]:
+            actions.append(
+                f"【中线推荐】{r['name']}({r['code']}) 评分{r['midterm_score']} "
+                f"· {r.get('reason', '')}"
+            )
 
         total_pnl = stats["total_float_pnl_pct"]
         invested = stats["invested_pct"]
@@ -481,22 +439,12 @@ class PortfolioManager:
             actions.insert(
                 0,
                 f"组合浮亏 {total_pnl:.2f}%，仓位 {invested:.0f}%。"
-                f"建议：收缩战线，优先处理浮亏最大且逻辑破位的标的。",
+                f"中线建议：先处理趋势破位标的，保留现金等待更好买点。",
             )
         elif total_pnl >= 5:
             actions.insert(
                 0,
-                f"组合浮盈 {total_pnl:.2f}%。建议：整体上移止损，避免利润大幅回吐。",
-            )
-
-        if invested > 90:
-            actions.append("整体仓位接近满仓，保留现金应对波动或新机会。")
-
-        losers = [p for p in positions if p["profit_pct"] < -3]
-        if len(losers) >= 2:
-            actions.append(
-                f"多只持仓同时走弱（{len(losers)} 只浮亏>3%），"
-                f"建议先处理最弱标的，避免组合拖累。"
+                f"组合浮盈 {total_pnl:.2f}%。中线建议：强势仓持有，弱势仓逢高换仓。",
             )
 
         return actions

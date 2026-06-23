@@ -22,6 +22,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -36,6 +37,7 @@ from sim_replay import (
 )
 from report_format import format_markdown_table, truncate_display
 from ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
+from midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
 from ultra_short_scanner import UltraShortScanner
 
 OUTPUT_DIR = Path("output")
@@ -103,12 +105,19 @@ def _cross_reference_suggestions(journal: TradeJournal, ultra_df: pd.DataFrame) 
     return extra
 
 
-def _portfolio_holdings_suggestions(pm: PortfolioManager, ultra_df: pd.DataFrame) -> list[str]:
-    """持仓与超短机会的交叉建议。"""
+def _portfolio_holdings_suggestions(
+    pm: PortfolioManager,
+    ultra_df: pd.DataFrame,
+    midterm: Optional[dict] = None,
+) -> list[str]:
+    """持仓与超短机会的交叉建议（实盘中线为主）。"""
     extra: list[str] = []
     stats = pm.analyze()
     if not stats.get("has_data"):
         return extra
+
+    if midterm:
+        extra.extend(midterm.get("optimize_suggestions", [])[:3])
 
     held_codes = {str(p["code"]) for p in stats["positions"]}
     if not ultra_df.empty:
@@ -117,7 +126,7 @@ def _portfolio_holdings_suggestions(pm: PortfolioManager, ultra_df: pd.DataFrame
         for _, row in held_hot.iterrows():
             extra.append(
                 f"持仓 {row['name']}({row['code']}) 登上超短榜（评分 {row['ultra_short_score']}），"
-                f"标签：{row['tags']}。可结合浮盈情况决定是否持有或止盈。"
+                f"属短线异动；中线持仓可观望不必追涨。"
             )
 
     extra.extend(pm.generate_suggestions())
@@ -200,7 +209,20 @@ def generate_daily_report(
         _sync_portfolio_from_config()
         pm = PortfolioManager()
     portfolio_stats = pm.print_summary()
-    portfolio_suggestions = _portfolio_holdings_suggestions(pm, ultra_df)
+    print("\n" + "=" * 60)
+    print("实盘中线分析（复盘 / 优化 / 推荐）")
+    print("=" * 60)
+    midterm = run_midterm_advice(portfolio_stats, show_progress=True)
+    for i, s in enumerate(midterm.get("review_summaries", []), 1):
+        print(f"  复盘 {i}. {s}")
+    for i, s in enumerate(midterm.get("optimize_suggestions", []), 1):
+        print(f"  优化 {i}. {s}")
+
+    ultra_records = ultra_df.head(10).to_dict("records") if not ultra_df.empty else []
+    portfolio_actions = pm.generate_action_suggestions(
+        ultra_short=ultra_records, midterm_advice=midterm
+    )
+    portfolio_suggestions = _portfolio_holdings_suggestions(pm, ultra_df, midterm)
 
     # 3. 学习分析
     print("\n" + "=" * 60)
@@ -209,7 +231,7 @@ def generate_daily_report(
     journal = TradeJournal()
     stats, suggestions = run_learning_report(days=days)
     cross = _cross_reference_suggestions(journal, ultra_df)
-    all_suggestions = portfolio_suggestions + suggestions + cross
+    all_suggestions = portfolio_actions + portfolio_suggestions + suggestions + cross
 
     if stats.get("has_data"):
         print(f"\n近{days}日交易 {stats['trade_count']} 笔 | "
@@ -258,7 +280,61 @@ def generate_daily_report(
                 aligns=["left", "left", "right", "right", "right", "right", "right"],
             )
         )
-    md_parts.append(f"\n## 三、个人绩效（近{days}日）\n")
+
+    if midterm.get("reviews"):
+        md_parts.append(f"\n## 三、实盘中线个股复盘\n\n")
+        review_rows = []
+        for r in midterm["reviews"]:
+            if not r.get("ok"):
+                continue
+            review_rows.append([
+                r["code"],
+                r["name"],
+                r["trend"],
+                r["midterm_score"],
+                f"{r.get('profit_pct', 0):+.2f}",
+                r["rsi"],
+                r["action"],
+                truncate_display(r.get("tags", ""), 20),
+            ])
+        if review_rows:
+            md_parts.append(
+                format_markdown_table(
+                    ["代码", "名称", "趋势", "评分", "浮盈%", "RSI", "建议", "标签"],
+                    review_rows,
+                    aligns=["left", "left", "left", "right", "right", "right", "left", "left"],
+                )
+            )
+        for s in midterm.get("review_summaries", []):
+            md_parts.append(f"- {s}\n")
+
+    if midterm.get("optimize_suggestions"):
+        md_parts.append(f"\n### 持仓优化\n\n")
+        for i, s in enumerate(midterm["optimize_suggestions"], 1):
+            md_parts.append(f"{i}. {s}\n")
+
+    if midterm.get("recommendations"):
+        md_parts.append(f"\n## 四、中线个股推荐\n\n")
+        rec_rows = [
+            [
+                r["code"],
+                r["name"],
+                r["midterm_score"],
+                f"{r.get('pct_chg', 0):.2f}",
+                r.get("rsi", ""),
+                truncate_display(r.get("reason", ""), 28),
+            ]
+            for r in midterm["recommendations"][:8]
+        ]
+        md_parts.append(
+            format_markdown_table(
+                ["代码", "名称", "评分", "涨幅%", "RSI", "推荐理由"],
+                rec_rows,
+                aligns=["left", "left", "right", "right", "right", "left"],
+            )
+        )
+
+    md_parts.append(f"\n## 五、个人绩效（近{days}日）\n")
 
     if stats.get("has_data"):
         md_parts.append(
@@ -284,13 +360,14 @@ def generate_daily_report(
     else:
         md_parts.append("暂无交易记录。运行 `python daily_advisor.py record` 录入。\n")
 
-    md_parts.append(f"\n## 四、优化建议\n\n")
+    md_parts.append(f"\n## 六、优化建议\n\n")
     for i, s in enumerate(all_suggestions, 1):
         md_parts.append(f"{i}. {s}\n")
 
     ai_latest = load_latest_ai_learning()
+    section_tail = "七"
     if ai_latest.get("suggestions"):
-        md_parts.append(f"\n## 五、AI 策略学习（第 {ai_latest.get('round', 0)} 轮）\n\n")
+        md_parts.append(f"\n## 七、AI 策略学习（第 {ai_latest.get('round', 0)} 轮）\n\n")
         md_parts.append(
             f"*引擎: {ai_latest.get('engine', 'statistical')} · "
             f"样本 {ai_latest.get('sample_count', 0)} 笔 · "
@@ -302,16 +379,14 @@ def generate_daily_report(
             md_parts.append("\n**参数调整:** ")
             md_parts.append(", ".join(f"{k} {v}" for k, v in ai_latest["param_changes"].items()))
             md_parts.append("\n")
-        section_num = "六"
-    else:
-        section_num = "五"
+        section_tail = "八"
 
     md_parts.append(
-        f"\n## {section_num}、超短操作要点\n\n"
-        f"1. **涨停不破开**：10日内有涨停且收盘不破涨停日开盘价，偏强势整理。\n"
-        f"2. **连板龙头**：2-3连板 + 高换手优于盲目追首板。\n"
-        f"3. **止损纪律**：超短单笔亏损超 -3% 考虑离场。\n"
-        f"4. **仓位控制**：单票不超过总仓位 20%，分散风险。\n"
+        f"\n## {section_tail}、操作要点\n\n"
+        f"1. **实盘中线**：沿 MA20 持有，跌破减仓；单票≤30%，保留 15%-25% 现金。\n"
+        f"2. **涨停不破开**：10日内有涨停且收盘不破涨停日开盘价，偏强势整理。\n"
+        f"3. **超短模拟**：连板龙头 + 高换手；单笔 -3% 止损，与实盘中线分开管理。\n"
+        f"4. **仓位控制**：实盘以 3-6 只中线标的为主，分散行业与风格风险。\n"
         f"\n---\n*仅供参考，不构成投资建议。*\n"
     )
 
@@ -327,6 +402,11 @@ def generate_daily_report(
         "trade_stats": stats,
         "portfolio": portfolio_stats,
         "suggestions": all_suggestions,
+        "midterm": {
+            "reviews": midterm.get("reviews", []),
+            "recommendations": midterm.get("recommendations", []),
+            "optimize_suggestions": midterm.get("optimize_suggestions", []),
+        },
         "ai_learning": ai_latest if ai_latest else None,
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -363,9 +443,9 @@ def main() -> None:
         default="report",
         choices=[
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
-            "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn", "web",
+            "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn", "midterm", "web",
         ],
-        help="sim=模拟复盘, ai-learn=AI策略学习, sim-review=复盘, sim-status=模拟账户",
+        help="sim=模拟复盘, midterm=实盘中线分析, ai-learn=AI策略学习",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -427,6 +507,10 @@ def main() -> None:
             run_sim_review()
         elif args.command == "ai-learn":
             run_ai_learning(show_progress=True, auto_apply=True)
+        elif args.command == "midterm":
+            stats = show_portfolio(init=args.init)
+            if stats.get("has_data"):
+                run_midterm_advice(stats, show_progress=True)
         elif args.command == "sim-status":
             run_sim_status()
         elif args.command == "web":
