@@ -309,49 +309,75 @@ def api_trades_list():
 @app.route("/api/trades", methods=["POST"])
 def api_trades_add():
     data = request.get_json(silent=True) or {}
-    required = ("code", "name", "buy_date", "buy_price", "sell_date", "sell_price")
+    required = ("code", "name", "buy_date", "buy_price")
     missing = [k for k in required if not str(data.get(k, "")).strip()]
     if missing:
         return jsonify({"ok": False, "message": f"缺少字段: {', '.join(missing)}"}), 400
 
     try:
-        journal = TradeJournal()
-        record = journal.add_trade(
-            code=str(data["code"]).zfill(6),
-            name=str(data["name"]).strip(),
-            buy_date=str(data["buy_date"])[:10],
-            buy_price=float(data["buy_price"]),
-            sell_date=str(data["sell_date"])[:10],
-            sell_price=float(data["sell_price"]),
-            quantity=int(data.get("quantity") or 100),
-            strategy=str(data.get("strategy") or "手动"),
-            note=str(data.get("note") or ""),
-        )
-        message = f"已录入 {record.name} 收益 {record.profit_pct:+.2f}%"
-        sync_portfolio = data.get("sync_portfolio", True)
-        if sync_portfolio not in (False, "false", 0, "0"):
+        code = str(data["code"]).zfill(6)
+        name = str(data["name"]).strip()
+        buy_date = str(data["buy_date"])[:10]
+        buy_price = float(data["buy_price"])
+        quantity = int(data.get("quantity") or 100)
+        strategy = str(data.get("strategy") or "手动")
+        note = str(data.get("note") or "")
+        sync_portfolio = data.get("sync_portfolio", True) not in (False, "false", 0, "0")
+        trade_action = str(data.get("trade_action") or "sell").lower()
+
+        sell_price_raw = str(data.get("sell_price", "")).strip()
+        sell_date_raw = str(data.get("sell_date", "")).strip()
+        has_sell = bool(sell_price_raw)
+
+        if trade_action == "sell" and not has_sell:
+            return jsonify({"ok": False, "message": "卖出扣减持仓时需填写卖出价"}), 400
+        if has_sell and not sell_date_raw:
+            return jsonify({"ok": False, "message": "填写卖出价时需同时填写卖出日期"}), 400
+
+        record = None
+        message = ""
+
+        if has_sell:
+            journal = TradeJournal()
+            record = journal.add_trade(
+                code=code,
+                name=name,
+                buy_date=buy_date,
+                buy_price=buy_price,
+                sell_date=sell_date_raw[:10],
+                sell_price=float(sell_price_raw),
+                quantity=quantity,
+                strategy=strategy,
+                note=note,
+            )
+            message = f"已录入 {record.name} 收益 {record.profit_pct:+.2f}%"
+        elif trade_action == "buy":
+            message = f"已记录买入 {name}({code})，未写入交易日记（未平仓）"
+        else:
+            return jsonify({
+                "ok": False,
+                "message": "请填写卖出价，或选择「买入增加持仓」仅同步实盘",
+            }), 400
+
+        if sync_portfolio:
             pm = PortfolioManager()
-            trade_action = str(data.get("trade_action") or "sell").lower()
             if trade_action == "buy":
                 ok, sync_msg = pm.apply_buy(
-                    record.code,
-                    record.name,
-                    record.quantity,
-                    record.buy_price,
-                    buy_date=record.buy_date,
-                    strategy=record.strategy,
-                    note=record.note,
+                    code, name, quantity, buy_price,
+                    buy_date=buy_date, strategy=strategy, note=note,
                 )
             else:
-                ok, sync_msg = pm.apply_sell(record.code, record.quantity)
+                ok, sync_msg = pm.apply_sell(code, quantity)
             message += f"；{sync_msg}"
 
-        return jsonify({
+        payload = {
             "ok": True,
             "message": message,
-            "trade": record.to_summary(),
             "data": get_dashboard_data(),
-        })
+        }
+        if record is not None:
+            payload["trade"] = record.to_summary()
+        return jsonify(payload)
     except (TypeError, ValueError) as exc:
         return jsonify({"ok": False, "message": f"数据格式错误: {exc}"}), 400
 
