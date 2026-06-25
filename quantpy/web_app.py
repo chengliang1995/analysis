@@ -31,7 +31,12 @@ from quantpy.midterm_portfolio_advisor import (
     load_latest_midterm_advice,
     run_midterm_advice,
 )
+from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import collect_daily_market_close, get_realtime_quotes, get_stock_recent_bars, is_etf_code, price_step_for_code
+from quantpy.real_portfolio_reviewer import (
+    load_latest_real_review,
+    run_real_portfolio_review,
+)
 from quantpy.trade_journal import TradeJournal
 
 BASE_DIR = PROJECT_ROOT
@@ -106,16 +111,32 @@ def _resolve_midterm(portfolio_stats: dict) -> dict:
         return {}
 
 
-def _enrich_portfolio_with_midterm(portfolio_stats: dict, midterm: dict) -> dict:
+def _enrich_portfolio_with_midterm(
+    portfolio_stats: dict,
+    midterm: dict,
+    level_alerts: Optional[dict] = None,
+) -> dict:
     stats = dict(portfolio_stats)
     positions = list(stats.get("positions", []))
     review_map = {r["code"]: r for r in midterm.get("reviews", []) if r.get("ok")}
+    alert_map = {
+        str(a["code"]).zfill(6): a
+        for a in (level_alerts or {}).get("alerts", [])
+    }
     for p in positions:
-        r = review_map.get(str(p["code"]).zfill(6), {})
+        code = str(p["code"]).zfill(6)
+        r = review_map.get(code, {})
         p["midterm_trend"] = r.get("trend", "")
         p["midterm_score"] = r.get("midterm_score", "")
         p["midterm_action"] = r.get("action", "")
         p["midterm_rsi"] = r.get("rsi", "")
+        p["midterm_support"] = r.get("support", "")
+        p["midterm_resistance"] = r.get("resistance", "")
+        alert = alert_map.get(code)
+        if alert:
+            p["level_alert"] = alert
+            p["level_alert_label"] = alert.get("alert_label", "")
+            p["level_alert_signal"] = alert.get("signal_label", "")
     stats["positions"] = positions
     stats["midterm"] = midterm
     return stats
@@ -124,6 +145,7 @@ def _enrich_portfolio_with_midterm(portfolio_stats: dict, midterm: dict) -> dict
 def get_suggestions(
     portfolio_stats: Optional[dict] = None,
     midterm: Optional[dict] = None,
+    level_alerts: Optional[dict] = None,
 ) -> dict:
     pm = PortfolioManager()
     ultra = load_cached_ultra_short(top_n=10)
@@ -158,11 +180,21 @@ def get_suggestions(
         for r in midterm.get("recommendations", [])[:5]
     ]
 
+    real_review = load_latest_real_review()
+    real_review_suggestions = list(real_review.get("optimization_suggestions", []))[:8]
+
+    if level_alerts is None:
+        level_alerts = scan_midterm_level_alerts(
+            portfolio_stats,
+            midterm.get("reviews") if midterm else None,
+        )
+    level_alert_msgs = list(level_alerts.get("messages", []))[:10]
+
     all_suggestions: list[str] = []
     seen: set[str] = set()
     for s in (
-        portfolio_actions + portfolio_summary + midterm_review
-        + midterm_optimize + midterm_recommend + learn + ai_learn
+        level_alert_msgs + portfolio_actions + portfolio_summary + midterm_review
+        + midterm_optimize + midterm_recommend + real_review_suggestions + learn + ai_learn
     ):
         if s and s not in seen:
             seen.add(s)
@@ -174,6 +206,8 @@ def get_suggestions(
         "midterm_review": midterm_review,
         "midterm_optimize": midterm_optimize,
         "midterm_recommend": midterm_recommend,
+        "real_review": real_review_suggestions,
+        "level_alerts": level_alert_msgs,
         "learn": learn,
         "ai_learn": ai_learn,
         "all": all_suggestions,
@@ -246,12 +280,21 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
     }
 
 
-def get_portfolio_data(portfolio_stats: Optional[dict] = None, midterm: Optional[dict] = None) -> dict:
+def get_portfolio_data(
+    portfolio_stats: Optional[dict] = None,
+    midterm: Optional[dict] = None,
+    level_alerts: Optional[dict] = None,
+) -> dict:
     if portfolio_stats is None:
         portfolio_stats = PortfolioManager().analyze()
     if midterm is None:
         midterm = _resolve_midterm(portfolio_stats)
-    return _enrich_portfolio_with_midterm(portfolio_stats, midterm)
+    if level_alerts is None:
+        level_alerts = scan_midterm_level_alerts(
+            portfolio_stats,
+            midterm.get("reviews") if midterm else None,
+        )
+    return _enrich_portfolio_with_midterm(portfolio_stats, midterm, level_alerts)
 
 
 def get_sim_data() -> dict:
@@ -261,14 +304,34 @@ def get_sim_data() -> dict:
 def get_dashboard_data() -> dict:
     portfolio_stats = PortfolioManager().analyze()
     midterm = _resolve_midterm(portfolio_stats)
-    sug = get_suggestions(portfolio_stats=portfolio_stats, midterm=midterm)
+    level_alerts = scan_midterm_level_alerts(
+        portfolio_stats,
+        midterm.get("reviews") if midterm else None,
+    )
+    sug = get_suggestions(
+        portfolio_stats=portfolio_stats,
+        midterm=midterm,
+        level_alerts=level_alerts,
+    )
+    review = load_latest_real_review()
     return {
-        "portfolio": get_portfolio_data(portfolio_stats=portfolio_stats, midterm=midterm),
+        "portfolio": get_portfolio_data(
+            portfolio_stats=portfolio_stats,
+            midterm=midterm,
+            level_alerts=level_alerts,
+        ),
         "sim": get_sim_data(),
         "ultra_short": load_cached_ultra_short(),
         "suggestions": sug["all"],
         "suggestion_groups": sug,
         "trades": get_trades_data(),
+        "portfolio_review": {
+            "has_data": bool(review.get("has_data")),
+            "summary": review.get("summary", {}),
+            "trade_reviews": review.get("trade_reviews", [])[:15],
+            "generated_at": review.get("generated_at", ""),
+        },
+        "level_alerts": level_alerts,
         "report": load_latest_report_meta(),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -355,6 +418,35 @@ def api_stock_history(code: str):
     )
 
 
+@app.route("/api/portfolio/level-alerts")
+def api_portfolio_level_alerts():
+    refresh = request.args.get("refresh", "false").lower() == "true"
+    portfolio_stats = PortfolioManager().analyze()
+    if refresh:
+        midterm = MidtermPortfolioAdvisor().run_quick_advice(portfolio_stats)
+    else:
+        midterm = _resolve_midterm(portfolio_stats)
+    result = scan_midterm_level_alerts(
+        portfolio_stats,
+        midterm.get("reviews") if midterm else None,
+        save=refresh,
+    )
+    return jsonify(result)
+
+
+@app.route("/api/portfolio/review")
+def api_portfolio_review():
+    days = request.args.get("days", 90, type=int)
+    refresh = request.args.get("refresh", "false").lower() == "true"
+    if refresh:
+        result = run_real_portfolio_review(days=days, show_progress=False)
+    else:
+        result = load_latest_real_review()
+        if not result:
+            result = run_real_portfolio_review(days=days, show_progress=False)
+    return jsonify(result)
+
+
 @app.route("/api/report/latest")
 def api_report_latest():
     return jsonify(load_latest_report_content())
@@ -391,6 +483,8 @@ def api_trades_add():
 
         if trade_action == "sell" and not has_sell:
             return jsonify({"ok": False, "message": "卖出扣减持仓时需填写卖出价"}), 400
+        if has_sell and float(sell_price_raw) <= 0:
+            return jsonify({"ok": False, "message": "卖出价须大于 0"}), 400
         if has_sell and not sell_date_raw:
             return jsonify({"ok": False, "message": "填写卖出价时需同时填写卖出日期"}), 400
 
@@ -427,7 +521,14 @@ def api_trades_add():
                     buy_date=buy_date, strategy=strategy, note=note,
                 )
             else:
-                ok, sync_msg = pm.apply_sell(code, quantity)
+                ok, sync_msg = pm.apply_sell(
+                    code,
+                    quantity,
+                    sell_price=float(sell_price_raw) if has_sell else None,
+                    sell_date=sell_date_raw[:10] if sell_date_raw else "",
+                    strategy=strategy,
+                    note=note,
+                )
             message += f"；{sync_msg}"
 
         payload = {
@@ -528,7 +629,13 @@ def api_action(action: str):
     try:
         if action == "refresh":
             _, log = _run_quiet(collect_daily_market_close, verbose=True)
-            message = "行情已刷新"
+            pm_stats = PortfolioManager().analyze()
+            midterm = MidtermPortfolioAdvisor().run_quick_advice(pm_stats)
+            alerts = scan_midterm_level_alerts(
+                pm_stats, midterm.get("reviews"), save=True,
+            )
+            n = alerts.get("alert_count", 0)
+            message = f"行情已刷新" + (f"，{n} 条支撑/压力提醒" if n else "，暂无价位提醒")
         elif action == "report":
             from quantpy.daily_advisor import generate_daily_report
 
@@ -578,8 +685,29 @@ def api_action(action: str):
                 run_midterm_advice, pm_stats, show_progress=False, full=True
             )
             rec_n = len(result.get("recommendations", [])) if isinstance(result, dict) else 0
-            message = f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只"
+            alerts = scan_midterm_level_alerts(
+                pm_stats, result.get("reviews") if isinstance(result, dict) else None, save=True,
+            )
+            alert_n = alerts.get("alert_count", 0)
+            message = (
+                f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只"
+                + (f"，{alert_n} 条价位提醒" if alert_n else "")
+            )
             extra["midterm"] = result
+            extra["level_alerts"] = alerts
+        elif action == "alerts":
+            pm_stats = PortfolioManager().analyze()
+            if not pm_stats.get("has_data"):
+                return jsonify({"ok": False, "message": "暂无实盘持仓"}), 400
+            midterm, log = _run_quiet(
+                MidtermPortfolioAdvisor().run_quick_advice, pm_stats,
+            )
+            result = scan_midterm_level_alerts(
+                pm_stats, midterm.get("reviews") if isinstance(midterm, dict) else None, save=True,
+            )
+            n = result.get("alert_count", 0)
+            message = f"价位提醒检查完成：{n} 条" if n else "价位提醒检查完成：暂无触发"
+            extra["level_alerts"] = result
         elif action == "sim-backtest":
             engine = SimReplayEngine()
             result, log = _run_quiet(engine.replay_backtest, days=days, show_progress=False)
@@ -592,6 +720,16 @@ def api_action(action: str):
                 extra["backtest"] = result
             else:
                 message = "回测完成"
+        elif action == "review":
+            result, log = _run_quiet(run_real_portfolio_review, days=90, show_progress=False)
+            count = result.get("summary", {}).get("trade_count", 0) if isinstance(result, dict) else 0
+            message = f"实盘复盘完成：分析 {count} 笔平仓"
+            extra["portfolio_review"] = result
+            if isinstance(result, dict) and result.get("markdown"):
+                extra["review_content"] = {
+                    "name": "实盘操作复盘",
+                    "content": result["markdown"],
+                }
         elif action == "scan":
             from quantpy.daily_advisor import run_ultra_short_scan
 

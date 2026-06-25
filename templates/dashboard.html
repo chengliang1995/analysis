@@ -17,6 +17,7 @@
       background: var(--bg); color: var(--text);
       min-height: 100vh; line-height: 1.5;
     }
+    body.app-busy { cursor: wait; }
     .wrap { max-width: 1280px; margin: 0 auto; padding: 24px 20px 48px; }
     header {
       display: flex; flex-wrap: wrap; align-items: center;
@@ -128,6 +129,27 @@
     }
     #toast.show { transform: translateY(0); opacity: 1; }
     #toast.error { border-color: var(--down); }
+    .alert-banner {
+      display: none; margin-bottom: 16px; padding: 14px 18px;
+      border-radius: 12px; border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.08));
+    }
+    .alert-banner.show { display: block; }
+    .alert-banner h3 { font-size: 0.95rem; margin-bottom: 8px; }
+    .alert-banner ul { list-style: none; display: grid; gap: 6px; }
+    .alert-banner li { font-size: 0.875rem; line-height: 1.45; }
+    .alert-banner li.buy { color: var(--up); }
+    .alert-banner li.sell { color: var(--down); }
+    .alert-banner li.watch { color: #f59e0b; }
+    .alert-tag {
+      display: inline-block; padding: 1px 6px; border-radius: 4px;
+      font-size: 0.75rem; margin-right: 4px;
+    }
+    .alert-tag.buy { background: rgba(34,197,94,0.15); color: var(--up); }
+    .alert-tag.sell { background: rgba(239,68,68,0.15); color: var(--down); }
+    .alert-tag.watch { background: rgba(245,158,11,0.15); color: #f59e0b; }
+    tr.row-alert-buy { background: rgba(34,197,94,0.06); }
+    tr.row-alert-sell { background: rgba(239,68,68,0.06); }
     #log-panel {
       margin-top: 20px; background: var(--card);
       border: 1px solid var(--border); border-radius: 12px; display: none;
@@ -207,6 +229,10 @@
     }
     .stock-table th:first-child, .stock-table td:first-child { text-align: left; }
     .stock-table th { color: var(--muted); font-weight: 500; font-size: 0.75rem; }
+    .grid-closed { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    @media (max-width: 900px) { .grid-closed { grid-template-columns: 1fr; } }
+    .stats.stats-3 { grid-template-columns: repeat(3, 1fr); }
+    @media (max-width: 700px) { .stats.stats-3 { grid-template-columns: repeat(2, 1fr); } }
   </style>
 </head>
 <body>
@@ -228,16 +254,27 @@
       <button type="button" data-action="scan">超短扫描</button>
       <button type="button" data-action="report">生成日报</button>
       <button type="button" data-action="midterm">中线分析</button>
+      <button type="button" data-action="alerts">价位提醒</button>
+      <button type="button" data-action="review">实盘复盘</button>
       <button type="button" data-action="sim" data-force="true">模拟选股</button>
       <button type="button" data-action="sim-review">模拟复盘</button>
       <button type="button" data-action="ai-learn">AI策略学习</button>
       <button type="button" data-action="sim-backtest" class="secondary">模拟回测(20日)</button>
     </div>
 
+    <div class="alert-banner" id="level-alert-banner">
+      <h3>支撑 / 压力提醒 <span class="badge" id="level-alert-badge">0</span></h3>
+      <ul id="level-alert-list"></ul>
+    </div>
+
     <div class="grid">
       <section class="panel">
+        <div class="panel-head"><h2>价位提醒明细</h2><span class="badge" id="level-alerts-table-badge">中线持仓</span></div>
+        <div class="table-wrap" id="level-alerts-table"></div>
+      </section>
+      <section class="panel">
         <div class="panel-head"><h2>个人持仓</h2><span class="badge">超短2万+中线15万</span></div>
-        <div class="stats" id="portfolio-stats"></div>
+        <div class="stats stats-3" id="portfolio-stats"></div>
         <div class="table-wrap" id="portfolio-table"></div>
         <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
           <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">市值&lt;1000亿 · 股价&lt;100 · 点击下钻</span></h2>
@@ -366,7 +403,14 @@
       </section>
     </div>
 
-    <div class="grid grid-full">
+    <div class="grid grid-closed">
+      <section class="panel">
+        <div class="panel-head"><h2>实盘清盘记录</h2><span class="badge" id="real-closed-badge">历史</span></div>
+        <div class="stats stats-3" id="real-closed-stats"></div>
+        <div class="table-wrap" id="real-closed-table"></div>
+        <div class="panel-head sub" style="margin-top:1rem"><h3>买卖点复盘</h3><span class="badge" id="trade-review-badge">—</span></div>
+        <div class="table-wrap" id="trade-review-table"></div>
+      </section>
       <section class="panel">
         <div class="panel-head"><h2>模拟平仓记录</h2><span class="badge">最近10笔</span></div>
         <div class="table-wrap" id="closed-table"></div>
@@ -403,6 +447,13 @@
       "510", "511", "512", "513", "515", "516", "518",
       "560", "561", "562", "563", "588",
     ]);
+    let appBusy = false;
+    const BUSY_BUTTON_SELECTOR = [
+      ".toolbar button[data-action]",
+      "#btn-reload", "#btn-report",
+      ".trade-form button",
+      "#btn-pf-delete", "#btn-pf-clear", "#btn-fill-today",
+    ].join(",");
 
     function isEtfCode(code) {
       const c = String(code || "").padStart(6, "0");
@@ -503,16 +554,21 @@
         .map((h) => `<th>${h}</th>`).join("");
       const body = positions.map((x) => {
         const isMid = x.bucket === "midterm" || x.bucket_label === "中线";
+        const alert = x.level_alert;
+        const rowCls = alert ? ` class="row-alert-${alert.signal}"` : "";
+        const actionCell = alert
+          ? `<span class="alert-tag ${alert.signal}">${escapeHtml(alert.signal_label)}</span>${escapeHtml(alert.alert_label)}`
+          : (x.midterm_action || "—");
         const action = isMid
           ? `<button type="button" class="link-btn" data-cost-code="${escapeHtml(x.code)}" data-cost-name="${escapeHtml(x.name || "")}" data-cost="${x.cost_price}" data-cost-qty="${x.quantity}">改成本</button>`
           : "—";
-        return `<tr>` +
+        return `<tr${rowCls}>` +
           `<td>${x.bucket_label || "中线"}</td>` +
           `<td>${x.code}</td><td>${x.name}</td>` +
           `<td>${Number(x.cost_price).toFixed(4)}</td>` +
           `<td>${x.midterm_trend || "—"}</td>` +
           `<td>${x.midterm_score || "—"}</td>` +
-          `<td>${x.midterm_action || "—"}</td>` +
+          `<td>${isMid ? actionCell : "—"}</td>` +
           `<td>${fmtPct(x.profit_pct)}</td>` +
           `<td>${x.weight_pct}%</td>` +
           `<td>${action}</td>` +
@@ -594,7 +650,7 @@
         showToast("请选择持仓并填写新成本价", true);
         return;
       }
-      setLoading(true);
+      if (!tryBeginBusy()) return;
       try {
         const res = await fetch(`/api/portfolio/position/${encodeURIComponent(code)}/cost`, {
           method: "PATCH",
@@ -708,15 +764,76 @@
       const has = p.has_data;
       const ultra = p.buckets?.ultra_short || {};
       const mid = p.buckets?.midterm || {};
+      const initial = p.initial_total_capital || p.total_capital;
       renderStats(document.getElementById("portfolio-stats"), [
         ["总资金", has ? `${fmtMoney(p.total_capital)} 元` : "—"],
-        ["超短账户", has ? `${fmtMoney(ultra.market_value || 0)} / ${fmtMoney(p.ultra_short_capital || 20000)} (${ultra.invested_pct || 0}%)` : "—"],
-        ["中线账户", has ? `${fmtMoney(mid.market_value || 0)} / ${fmtMoney(p.midterm_capital || 150000)} (${mid.invested_pct || 0}%)` : "—"],
-        ["合计浮盈", has ? fmtPct(p.total_float_pnl_pct) : "—"],
+        ["初始资金", has ? `${fmtMoney(initial)} 元` : "—"],
+        ["已实现盈亏", has ? `${p.total_realized_pnl > 0 ? "+" : ""}${fmtMoney(p.total_realized_pnl || 0)} 元` : "—"],
+        ["浮动盈亏", has ? fmtPct(p.total_float_pnl_pct) : "—"],
+        ["累计盈亏", has ? `${(p.total_pnl || 0) > 0 ? "+" : ""}${fmtMoney(p.total_pnl || 0)} 元 (${fmtPct(p.total_return_pct || 0)})` : "—"],
+        ["清盘胜率", has && p.closed_count ? `${p.closed_win_rate}% · ${p.closed_count}笔` : "—"],
       ]);
       renderPortfolioTable(p.positions || []);
+      renderRealClosed(p);
       const rec = (p.midterm && p.midterm.recommendations) || [];
       renderMidtermRecTable(rec);
+    }
+
+    function renderRealClosed(p) {
+      const closed = p.closed_positions || [];
+      document.getElementById("real-closed-badge").textContent =
+        closed.length ? `共 ${closed.length} 笔` : "暂无";
+      renderStats(document.getElementById("real-closed-stats"), [
+        ["已实现合计", `${(p.total_realized_pnl || 0) > 0 ? "+" : ""}${fmtMoney(p.total_realized_pnl || 0)} 元`],
+        ["超短已实现", `${(p.realized_pnl_ultra_short || 0) > 0 ? "+" : ""}${fmtMoney(p.realized_pnl_ultra_short || 0)} 元`],
+        ["中线已实现", `${(p.realized_pnl_midterm || 0) > 0 ? "+" : ""}${fmtMoney(p.realized_pnl_midterm || 0)} 元`],
+      ]);
+      renderTable(
+        document.getElementById("real-closed-table"),
+        ["卖出日", "账户", "代码", "名称", "成本", "卖出", "盈亏%", "盈亏额"],
+        closed.slice(0, 15).map((x) => [
+          x.sell_date || "—",
+          x.bucket === "ultra_short" ? "超短" : "中线",
+          x.code, x.name,
+          Number(x.cost_price).toFixed(3),
+          Number(x.sell_price).toFixed(3),
+          fmtPct(x.profit_pct),
+          `${x.profit_amount > 0 ? "+" : ""}${fmtMoney(x.profit_amount)}`,
+        ]),
+        "暂无清盘记录。卖出扣减持仓并填写卖出价后自动记入"
+      );
+    }
+
+    function renderTradeReview(rv) {
+      const reviews = (rv && rv.trade_reviews) || [];
+      const badge = document.getElementById("trade-review-badge");
+      const summary = (rv && rv.summary) || {};
+      if (!reviews.length) {
+        badge.textContent = rv?.has_data ? "无明细" : "点击「实盘复盘」";
+        renderTable(
+          document.getElementById("trade-review-table"),
+          ["卖出日", "代码", "名称", "买点", "卖点", "收益%", "天数", "评分"],
+          [],
+          "暂无买卖点分析。有清盘记录后点击「实盘复盘」生成"
+        );
+        return;
+      }
+      badge.textContent = `均分 ${summary.avg_timing_score ?? "—"} · ${reviews.length} 笔`;
+      renderTable(
+        document.getElementById("trade-review-table"),
+        ["卖出日", "代码", "名称", "买点", "卖点", "收益%", "天数", "评分"],
+        reviews.map((x) => [
+          x.sell_date || "—",
+          x.code,
+          x.name,
+          x.buy_timing || "—",
+          x.sell_timing || "—",
+          fmtPct(x.profit_pct),
+          x.hold_days ?? "—",
+          x.timing_score ?? "—",
+        ]),
+        "—"
+      );
     }
 
     function renderSim(s) {
@@ -762,6 +879,65 @@
       );
     }
 
+    function renderLevelAlerts(la) {
+      const alerts = (la && la.alerts) || [];
+      const banner = document.getElementById("level-alert-banner");
+      const list = document.getElementById("level-alert-list");
+      const badge = document.getElementById("level-alert-badge");
+      badge.textContent = alerts.length ? `${alerts.length} 条` : "无";
+      if (!alerts.length) {
+        banner.classList.remove("show");
+        list.innerHTML = "";
+      } else {
+        banner.classList.add("show");
+        list.innerHTML = alerts.slice(0, 6).map((a) =>
+          `<li class="${a.signal}">${escapeHtml(a.message)}</li>`
+        ).join("");
+      }
+      document.getElementById("level-alerts-table-badge").textContent =
+        alerts.length ? `买入 ${la.buy_count || 0} · 卖出 ${la.sell_count || 0}` : "暂无触发";
+      renderTable(
+        document.getElementById("level-alerts-table"),
+        ["信号", "代码", "名称", "现价", "支撑", "压力", "提醒", "距位%"],
+        alerts.map((a) => [
+          `<span class="alert-tag ${a.signal}">${escapeHtml(a.signal_label)}</span>`,
+          a.code,
+          a.name,
+          Number(a.price).toFixed(2),
+          Number(a.support).toFixed(2),
+          Number(a.resistance).toFixed(2),
+          a.alert_label,
+          a.distance_pct,
+        ]),
+        "暂无价位提醒。点击「价位提醒」或「刷新行情」检查中线持仓"
+      );
+      maybeNotifyLevelAlerts(alerts);
+    }
+
+    function maybeNotifyLevelAlerts(alerts) {
+      if (!alerts.length || !("Notification" in window)) return;
+      const high = alerts.filter((a) => a.severity === "high");
+      if (!high.length) return;
+      const key = high.map((a) => `${a.code}:${a.alert_type}`).join("|");
+      const seen = sessionStorage.getItem("level_alert_notified");
+      if (seen === key) return;
+      const show = () => {
+        high.slice(0, 3).forEach((a) => {
+          try {
+            new Notification(`中线${a.signal_label}提醒 · ${a.name}`, {
+              body: a.message.replace(/^【[^】]+】/, ""),
+            });
+          } catch (_) { /* ignore */ }
+        });
+        sessionStorage.setItem("level_alert_notified", key);
+      };
+      if (Notification.permission === "granted") {
+        show();
+      } else if (Notification.permission !== "denied") {
+        Notification.requestPermission().then((p) => { if (p === "granted") show(); });
+      }
+    }
+
     function renderSuggestionGroup(title, list, emptyText) {
       if (!list || !list.length) {
         return `<div class="suggest-group"><h3>${title}</h3><ul class="suggest-list"><li class="empty" style="background:none">${emptyText}</li></ul></div>`;
@@ -774,9 +950,11 @@
       const groups = data.suggestion_groups || {};
       const el = document.getElementById("suggest-groups");
       el.innerHTML =
+        renderSuggestionGroup("支撑压力提醒", groups.level_alerts, "暂无价位触发，点击「价位提醒」检查") +
         renderSuggestionGroup("个股复盘", groups.midterm_review, "点击「中线分析」") +
         renderSuggestionGroup("持仓优化", groups.midterm_optimize, "—") +
         renderSuggestionGroup("中线推荐", groups.midterm_recommend, "暂无推荐标的") +
+        renderSuggestionGroup("实盘复盘", groups.real_review, "点击「实盘复盘」生成买卖点分析") +
         renderSuggestionGroup("实盘操作", groups.portfolio_actions, "暂无持仓或待刷新行情") +
         renderSuggestionGroup("仓位分析", groups.portfolio_summary, "—") +
         renderSuggestionGroup("历史学习", groups.learn, "录入交易后可获得个性化学习建议") +
@@ -886,6 +1064,8 @@
       document.getElementById("server-time").textContent =
         `更新时间：${data.server_time}` + (data.report?.name ? ` · 日报：${data.report.name}` : "");
       renderPortfolio(data.portfolio);
+      renderLevelAlerts(data.level_alerts);
+      renderTradeReview(data.portfolio_review);
       renderSim(data.sim);
       renderUltraShort(data.ultra_short);
       renderSuggestions(data);
@@ -910,7 +1090,7 @@
         strategy: document.getElementById("pf-strategy").value,
         note: document.getElementById("pf-note").value.trim(),
       };
-      setLoading(true);
+      if (!tryBeginBusy()) return;
       try {
         const res = await fetch("/api/portfolio/position", {
           method: "POST",
@@ -934,7 +1114,7 @@
         return;
       }
       if (!confirm(`确认删除持仓 ${code}？`)) return;
-      setLoading(true);
+      if (!tryBeginBusy()) return;
       try {
         const res = await fetch(`/api/portfolio/position/${encodeURIComponent(code)}`, {
           method: "DELETE",
@@ -966,6 +1146,10 @@
         showToast("填写卖出价时请同时填写卖出日期", true);
         return;
       }
+      if (sellPrice && Number(sellPrice) <= 0) {
+        showToast("卖出价须大于 0", true);
+        return;
+      }
       const payload = {
         code: document.getElementById("tf-code").value.trim(),
         name: document.getElementById("tf-name").value.trim(),
@@ -979,7 +1163,7 @@
         sync_portfolio: syncAction !== "none",
         trade_action: syncAction === "buy" ? "buy" : "sell",
       };
-      setLoading(true);
+      if (!tryBeginBusy()) return;
       try {
         const res = await fetch("/api/trades", {
           method: "POST",
@@ -1005,9 +1189,17 @@
     }
 
     function setLoading(loading) {
-      document.querySelectorAll(".toolbar button, #btn-reload, #btn-report").forEach((btn) => {
+      appBusy = loading;
+      document.body.classList.toggle("app-busy", loading);
+      document.querySelectorAll(BUSY_BUTTON_SELECTOR).forEach((btn) => {
         btn.disabled = loading;
       });
+    }
+
+    function tryBeginBusy() {
+      if (appBusy) return false;
+      setLoading(true);
+      return true;
     }
 
     async function loadDashboard() {
@@ -1139,7 +1331,7 @@
     }
 
     async function runAction(action, force) {
-      setLoading(true);
+      if (!tryBeginBusy()) return;
       const url = `/api/actions/${action}` + (force ? "?force=true" : "");
       try {
         const res = await fetch(url, { method: "POST" });
@@ -1150,6 +1342,7 @@
         }
         if (body.data) {
           if (body.ultra_short) body.data.ultra_short = body.ultra_short;
+          if (body.level_alerts) body.data.level_alerts = body.level_alerts;
           renderAll(body.data);
         }
         if (action === "scan" && body.ultra_short) {
@@ -1157,6 +1350,12 @@
         }
         if (action === "report" && body.ok) {
           openReport(body.report_content);
+        }
+        if (action === "review" && body.ok) {
+          openReport(body.review_content || {
+            name: "实盘操作复盘",
+            content: body.portfolio_review?.markdown || "暂无复盘内容",
+          });
         }
         showToast(body.message || (body.ok ? "完成" : "失败"), !body.ok);
       } catch (e) {
@@ -1168,10 +1367,18 @@
 
     document.querySelectorAll("[data-action]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        if (appBusy) return;
         runAction(btn.dataset.action, btn.dataset.force === "true");
       });
     });
-    document.getElementById("btn-reload").addEventListener("click", loadDashboard);
+    document.getElementById("btn-reload").addEventListener("click", async () => {
+      if (!tryBeginBusy()) return;
+      try {
+        await loadDashboard();
+      } finally {
+        setLoading(false);
+      }
+    });
     document.getElementById("btn-report").addEventListener("click", openReport);
     document.getElementById("btn-close-report").addEventListener("click", () => {
       document.getElementById("report-modal").classList.remove("open");

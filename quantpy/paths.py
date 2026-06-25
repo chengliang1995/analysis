@@ -10,6 +10,7 @@ TEMPLATES_DIR = PROJECT_ROOT / "templates"
 CACHE_DIR = PROJECT_ROOT / "cache"
 SIM_REVIEW_DIR = OUTPUT_DIR / "sim_reviews"
 MIDTERM_OUTPUT_DIR = OUTPUT_DIR / "midterm"
+REAL_REVIEW_DIR = OUTPUT_DIR / "real_review"
 AI_LEARNING_DIR = OUTPUT_DIR / "ai_learning"
 
 PORTFOLIO_CONFIG_FILE = DATA_DIR / "portfolio_config.json"

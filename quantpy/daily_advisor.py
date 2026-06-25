@@ -39,6 +39,8 @@ from quantpy.sim_replay import (
 from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
+from quantpy.midterm_level_alerts import scan_midterm_level_alerts
+from quantpy.real_portfolio_reviewer import load_latest_real_review, run_real_portfolio_review
 from quantpy.ultra_short_scanner import UltraShortScanner
 
 
@@ -260,8 +262,13 @@ def generate_daily_report(
             f"- 中线账户: 成本 {portfolio_stats['buckets']['midterm']['cost']:.0f} 元 "
             f"({portfolio_stats['buckets']['midterm']['invested_pct']}%) | "
             f"市值 {portfolio_stats['buckets']['midterm']['market_value']:.0f} 元\n"
-            f"- 合计浮盈: {portfolio_stats['total_float_pnl']:+.0f} 元 "
-            f"({portfolio_stats['total_float_pnl_pct']:+.2f}%)\n\n"
+            f"- 已实现盈亏: {portfolio_stats.get('total_realized_pnl', 0):+.0f} 元 "
+            f"（清盘 {portfolio_stats.get('closed_count', 0)} 笔，胜率 {portfolio_stats.get('closed_win_rate', 0)}%）\n"
+            f"- 浮动盈亏: {portfolio_stats['total_float_pnl']:+.0f} 元 "
+            f"({portfolio_stats['total_float_pnl_pct']:+.2f}%)\n"
+            f"- 累计盈亏: {portfolio_stats.get('total_pnl', 0):+.0f} 元 "
+            f"（总资金 {portfolio_stats['total_capital']:.0f} 元，"
+            f"初始 {portfolio_stats.get('initial_total_capital', portfolio_stats['total_capital']):.0f} 元）\n\n"
         )
         portfolio_rows = [
             [
@@ -283,6 +290,29 @@ def generate_daily_report(
                 aligns=["left", "left", "left", "right", "right", "right", "right", "right"],
             )
         )
+        closed = portfolio_stats.get("closed_positions") or []
+        if closed:
+            md_parts.append(f"\n### 实盘清盘记录（最近 {min(len(closed), 10)} 笔）\n\n")
+            closed_rows = [
+                [
+                    c.get("sell_date", ""),
+                    "超短" if c.get("bucket") == "ultra_short" else "中线",
+                    c["code"],
+                    c["name"],
+                    f"{float(c['cost_price']):.3f}",
+                    f"{float(c['sell_price']):.3f}",
+                    f"{c.get('profit_pct', 0):+.2f}",
+                    f"{c.get('profit_amount', 0):+.0f}",
+                ]
+                for c in closed[:10]
+            ]
+            md_parts.append(
+                format_markdown_table(
+                    ["卖出日", "账户", "代码", "名称", "成本", "卖出", "盈亏%", "盈亏额"],
+                    closed_rows,
+                    aligns=["left", "left", "left", "left", "right", "right", "right", "right"],
+                )
+            )
 
     if midterm.get("reviews"):
         md_parts.append(f"\n## 三、实盘中线个股复盘\n\n")
@@ -310,6 +340,33 @@ def generate_daily_report(
             )
         for s in midterm.get("review_summaries", []):
             md_parts.append(f"- {s}\n")
+
+        level_alerts = scan_midterm_level_alerts(portfolio_stats, midterm.get("reviews"))
+        if level_alerts.get("alerts"):
+            md_parts.append(f"\n### 支撑/压力买卖提醒\n\n")
+            alert_rows = [
+                [
+                    a["signal_label"],
+                    a["code"],
+                    truncate_display(a["name"], 8),
+                    f"{a['price']:.2f}",
+                    f"{a['support']:.2f}",
+                    f"{a['resistance']:.2f}",
+                    a["alert_label"],
+                    f"{a['distance_pct']:.2f}",
+                ]
+                for a in level_alerts["alerts"]
+            ]
+            md_parts.append(
+                format_markdown_table(
+                    ["信号", "代码", "名称", "现价", "支撑", "压力", "提醒", "距位%"],
+                    alert_rows,
+                    aligns=["left", "left", "left", "right", "right", "right", "left", "right"],
+                )
+            )
+            md_parts.append("\n")
+            for i, msg in enumerate(level_alerts["messages"], 1):
+                md_parts.append(f"{i}. {msg}\n")
 
     if midterm.get("optimize_suggestions"):
         md_parts.append(f"\n### 持仓优化\n\n")
@@ -339,7 +396,51 @@ def generate_daily_report(
             )
         )
 
-    md_parts.append(f"\n## 五、个人绩效（近{days}日）\n")
+    portfolio_review = load_latest_real_review()
+    if not portfolio_review.get("has_data") and portfolio_stats.get("closed_count", 0) > 0:
+        portfolio_review = run_real_portfolio_review(days=max(days, 90), show_progress=False)
+
+    md_parts.append(f"\n## 五、实盘操作复盘（近 {portfolio_review.get('period_days', 90)} 日）\n\n")
+    if portfolio_review.get("has_data"):
+        prs = portfolio_review["summary"]
+        md_parts.append(
+            f"- 平仓 {prs['trade_count']} 笔 | 胜率 {prs['win_rate']}% | "
+            f"合计 {prs['total_profit_amount']:+.0f} 元 | "
+            f"均收益 {prs['avg_profit_pct']:+.2f}% | "
+            f"均操作评分 {prs.get('avg_timing_score', 0)}\n\n"
+        )
+        if portfolio_review.get("trade_reviews"):
+            pr_rows = [
+                [
+                    t["sell_date"],
+                    t["code"],
+                    truncate_display(t["name"], 8),
+                    f"{t['buy_price']:.3f}",
+                    f"{t['sell_price']:.3f}",
+                    f"{t['profit_pct']:+.2f}",
+                    str(t["hold_days"]),
+                    t.get("buy_timing", ""),
+                    t.get("sell_timing", ""),
+                    str(t.get("timing_score", "")),
+                ]
+                for t in portfolio_review["trade_reviews"][:10]
+            ]
+            md_parts.append(
+                format_markdown_table(
+                    ["卖出日", "代码", "名称", "买入", "卖出", "收益%", "天数", "买点", "卖点", "评分"],
+                    pr_rows,
+                    aligns=["left", "left", "left", "right", "right", "right", "right", "left", "left", "right"],
+                )
+            )
+            md_parts.append("\n")
+        for i, s in enumerate(portfolio_review.get("optimization_suggestions", [])[:6], 1):
+            md_parts.append(f"{i}. {s}\n")
+    else:
+        md_parts.append(
+            "暂无清盘记录。卖出时填写卖出价同步实盘，或运行 `python daily_advisor.py review`。\n"
+        )
+
+    md_parts.append(f"\n## 六、个人绩效（近{days}日）\n")
 
     if stats.get("has_data"):
         md_parts.append(
@@ -365,14 +466,14 @@ def generate_daily_report(
     else:
         md_parts.append("暂无交易记录。运行 `python daily_advisor.py record` 录入。\n")
 
-    md_parts.append(f"\n## 六、优化建议\n\n")
+    md_parts.append(f"\n## 七、优化建议\n\n")
     for i, s in enumerate(all_suggestions, 1):
         md_parts.append(f"{i}. {s}\n")
 
     ai_latest = load_latest_ai_learning()
-    section_tail = "七"
+    section_tail = "八"
     if ai_latest.get("suggestions"):
-        md_parts.append(f"\n## 七、AI 策略学习（第 {ai_latest.get('round', 0)} 轮）\n\n")
+        md_parts.append(f"\n## 八、AI 策略学习（第 {ai_latest.get('round', 0)} 轮）\n\n")
         md_parts.append(
             f"*引擎: {ai_latest.get('engine', 'statistical')} · "
             f"样本 {ai_latest.get('sample_count', 0)} 笔 · "
@@ -384,7 +485,7 @@ def generate_daily_report(
             md_parts.append("\n**参数调整:** ")
             md_parts.append(", ".join(f"{k} {v}" for k, v in ai_latest["param_changes"].items()))
             md_parts.append("\n")
-        section_tail = "八"
+        section_tail = "九"
 
     md_parts.append(
         f"\n## {section_tail}、操作要点\n\n"
@@ -412,7 +513,7 @@ def generate_daily_report(
             "recommendations": midterm.get("recommendations", []),
             "optimize_suggestions": midterm.get("optimize_suggestions", []),
         },
-        "ai_learning": ai_latest if ai_latest else None,
+        "portfolio_review": portfolio_review if portfolio_review else None,
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -448,9 +549,9 @@ def main() -> None:
         default="report",
         choices=[
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
-            "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn", "midterm", "web",
+            "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn", "midterm", "review", "alerts", "web",
         ],
-        help="sim=模拟复盘, midterm=实盘中线分析, ai-learn=AI策略学习",
+        help="sim=模拟复盘, midterm=实盘中线分析, review=实盘操作复盘, alerts=支撑压力提醒",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -516,6 +617,45 @@ def main() -> None:
             stats = show_portfolio(init=args.init)
             if stats.get("has_data"):
                 run_midterm_advice(stats, show_progress=True)
+        elif args.command == "review":
+            print("=" * 60)
+            print("实盘操作复盘（买卖点分析）")
+            print("=" * 60)
+            result = run_real_portfolio_review(days=max(args.days, 90), show_progress=True)
+            if not result.get("has_data"):
+                print("\n暂无清盘/交易记录。")
+            else:
+                s = result["summary"]
+                print(
+                    f"\n平仓 {s['trade_count']} 笔 | 胜率 {s['win_rate']}% | "
+                    f"合计 {s['total_profit_amount']:+.0f} 元"
+                )
+                print("\n【优化建议】")
+                for i, sug in enumerate(result.get("optimization_suggestions", []), 1):
+                    print(f"  {i}. {sug}")
+                print(f"\n报告已保存至 output/real_review/")
+        elif args.command == "alerts":
+            from quantpy.portfolio import PortfolioManager
+
+            print("=" * 60)
+            print("中线支撑/压力买卖提醒")
+            print("=" * 60)
+            stats = PortfolioManager().analyze()
+            if not stats.get("has_data"):
+                print("\n暂无实盘持仓。")
+            else:
+                midterm = load_latest_midterm_advice()
+                if not midterm.get("reviews"):
+                    from quantpy.midterm_portfolio_advisor import MidtermPortfolioAdvisor
+                    midterm = MidtermPortfolioAdvisor().run_quick_advice(stats)
+                result = scan_midterm_level_alerts(stats, midterm.get("reviews"), save=True)
+                if not result.get("alerts"):
+                    print("\n暂无价位触发提醒。")
+                else:
+                    print(f"\n共 {result['alert_count']} 条（买入 {result['buy_count']} · 卖出 {result['sell_count']}）\n")
+                    for i, msg in enumerate(result["messages"], 1):
+                        print(f"  {i}. {msg}")
+                    print(f"\n已保存至 output/midterm/")
         elif args.command == "sim-status":
             run_sim_status()
         elif args.command == "web":

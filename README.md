@@ -13,6 +13,8 @@ quantpy-stock-analysis/
 │   ├── paths.py                 # 统一路径（data / output / templates）
 │   ├── stock_data.py            # 多数据源行情
 │   ├── portfolio.py             # 个人持仓（超短+中线）
+│   ├── midterm_portfolio_advisor.py  # 中线复盘与推荐
+│   ├── midterm_level_alerts.py    # 支撑/压力买卖提醒
 │   ├── sim_replay.py            # 模拟复盘
 │   ├── ultra_short_scanner.py   # 超短扫描
 │   ├── daily_advisor.py         # 日报逻辑
@@ -52,6 +54,12 @@ python examples/scan_limit_up_stocks.py
 python daily_advisor.py sim --force
 python daily_advisor.py sim-status
 
+# 实盘操作复盘（历史买卖点分析 + 优化建议）
+python daily_advisor.py review --days 90
+
+# 中线支撑/压力买卖提醒
+python daily_advisor.py alerts
+
 # Web 仪表盘（个人持仓 + 模拟持仓 + 一键操作）
 python web_app.py
 # 或
@@ -73,7 +81,8 @@ powershell -ExecutionPolicy Bypass -File scripts/daily_runner.ps1 -Phase morning
 | `quantpy.trade_journal` | 记录买卖，统计胜率/持仓习惯，生成个性化建议 |
 | `quantpy.daily_advisor` | 每日报告：超短 TOP + 绩效复盘 + 优化建议 |
 | `quantpy.sim_replay` | 模拟复盘：20万/3仓、9:45选股、止盈止损、每5日自动复盘 |
-| `quantpy.portfolio` | 个人仓位：超短2万+中线15万、浮盈、仓位建议 |
+| `quantpy.portfolio` | 个人仓位：超短2万+中线15万、浮盈、清盘记录 |
+| `quantpy.real_portfolio_reviewer` | 实盘复盘：合并清盘/交易日记，评估买卖点，生成优化报告 |
 | `quantpy.web_app` | 本地 Web 页：双持仓展示、超短TOP、日报、一键操作 |
 
 ## 模拟复盘
@@ -109,6 +118,42 @@ python daily_advisor.py portfolio --init
 ```
 
 运行时数据在 `data/portfolio.json`（自动生成，勿提交 git）。
+
+## 实盘操作复盘
+
+基于 `closed_positions`（卖出时填写卖出价自动记录）与 `trades.json` 交易日记，对每笔平仓做买卖点评估：
+
+| 维度 | 说明 |
+|------|------|
+| 买点 | 相对 MA20、买入日涨跌幅、策略持有期 |
+| 卖点 | 持仓期最高/最低、是否过早止盈或扛单 |
+| 评分 | 综合 timing_score（0-100） |
+| 建议 | 胜率、持仓习惯、策略偏差等优化报告 |
+
+```bash
+# CLI 生成报告（保存至 output/real_review/）
+python daily_advisor.py review --days 90
+
+# Web 仪表盘点击「实盘复盘」，或 GET /api/portfolio/review?refresh=true
+```
+
+每日报告（`python daily_advisor.py report`）第五节会自动附带最新复盘摘要。
+
+## 支撑/压力买卖提醒
+
+对中线持仓，结合 MA20 与近 20 日高低点计算支撑/压力位，现价接近或突破时给出买卖提示：
+
+| 触发 | 说明 |
+|------|------|
+| 接近/触及支撑 | 买入关注，可考虑低吸加仓 |
+| 跌破支撑 | 卖出提醒，建议减仓或止损 |
+| 接近/触及压力 | 卖出关注，可考虑分批止盈 |
+| 突破压力 | 持有观察，沿 MA20 设止损 |
+
+```bash
+python daily_advisor.py alerts
+# Web 仪表盘：自动检查 + 点击「价位提醒」
+```
 
 ## 定时任务（Windows）
 

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -50,11 +51,38 @@ class Position:
 
 
 @dataclass
+class ClosedPosition:
+    """已清盘（全部或部分卖出）的实盘记录。"""
+
+    code: str
+    name: str
+    quantity: int
+    cost_price: float
+    sell_price: float
+    buy_date: str = ""
+    sell_date: str = ""
+    strategy: str = "手动"
+    bucket: str = "midterm"
+    profit_amount: float = 0.0
+    profit_pct: float = 0.0
+    note: str = ""
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    closed_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class Portfolio:
     ultra_short_capital: float = DEFAULT_ULTRA_SHORT_CAPITAL
     midterm_capital: float = DEFAULT_MIDTERM_CAPITAL
     total_capital: float = DEFAULT_ULTRA_SHORT_CAPITAL + DEFAULT_MIDTERM_CAPITAL
+    initial_ultra_short_capital: Optional[float] = None
+    initial_midterm_capital: Optional[float] = None
     positions: List[Position] = field(default_factory=list)
+    closed_positions: List[ClosedPosition] = field(default_factory=list)
+    journal_closed_synced: bool = False
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def sync_total_capital(self) -> None:
@@ -82,6 +110,16 @@ def _parse_positions(raw_positions: list) -> List[Position]:
     return positions
 
 
+def _parse_closed_positions(raw_closed: list) -> List[ClosedPosition]:
+    closed = []
+    for item in raw_closed or []:
+        payload = {k: v for k, v in item.items() if k in ClosedPosition.__dataclass_fields__}
+        if "bucket" not in payload and "strategy" in payload:
+            payload["bucket"] = classify_bucket(str(payload["strategy"]))
+        closed.append(ClosedPosition(**payload))
+    return closed
+
+
 def portfolio_from_dict(raw: dict) -> Portfolio:
     ultra = float(raw.get("ultra_short_capital", DEFAULT_ULTRA_SHORT_CAPITAL))
     mid = float(raw.get("midterm_capital", DEFAULT_MIDTERM_CAPITAL))
@@ -94,10 +132,18 @@ def portfolio_from_dict(raw: dict) -> Portfolio:
         ultra_short_capital=ultra,
         midterm_capital=mid,
         total_capital=float(raw.get("total_capital", ultra + mid)),
+        initial_ultra_short_capital=raw.get("initial_ultra_short_capital"),
+        initial_midterm_capital=raw.get("initial_midterm_capital"),
         positions=_parse_positions(raw.get("positions", [])),
+        closed_positions=_parse_closed_positions(raw.get("closed_positions", [])),
+        journal_closed_synced=bool(raw.get("journal_closed_synced", False)),
         updated_at=raw.get("updated_at", datetime.now().isoformat()),
     )
     portfolio.sync_total_capital()
+    if portfolio.initial_ultra_short_capital is None:
+        portfolio.initial_ultra_short_capital = ultra
+    if portfolio.initial_midterm_capital is None:
+        portfolio.initial_midterm_capital = mid
     return portfolio
 
 
@@ -134,8 +180,12 @@ class PortfolioManager:
             "ultra_short_capital": self._portfolio.ultra_short_capital,
             "midterm_capital": self._portfolio.midterm_capital,
             "total_capital": self._portfolio.total_capital,
+            "initial_ultra_short_capital": self._portfolio.initial_ultra_short_capital,
+            "initial_midterm_capital": self._portfolio.initial_midterm_capital,
+            "journal_closed_synced": self._portfolio.journal_closed_synced,
             "updated_at": self._portfolio.updated_at,
             "positions": [asdict(p) for p in self._portfolio.positions],
+            "closed_positions": [c.to_dict() for c in self._portfolio.closed_positions],
         }
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -153,7 +203,11 @@ class PortfolioManager:
             "total_capital": int(self._portfolio.total_capital)
             if self._portfolio.total_capital == int(self._portfolio.total_capital)
             else self._portfolio.total_capital,
+            "initial_ultra_short_capital": self._portfolio.initial_ultra_short_capital,
+            "initial_midterm_capital": self._portfolio.initial_midterm_capital,
+            "journal_closed_synced": self._portfolio.journal_closed_synced,
             "positions": [asdict(p) for p in self._portfolio.positions],
+            "closed_positions": [c.to_dict() for c in self._portfolio.closed_positions],
         }
         self.config_path.write_text(
             json.dumps(config_payload, ensure_ascii=False, indent=2),
@@ -235,8 +289,126 @@ class PortfolioManager:
             return True
         return False
 
-    def apply_sell(self, code: str, quantity: int) -> tuple[bool, str]:
-        """交易卖出后扣减实盘持仓，数量归零则移除。"""
+        return False, f"实盘无 {code}，仅记录交易日记"
+
+    def _adjust_bucket_capital(self, bucket: str, profit_amount: float) -> None:
+        if bucket == "ultra_short":
+            self._portfolio.ultra_short_capital = round(
+                self._portfolio.ultra_short_capital + profit_amount, 2
+            )
+        else:
+            self._portfolio.midterm_capital = round(
+                self._portfolio.midterm_capital + profit_amount, 2
+            )
+        self._portfolio.sync_total_capital()
+
+    def _record_closed_trade(
+        self,
+        *,
+        code: str,
+        name: str,
+        quantity: int,
+        cost_price: float,
+        sell_price: float,
+        buy_date: str = "",
+        sell_date: str = "",
+        strategy: str = "手动",
+        note: str = "",
+        adjust_capital: bool = True,
+        trade_id: str = "",
+    ) -> ClosedPosition:
+        qty = int(quantity)
+        cost = float(cost_price)
+        sell = float(sell_price)
+        profit_amount = round((sell - cost) * qty, 2)
+        profit_pct = round((sell - cost) / cost * 100, 2) if cost > 0 else 0.0
+        bucket = classify_bucket(strategy)
+        closed = ClosedPosition(
+            code=str(code).zfill(6),
+            name=name,
+            quantity=qty,
+            cost_price=round(cost, 4),
+            sell_price=round(sell, 4),
+            buy_date=buy_date[:10] if buy_date else "",
+            sell_date=sell_date[:10] if sell_date else datetime.now().strftime("%Y-%m-%d"),
+            strategy=strategy,
+            bucket=bucket,
+            profit_amount=profit_amount,
+            profit_pct=profit_pct,
+            note=note,
+            id=trade_id or uuid.uuid4().hex[:12],
+        )
+        self._portfolio.closed_positions.append(closed)
+        if adjust_capital:
+            self._adjust_bucket_capital(bucket, profit_amount)
+        return closed
+
+    def sync_closed_from_journal(self) -> int:
+        """首次将交易日记中的已平仓记录同步到实盘清盘统计（并调整总资金）。"""
+        if self._portfolio.journal_closed_synced:
+            return 0
+        try:
+            from quantpy.trade_journal import TradeJournal
+
+            journal = TradeJournal()
+            df = journal.list_trades()
+        except Exception:
+            self._portfolio.journal_closed_synced = True
+            self.save_to_config()
+            return 0
+
+        if df.empty:
+            self._portfolio.journal_closed_synced = True
+            self.save_to_config()
+            return 0
+
+        existing = {
+            (c.code, c.sell_date, c.quantity, round(c.sell_price, 4))
+            for c in self._portfolio.closed_positions
+        }
+        added = 0
+        for row in df.sort_values("sell_date").to_dict("records"):
+            sell_p = round(float(row.get("sell_price", 0)), 4)
+            if sell_p <= 0:
+                continue
+            key = (
+                str(row["code"]).zfill(6),
+                str(row.get("sell_date", ""))[:10],
+                int(row.get("quantity", 0)),
+                sell_p,
+            )
+            if key in existing:
+                continue
+            self._record_closed_trade(
+                code=key[0],
+                name=str(row.get("name", key[0])),
+                quantity=key[2],
+                cost_price=float(row.get("buy_price", 0)),
+                sell_price=key[3],
+                buy_date=str(row.get("buy_date", "")),
+                sell_date=key[1],
+                strategy=str(row.get("strategy", "手动")),
+                note=str(row.get("note", "")),
+                adjust_capital=True,
+                trade_id=str(row.get("id", "")),
+            )
+            existing.add(key)
+            added += 1
+
+        self._portfolio.journal_closed_synced = True
+        self.save_to_config()
+        return added
+
+    def apply_sell(
+        self,
+        code: str,
+        quantity: int,
+        sell_price: Optional[float] = None,
+        sell_date: str = "",
+        strategy: str = "",
+        note: str = "",
+    ) -> tuple[bool, str]:
+        """交易卖出后扣减实盘持仓；提供卖出价时记入清盘历史并调整账户资金。"""
         code = str(code).zfill(6)
         quantity = int(quantity)
         if quantity <= 0:
@@ -246,10 +418,38 @@ class PortfolioManager:
             if p.code != code:
                 continue
             old_qty = p.quantity
-            new_qty = old_qty - quantity
+            if quantity > old_qty:
+                quantity = old_qty
+            sell_qty = quantity
+            pos_strategy = strategy or p.strategy
+            msg_extra = ""
+
+            if sell_price is not None and float(sell_price) > 0:
+                closed = self._record_closed_trade(
+                    code=p.code,
+                    name=p.name,
+                    quantity=sell_qty,
+                    cost_price=p.cost_price,
+                    sell_price=float(sell_price),
+                    buy_date=p.buy_date,
+                    sell_date=sell_date,
+                    strategy=pos_strategy,
+                    note=note,
+                    adjust_capital=True,
+                )
+                msg_extra = (
+                    f"，已实现 {closed.profit_amount:+.2f} 元（{closed.profit_pct:+.2f}%），"
+                    f"总资金 → {self._portfolio.total_capital:,.0f} 元"
+                )
+
+            new_qty = old_qty - sell_qty
             if new_qty <= 0:
-                self.remove_position(code)
-                return True, f"实盘已移除 {p.name}({code})（卖出 {quantity} 股）"
+                self._portfolio.positions = [
+                    x for x in self._portfolio.positions if x.code != code
+                ]
+                self.save_to_config()
+                return True, f"实盘已清盘 {p.name}({code})（卖出 {sell_qty} 股）{msg_extra}"
+
             self.upsert_position(
                 code=p.code,
                 name=p.name,
@@ -259,7 +459,7 @@ class PortfolioManager:
                 strategy=p.strategy,
                 note=p.note,
             )
-            return True, f"实盘 {p.name} 数量 {old_qty} → {new_qty}（卖出 {quantity} 股）"
+            return True, f"实盘 {p.name} 数量 {old_qty} → {new_qty}（卖出 {sell_qty} 股）{msg_extra}"
 
         return False, f"实盘无 {code}，仅记录交易日记"
 
@@ -341,6 +541,7 @@ class PortfolioManager:
         return price if price > 0 else 0.0
 
     def analyze(self, spot_df: Optional[pd.DataFrame] = None) -> Dict:
+        self.sync_closed_from_journal()
         codes = [p.code for p in self._portfolio.positions]
         quote_map = get_realtime_quotes(codes) if codes else pd.DataFrame()
         if spot_df is None:
@@ -418,10 +619,34 @@ class PortfolioManager:
         invested_pct = round(total_cost / total_capital * 100, 2) if total_capital > 0 else 0
         position_count = len(rows)
 
+        closed_rows = [c.to_dict() for c in self._portfolio.closed_positions]
+        closed_rows.sort(key=lambda x: x.get("sell_date", ""), reverse=True)
+        total_realized_pnl = round(sum(c.profit_amount for c in self._portfolio.closed_positions), 2)
+        realized_ultra = round(
+            sum(c.profit_amount for c in self._portfolio.closed_positions if c.bucket == "ultra_short"),
+            2,
+        )
+        realized_mid = round(
+            sum(c.profit_amount for c in self._portfolio.closed_positions if c.bucket == "midterm"),
+            2,
+        )
+        closed_count = len(closed_rows)
+        closed_wins = sum(1 for c in self._portfolio.closed_positions if c.profit_amount > 0)
+        closed_win_rate = round(closed_wins / closed_count * 100, 1) if closed_count else 0.0
+        total_pnl = round(total_realized_pnl + total_float_pnl, 2)
+        initial_total = float(
+            (self._portfolio.initial_ultra_short_capital or ultra_capital)
+            + (self._portfolio.initial_midterm_capital or mid_capital)
+        )
+        total_return_pct = round(total_pnl / initial_total * 100, 2) if initial_total > 0 else 0.0
+
         return {
-            "has_data": position_count > 0,
+            "has_data": position_count > 0 or closed_count > 0,
             "ultra_short_capital": ultra_capital,
             "midterm_capital": mid_capital,
+            "initial_ultra_short_capital": self._portfolio.initial_ultra_short_capital,
+            "initial_midterm_capital": self._portfolio.initial_midterm_capital,
+            "initial_total_capital": round(initial_total, 2),
             "total_capital": total_capital,
             "buckets": buckets,
             "total_cost": round(total_cost, 2),
@@ -430,6 +655,14 @@ class PortfolioManager:
             "equity_estimated": round(equity, 2),
             "total_float_pnl": round(total_float_pnl, 2),
             "total_float_pnl_pct": round(total_float_pnl / total_cost * 100, 2) if total_cost > 0 else 0,
+            "total_realized_pnl": total_realized_pnl,
+            "realized_pnl_ultra_short": realized_ultra,
+            "realized_pnl_midterm": realized_mid,
+            "total_pnl": total_pnl,
+            "total_return_pct": total_return_pct,
+            "closed_count": closed_count,
+            "closed_win_rate": closed_win_rate,
+            "closed_positions": closed_rows,
             "invested_pct": invested_pct,
             "position_count": position_count,
             "positions": rows,
@@ -459,8 +692,15 @@ class PortfolioManager:
             f"（超短 {stats['ultra_short_capital']/10000:.1f}万 + "
             f"中线 {stats['midterm_capital']/10000:.1f}万），"
             f"已投入 {stats['total_cost']:.0f} 元（{invested_pct}%），"
-            f"浮盈 {stats['total_float_pnl']:+.0f} 元（{stats['total_float_pnl_pct']:+.2f}%）。"
+            f"已实现 {stats.get('total_realized_pnl', 0):+.0f} 元，"
+            f"浮盈 {stats['total_float_pnl']:+.0f} 元（{stats['total_float_pnl_pct']:+.2f}%），"
+            f"累计 {stats.get('total_pnl', stats['total_float_pnl']):+.0f} 元。"
         )
+        if stats.get("closed_count", 0) > 0:
+            suggestions.append(
+                f"已清盘 {stats['closed_count']} 笔，胜率 {stats.get('closed_win_rate', 0)}%，"
+                f"已实现盈亏已计入总资金。"
+            )
 
         for key, label in (("ultra_short", "超短"), ("midterm", "中线")):
             b = stats.get("buckets", {}).get(key, {})
@@ -598,6 +838,14 @@ class PortfolioManager:
         print(f"预估现金:   {stats['cash_estimated']:,.0f} 元")
         print(f"账户权益:   {stats['equity_estimated']:,.0f} 元")
         print(f"浮动盈亏:   {stats['total_float_pnl']:+,.0f} 元 ({stats['total_float_pnl_pct']:+.2f}%)")
+        print(
+            f"已实现盈亏: {stats.get('total_realized_pnl', 0):+,.0f} 元 | "
+            f"累计盈亏: {stats.get('total_pnl', 0):+,.0f} 元 ({stats.get('total_return_pct', 0):+.2f}%)"
+        )
+        if stats.get("closed_count", 0) > 0:
+            print(
+                f"清盘记录:   {stats['closed_count']} 笔，胜率 {stats.get('closed_win_rate', 0)}%"
+            )
         if stats.get("trade_date"):
             print(f"行情日期:   {stats['trade_date']}  (腾讯实时)")
         print("-" * 60)
@@ -609,6 +857,13 @@ class PortfolioManager:
             print(df[cols].to_string(index=False))
         else:
             print("（暂无持仓）")
+        if stats.get("closed_positions"):
+            print("-" * 60)
+            print("清盘记录（最近5笔）")
+            cdf = pd.DataFrame(stats["closed_positions"][:5])
+            cols = ["sell_date", "code", "name", "bucket", "quantity", "cost_price",
+                    "sell_price", "profit_pct", "profit_amount"]
+            print(cdf[cols].to_string(index=False))
         print("=" * 60)
         return stats
 
@@ -625,6 +880,7 @@ init_default_portfolio = init_from_config
 
 __all__ = [
     "Position",
+    "ClosedPosition",
     "Portfolio",
     "PortfolioManager",
     "PORTFOLIO_CONFIG_FILE",
