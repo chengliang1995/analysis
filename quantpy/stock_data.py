@@ -1,0 +1,829 @@
+"""
+统一股票数据获取层
+支持新浪 / 腾讯 / qstock / AKShare / 东方财富 / baostock 多数据源自动降级
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Callable, List, Optional, TypeVar
+
+import pandas as pd
+import requests
+
+T = TypeVar("T")
+
+from quantpy.paths import CACHE_DIR
+
+STOCK_LIST_CACHE = CACHE_DIR / "stock_list.csv"
+STOCK_LIST_META = CACHE_DIR / "stock_list_meta.json"
+DAILY_CLOSE_DIR = CACHE_DIR / "daily_close"
+CACHE_MAX_AGE_HOURS = 24
+TENCENT_QT_BATCH = 60
+
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+}
+
+# qstock 历史行情（可选）
+_qs_web_data: Optional[Callable] = None
+_qs_get_code: Optional[Callable] = None
+_qs_available = False
+
+try:
+    from qstock.data.trade import get_code as _qs_get_code_func
+    from qstock.data.trade import web_data as _qs_web_data_func
+
+    _qs_get_code = _qs_get_code_func
+    _qs_web_data = _qs_web_data_func
+    _qs_available = True
+except Exception:
+    pass
+
+COLUMN_ALIASES = {
+    "code": ["代码", "股票代码", "symbol", "code"],
+    "name": ["名称", "股票名称", "name"],
+    "pe": ["市盈率-动态", "市盈率", "pe", "PE", "per"],
+    "pb": ["市净率", "pb", "PB"],
+    "market_cap": ["总市值", "流通市值", "market_cap", "市值", "mktcap"],
+    "price": ["最新价", "现价", "price", "收盘", "trade"],
+    "turnover": ["换手率", "turnover", "turnoverratio"],
+    "roe": ["roe", "ROE", "净资产收益率"],
+}
+
+# 网络全部失败时的最小兜底列表（常见蓝筹 + 热门股）
+OFFLINE_FALLBACK_STOCKS = [
+    ("000001", "平安银行"), ("000002", "万科A"), ("000063", "中兴通讯"),
+    ("000069", "华侨城A"), ("000858", "五粮液"), ("000895", "双汇发展"),
+    ("000938", "紫光股份"), ("000983", "山西焦煤"), ("001979", "招商蛇口"),
+    ("002415", "海康威视"), ("002594", "比亚迪"), ("300750", "宁德时代"),
+    ("600000", "浦发银行"), ("600036", "招商银行"), ("600519", "贵州茅台"),
+    ("600887", "伊利股份"), ("601318", "中国平安"), ("601398", "工商银行"),
+    ("601857", "中国石油"), ("601988", "中国银行"), ("603259", "药明康德"),
+]
+
+
+def _retry(func: Callable[[], T], retries: int = 3, delay: float = 0.8) -> T:
+    last_exc: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            return func()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
+
+
+def code_to_symbol(code: str) -> str:
+    """6 位代码转行情接口符号，如 600519 -> sh600519。"""
+    code = str(code).zfill(6)
+    if code.startswith(("4", "8", "92")):
+        return f"bj{code}"
+    if code.startswith("6"):
+        return f"sh{code}"
+    return f"sz{code}"
+
+
+def normalize_stock_list(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    result = df.copy()
+    rename_map = {}
+    for standard, aliases in COLUMN_ALIASES.items():
+        if standard in result.columns:
+            continue
+        for alias in aliases:
+            if alias in result.columns:
+                rename_map[alias] = standard
+                break
+
+    if rename_map:
+        result = result.rename(columns=rename_map)
+
+    if "code" in result.columns:
+        result["code"] = (
+            result["code"].astype(str)
+            .str.replace(r"\.(SH|SZ|BJ)$", "", regex=True)
+            .str.replace(r"^(sh|sz|bj)\.", "", regex=True)
+        )
+        result["code"] = result["code"].str.zfill(6)
+
+    if "market_cap" in result.columns:
+        median = result["market_cap"].median()
+        if pd.notna(median) and median > 1e6:
+            result["market_cap"] = result["market_cap"] / 1e8
+
+    return result.drop_duplicates(subset=["code"], keep="first")
+
+
+def _save_stock_list_cache(df: pd.DataFrame, source: str) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(STOCK_LIST_CACHE, index=False, encoding="utf-8-sig")
+    STOCK_LIST_META.write_text(
+        json.dumps(
+            {
+                "source": source,
+                "count": len(df),
+                "updated_at": datetime.now().isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _load_stock_list_cache(max_age_hours: Optional[int] = CACHE_MAX_AGE_HOURS) -> pd.DataFrame:
+    if not STOCK_LIST_CACHE.exists():
+        return pd.DataFrame()
+
+    try:
+        if STOCK_LIST_META.exists() and max_age_hours is not None:
+            meta = json.loads(STOCK_LIST_META.read_text(encoding="utf-8"))
+            updated_at = datetime.fromisoformat(meta["updated_at"])
+            if datetime.now() - updated_at > timedelta(hours=max_age_hours):
+                return pd.DataFrame()
+
+        df = pd.read_csv(STOCK_LIST_CACHE, dtype={"code": str})
+        return normalize_stock_list(df)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _load_stale_cache() -> pd.DataFrame:
+    if not STOCK_LIST_CACHE.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(STOCK_LIST_CACHE, dtype={"code": str})
+        return normalize_stock_list(df)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_offline_fallback() -> pd.DataFrame:
+    return pd.DataFrame(OFFLINE_FALLBACK_STOCKS, columns=["code", "name"])
+
+
+def _fetch_via_sina() -> pd.DataFrame:
+    url = (
+        "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "Market_Center.getHQNodeData"
+    )
+    headers = {**DEFAULT_HEADERS, "Referer": "http://finance.sina.com.cn/"}
+    rows: List[dict] = []
+    page = 1
+
+    while page <= 200:
+        params = {
+            "page": str(page),
+            "num": "80",
+            "sort": "symbol",
+            "asc": "1",
+            "node": "hs_a",
+            "symbol": "",
+            "_s_r_a": "page",
+        }
+
+        def _request_page() -> list:
+            response = requests.get(url, params=params, headers=headers, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, list) else []
+
+        batch = _retry(lambda: _request_page(), retries=3)
+        if not batch:
+            break
+
+        rows.extend(batch)
+        page += 1
+        time.sleep(0.12)
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    return normalize_stock_list(df)
+
+
+def _fetch_via_akshare() -> pd.DataFrame:
+    import akshare as ak
+
+    return normalize_stock_list(ak.stock_zh_a_spot_em())
+
+
+def _fetch_via_qstock_get_code() -> pd.DataFrame:
+    if _qs_get_code is None:
+        return pd.DataFrame()
+    return normalize_stock_list(_qs_get_code())
+
+
+def _fetch_via_qstock_api() -> pd.DataFrame:
+    import qstock as qs
+
+    return normalize_stock_list(qs.get_data("stock_list"))
+
+
+def _fetch_via_eastmoney_api() -> pd.DataFrame:
+    hosts = [
+        "https://push2.eastmoney.com",
+        "http://82.push2.eastmoney.com",
+        "http://80.push2.eastmoney.com",
+        "http://22.push2.eastmoney.com",
+    ]
+    fields = "f12,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f21,f23"
+    fs = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23"
+    headers = {**DEFAULT_HEADERS, "Referer": "https://quote.eastmoney.com/"}
+
+    for host in hosts:
+        df_total = pd.DataFrame()
+        page_number = 1
+        page_size = 200
+        url = f"{host}/api/qt/clist/get"
+
+        try:
+            while page_number <= 100:
+                params = {
+                    "pn": str(page_number),
+                    "pz": str(page_size),
+                    "po": "1",
+                    "np": "1",
+                    "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                    "fltt": "2",
+                    "invt": "2",
+                    "fid": "f3",
+                    "fs": fs,
+                    "fields": fields,
+                }
+                time.sleep(0.2)
+                response = requests.get(url, headers=headers, params=params, timeout=20)
+                response.raise_for_status()
+                payload = response.json()
+                if not payload.get("data") or not payload["data"].get("diff"):
+                    break
+
+                batch = payload["data"]["diff"]
+                df_total = pd.concat([df_total, pd.DataFrame(batch)], ignore_index=True)
+                page_number += 1
+                if not batch:
+                    break
+
+            if not df_total.empty:
+                rename = {
+                    "f12": "code",
+                    "f14": "name",
+                    "f2": "price",
+                    "f3": "涨跌幅",
+                    "f20": "market_cap",
+                    "f23": "pb",
+                    "f9": "pe",
+                }
+                existing = {k: v for k, v in rename.items() if k in df_total.columns}
+                return normalize_stock_list(df_total.rename(columns=existing))
+        except Exception:
+            continue
+
+    return pd.DataFrame()
+
+
+def _fetch_via_baostock() -> pd.DataFrame:
+    import baostock as bs
+
+    lg = bs.login()
+    if lg.error_code != "0":
+        return pd.DataFrame()
+
+    try:
+        rs = bs.query_all_stock(day=datetime.now().strftime("%Y-%m-%d"))
+        rows: List[List[str]] = []
+        while rs.error_code == "0" and rs.next():
+            rows.append(rs.get_row_data())
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=rs.fields)
+        df = df[df["code"].str.startswith(("sh.6", "sz.0", "sz.3", "bj."))]
+        df["code"] = df["code"].str.replace(r"^(sh|sz|bj)\.", "", regex=True)
+        df = df.rename(columns={"code_name": "name"})
+        return normalize_stock_list(df[["code", "name"]])
+    finally:
+        bs.logout()
+
+
+def _fetch_via_tencent_hist(
+    code: str,
+    start: str,
+    end: str,
+) -> pd.DataFrame:
+    symbol = code_to_symbol(code)
+    start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
+    end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+    param = f"{symbol},day,{start_fmt},{end_fmt},640,qfq"
+    url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+    def _request() -> pd.DataFrame:
+        response = requests.get(
+            url,
+            params={"param": param},
+            headers={**DEFAULT_HEADERS, "Referer": "https://gu.qq.com/"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        stock_data = payload.get("data", {}).get(symbol, {})
+        rows = stock_data.get("qfqday") or stock_data.get("day") or []
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume"])
+        for col in ("open", "close", "high", "low", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+        df["pct_chg"] = df["close"].pct_change() * 100
+        return df
+
+    return _retry(_request, retries=3)
+
+
+def _fetch_via_sina_hist(code: str, datalen: int = 120) -> pd.DataFrame:
+    symbol = code_to_symbol(code)
+    url = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
+    params = {"symbol": symbol, "scale": "240", "ma": "no", "datalen": str(datalen)}
+
+    def _request() -> pd.DataFrame:
+        response = requests.get(
+            url,
+            params=params,
+            headers={**DEFAULT_HEADERS, "Referer": "https://finance.sina.com.cn/"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows)
+        rename = {"day": "date"}
+        df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
+        for col in ("open", "close", "high", "low", "volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+        df["pct_chg"] = df["close"].pct_change() * 100
+        return df
+
+    return _retry(_request, retries=3)
+
+
+def _parse_tencent_qt_line(line: str) -> Optional[dict]:
+    """解析腾讯 qt.gtimg.cn 行情串。"""
+    line = line.strip()
+    if not line or "~" not in line:
+        return None
+    if '="' in line:
+        line = line.split('="', 1)[1].rstrip('";')
+    parts = line.split("~")
+    if len(parts) < 40:
+        return None
+    try:
+        code = str(parts[2]).zfill(6)
+        price = float(parts[3])
+        pre_close = float(parts[4]) if parts[4] else 0.0
+        open_price = float(parts[5]) if parts[5] else price
+        pct_chg = float(parts[32]) if parts[32] else 0.0
+        if pct_chg == 0 and pre_close > 0:
+            pct_chg = (price - pre_close) / pre_close * 100
+        quote_time = parts[30] if len(parts) > 30 else ""
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+        if len(quote_time) >= 8:
+            trade_date = f"{quote_time[:4]}-{quote_time[4:6]}-{quote_time[6:8]}"
+        return {
+            "code": code,
+            "name": parts[1],
+            "close": price,
+            "price": price,
+            "open": open_price,
+            "pre_close": pre_close,
+            "high": float(parts[33]) if parts[33] else price,
+            "low": float(parts[34]) if parts[34] else price,
+            "pct_chg": round(pct_chg, 2),
+            "changepercent": round(pct_chg, 2),
+            "volume": float(parts[36]) if parts[36] else 0.0,
+            "amount": float(parts[37]) if parts[37] else 0.0,
+            "turnover": float(parts[38]) if parts[38] else 0.0,
+            "turnoverratio": float(parts[38]) if parts[38] else 0.0,
+            "trade_date": trade_date,
+            "quote_time": quote_time,
+            "source": "tencent_qt",
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def get_realtime_quotes(codes: List[str], verbose: bool = False) -> pd.DataFrame:
+    """批量获取腾讯实时/最新价（用于持仓估值与盘中扫描）。"""
+    if not codes:
+        return pd.DataFrame()
+
+    unique_codes = sorted({str(c).zfill(6) for c in codes})
+    symbols = [code_to_symbol(c) for c in unique_codes]
+    url = "https://qt.gtimg.cn/q="
+    headers = {**DEFAULT_HEADERS, "Referer": "https://gu.qq.com/"}
+    rows: List[dict] = []
+
+    for i in range(0, len(symbols), TENCENT_QT_BATCH):
+        batch = symbols[i : i + TENCENT_QT_BATCH]
+        try:
+            response = requests.get(url + ",".join(batch), headers=headers, timeout=20)
+            response.raise_for_status()
+            for line in response.text.strip().split(";"):
+                item = _parse_tencent_qt_line(line)
+                if item:
+                    rows.append(item)
+        except Exception as exc:
+            if verbose:
+                print(f"腾讯行情批次失败: {exc}")
+        time.sleep(0.12)
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).drop_duplicates(subset=["code"], keep="last")
+
+
+def refresh_stock_list_quotes(
+    df: pd.DataFrame,
+    codes: Optional[List[str]] = None,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """用腾讯最新价覆盖股票列表中的 price / pct_chg / turnover。"""
+    if df.empty:
+        return df
+
+    result = df.copy()
+    if "code" not in result.columns:
+        return result
+
+    result["code"] = result["code"].astype(str).str.zfill(6)
+    target_codes = codes or result["code"].tolist()
+    quotes = get_realtime_quotes(target_codes, verbose=verbose)
+    if quotes.empty:
+        return result
+
+    quote_map = quotes.set_index("code")
+    for col, qcol in (
+        ("price", "close"),
+        ("pct_chg", "pct_chg"),
+        ("changepercent", "pct_chg"),
+        ("turnover", "turnover"),
+        ("turnoverratio", "turnover"),
+    ):
+        if qcol in quote_map.columns:
+            mapped = result["code"].map(quote_map[qcol])
+            if col not in result.columns:
+                result[col] = mapped
+            else:
+                result[col] = mapped.combine_first(result[col])
+
+    result["quote_time"] = result["code"].map(
+        quote_map["quote_time"] if "quote_time" in quote_map.columns else pd.Series(dtype=str)
+    )
+    result["trade_date"] = result["code"].map(
+        quote_map["trade_date"] if "trade_date" in quote_map.columns else pd.Series(dtype=str)
+    )
+    return result
+
+
+def save_daily_close_snapshot(quotes: pd.DataFrame, trade_date: Optional[str] = None) -> Path:
+    """保存每日收盘/最新价快照。"""
+    DAILY_CLOSE_DIR.mkdir(parents=True, exist_ok=True)
+    if trade_date is None:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+    if quotes.empty:
+        raise ValueError("行情数据为空，无法保存")
+
+    if "trade_date" in quotes.columns and quotes["trade_date"].notna().any():
+        trade_date = str(quotes["trade_date"].dropna().iloc[0])[:10]
+
+    path = DAILY_CLOSE_DIR / f"{trade_date}.csv"
+    cols = [
+        "code", "name", "close", "open", "high", "low", "pre_close",
+        "pct_chg", "turnover", "volume", "amount", "trade_date", "quote_time", "source",
+    ]
+    out = quotes.copy()
+    if "close" not in out.columns and "price" in out.columns:
+        out["close"] = out["price"]
+    for col in cols:
+        if col not in out.columns:
+            out[col] = ""
+    out[cols].to_csv(path, index=False, encoding="utf-8-sig")
+
+    meta = {
+        "trade_date": trade_date,
+        "count": len(out),
+        "updated_at": datetime.now().isoformat(),
+        "source": "tencent_qt",
+    }
+    path.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def load_daily_close_snapshot(trade_date: Optional[str] = None) -> pd.DataFrame:
+    if trade_date is None:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+    path = DAILY_CLOSE_DIR / f"{trade_date}.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(path, dtype={"code": str})
+    df["code"] = df["code"].str.zfill(6)
+    return df
+
+
+def collect_daily_market_close(
+    stock_list: Optional[pd.DataFrame] = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    采集全市场最新收盘/现价并落盘。
+    超短扫描与仓位估值应优先使用此数据。
+    """
+    if stock_list is None:
+        stock_list = get_all_stocks(verbose=verbose, use_cache=True, refresh_prices=False)
+
+    if stock_list.empty:
+        return pd.DataFrame()
+
+    codes = stock_list["code"].astype(str).str.zfill(6).tolist()
+    if verbose:
+        print(f"正在采集 {len(codes)} 只股票最新行情（腾讯）...")
+    quotes = get_realtime_quotes(codes, verbose=verbose)
+    if quotes.empty:
+        return pd.DataFrame()
+
+    path = save_daily_close_snapshot(quotes)
+    refreshed = refresh_stock_list_quotes(stock_list, codes=codes, verbose=False)
+    _save_stock_list_cache(refreshed, "tencent_qt_daily")
+    if verbose:
+        print(f"已保存每日行情: {path} ({len(quotes)} 只)")
+    return quotes
+
+
+def get_market_spot(
+    verbose: bool = False,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """
+    获取带最新价的行情快照。
+    优先今日 daily_close 文件，否则实时拉取腾讯行情。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not force_refresh:
+        snap = load_daily_close_snapshot(today)
+        if not snap.empty:
+            if verbose:
+                print(f"使用今日收盘快照: {today} ({len(snap)} 只)")
+            base = get_all_stocks(verbose=False, use_cache=True, refresh_prices=False)
+            if base.empty:
+                return normalize_stock_list(snap)
+            merged = base.copy()
+            merged["code"] = merged["code"].astype(str).str.zfill(6)
+            snap_idx = snap.set_index("code")
+            for col in ("close", "pct_chg", "turnover", "trade_date", "quote_time"):
+                src = "price" if col == "close" and "close" not in snap_idx.columns else col
+                if src in snap_idx.columns or col in snap_idx.columns:
+                    merged[col if col != "close" else "price"] = merged["code"].map(
+                        snap_idx[col if col in snap_idx.columns else src]
+                    )
+            if "close" in snap_idx.columns:
+                merged["price"] = merged["code"].map(snap_idx["close"])
+            if "pct_chg" in snap_idx.columns:
+                merged["pct_chg"] = merged["code"].map(snap_idx["pct_chg"])
+                merged["changepercent"] = merged["pct_chg"]
+            if "turnover" in snap_idx.columns:
+                merged["turnover"] = merged["code"].map(snap_idx["turnover"])
+            return merged
+
+    quotes = collect_daily_market_close(verbose=verbose)
+    if quotes.empty:
+        base = get_all_stocks(verbose=verbose, use_cache=True, refresh_prices=False)
+        return refresh_stock_list_quotes(base, verbose=verbose)
+    base = get_all_stocks(verbose=False, use_cache=True, refresh_prices=False)
+    return refresh_stock_list_quotes(base, codes=quotes["code"].tolist(), verbose=False)
+
+
+def _patch_hist_with_quote(df: pd.DataFrame, code: str) -> pd.DataFrame:
+    """用最新行情修正 K 线最后一根（避免复权/缓存导致涨跌幅失真）。"""
+    quotes = get_realtime_quotes([code])
+    if quotes.empty or df.empty:
+        return df
+
+    q = quotes.iloc[0]
+    close = float(q["close"])
+    trade_date = pd.to_datetime(str(q["trade_date"])[:10])
+    result = df.copy()
+    result["date"] = pd.to_datetime(result["date"])
+
+    if result.iloc[-1]["date"].date() == trade_date.date():
+        idx = result.index[-1]
+        result.loc[idx, "close"] = close
+        if "open" in result.columns and q.get("open"):
+            result.loc[idx, "open"] = float(q["open"])
+        if "high" in result.columns and q.get("high"):
+            result.loc[idx, "high"] = max(float(result.loc[idx, "high"]), close, float(q["high"]))
+        if "low" in result.columns and q.get("low"):
+            result.loc[idx, "low"] = min(float(result.loc[idx, "low"]), close, float(q["low"]))
+    else:
+        row = {
+            "date": trade_date,
+            "open": float(q.get("open", close)),
+            "close": close,
+            "high": float(q.get("high", close)),
+            "low": float(q.get("low", close)),
+            "volume": float(q.get("volume", 0)),
+        }
+        result = pd.concat([result, pd.DataFrame([row])], ignore_index=True)
+
+    if "pct_chg" in result.columns or "close" in result.columns:
+        result["pct_chg"] = result["close"].pct_change() * 100
+        if q.get("pre_close") and float(q["pre_close"]) > 0:
+            result.loc[result.index[-1], "pct_chg"] = (
+                (close - float(q["pre_close"])) / float(q["pre_close"]) * 100
+            )
+    return result.sort_values("date").reset_index(drop=True)
+
+
+def get_all_stocks(
+    verbose: bool = True,
+    use_cache: bool = True,
+    allow_offline: bool = True,
+    refresh_prices: bool = False,
+) -> pd.DataFrame:
+    """
+    获取全部 A 股列表。
+
+    优先级: 本地缓存 > 新浪 > AKShare > qstock > 东方财富 > baostock > 过期缓存 > 离线兜底
+    """
+    if use_cache:
+        cached = _load_stock_list_cache()
+        if not cached.empty:
+            if verbose:
+                print(f"使用本地缓存: {len(cached)} 只股票")
+            if refresh_prices:
+                if verbose:
+                    print("刷新最新价（腾讯实时）...")
+                cached = refresh_stock_list_quotes(cached, verbose=verbose)
+                _save_stock_list_cache(cached, "tencent_qt")
+            return cached
+
+    providers = [
+        ("新浪 API", _fetch_via_sina),
+        ("AKShare", _fetch_via_akshare),
+        ("qstock get_code", _fetch_via_qstock_get_code),
+        ("qstock API", _fetch_via_qstock_api),
+        ("东方财富 API", _fetch_via_eastmoney_api),
+        ("baostock", _fetch_via_baostock),
+    ]
+
+    for name, fetcher in providers:
+        try:
+            if verbose:
+                print(f"尝试数据源: {name}...")
+            df = fetcher()
+            if not df.empty:
+                if verbose:
+                    print(f"通过 {name} 获取 {len(df)} 只股票")
+                if refresh_prices:
+                    df = refresh_stock_list_quotes(df, verbose=verbose)
+                    _save_stock_list_cache(df, "tencent_qt")
+                else:
+                    _save_stock_list_cache(df, name)
+                return df
+        except Exception as exc:
+            if verbose:
+                print(f"{name} 失败: {exc}")
+
+    stale = _load_stale_cache()
+    if not stale.empty:
+        if verbose:
+            print(f"在线源均失败，使用过期缓存: {len(stale)} 只股票")
+        return stale
+
+    if allow_offline:
+        df = _fetch_offline_fallback()
+        if verbose:
+            print(f"在线源均失败，使用内置兜底列表: {len(df)} 只股票")
+            print("提示: 网络恢复后重新运行可获取完整 A 股列表并更新 cache/stock_list.csv")
+        return df
+
+    if verbose:
+        print("所有数据源均失败")
+    return pd.DataFrame()
+
+
+def get_stock_hist(
+    code: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    days: int = 180,
+    freq: str = "d",
+    patch_live: bool = True,
+) -> pd.DataFrame:
+    """获取单只股票历史 K 线。优先级: 腾讯 > qstock > AKShare > 新浪。"""
+    if end is None:
+        end = datetime.now().strftime("%Y%m%d")
+    if start is None:
+        start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+
+    code = str(code).zfill(6)
+    hist_providers = [
+        ("腾讯财经", lambda: _fetch_via_tencent_hist(code, start, end)),
+    ]
+
+    if _qs_available and _qs_web_data is not None:
+        hist_providers.append(
+            (
+                "qstock",
+                lambda: _qs_web_data(code, start=start, end=end, freq=freq, fqt=1),
+            )
+        )
+
+    def _akshare_hist() -> pd.DataFrame:
+        import akshare as ak
+
+        df = ak.stock_zh_a_hist(
+            symbol=code,
+            period="daily",
+            start_date=start,
+            end_date=end,
+            adjust="qfq",
+        )
+        if df.empty:
+            return df
+        rename = {
+            "日期": "date",
+            "开盘": "open",
+            "收盘": "close",
+            "最高": "high",
+            "最低": "low",
+            "成交量": "volume",
+            "成交额": "amount",
+            "涨跌幅": "pct_chg",
+        }
+        return df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
+
+    hist_providers.extend(
+        [
+            ("AKShare", _akshare_hist),
+            ("新浪 K 线", lambda: _fetch_via_sina_hist(code, datalen=max(days, 30))),
+        ]
+    )
+
+    for _, fetcher in hist_providers:
+        try:
+            df = fetcher()
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                if "date" in df.columns:
+                    df["date"] = pd.to_datetime(df["date"])
+                if patch_live:
+                    df = _patch_hist_with_quote(df, code)
+                if "pct_chg" not in df.columns and "close" in df.columns:
+                    df["pct_chg"] = df["close"].pct_change() * 100
+                return df
+        except Exception:
+            continue
+
+    return pd.DataFrame()
+
+
+def get_latest_price(code: str) -> float:
+    """获取单只股票最新价（腾讯实时）。"""
+    quotes = get_realtime_quotes([code])
+    if quotes.empty:
+        return 0.0
+    return float(quotes.iloc[0]["close"])
+
+
+def get_stock_code_column(df: pd.DataFrame) -> str:
+    for col in ("code", "代码"):
+        if col in df.columns:
+            return col
+    raise ValueError("股票列表缺少代码列")
+
+
+def get_stock_name_column(df: pd.DataFrame) -> Optional[str]:
+    for col in ("name", "名称"):
+        if col in df.columns:
+            return col
+    return None
