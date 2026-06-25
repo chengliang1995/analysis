@@ -39,6 +39,10 @@
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     button.secondary { background: #334155; }
     button.secondary:hover:not(:disabled) { background: #475569; }
+    button.link-btn {
+      padding: 4px 10px; font-size: 0.75rem; background: #1e3a5f; color: #93c5fd;
+    }
+    button.link-btn:hover:not(:disabled) { background: #2563eb; color: #fff; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
     .grid-full { grid-template-columns: 1fr; }
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
@@ -168,6 +172,41 @@
     .report-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
     .report-table td.tags { color: var(--muted); max-width: 280px; }
     .tag-list { font-size: 0.75rem; color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    tr.drill-row { cursor: pointer; transition: background 0.15s; }
+    tr.drill-row:hover { background: #1e293b; }
+    tr.drill-row td:first-child { color: #93c5fd; }
+    .drill-hint { font-size: 0.7rem; color: #64748b; font-weight: 400; margin-left: 8px; }
+    .stock-summary {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+      margin-bottom: 16px;
+    }
+    @media (max-width: 700px) { .stock-summary { grid-template-columns: repeat(2, 1fr); } }
+    .stock-summary .stat { padding: 10px 12px; background: #111827; border-radius: 8px; }
+    .price-chart {
+      display: flex; align-items: flex-end; gap: 6px;
+      height: 120px; padding: 12px 8px 28px; margin-bottom: 16px;
+      background: #111827; border-radius: 8px; border: 1px solid var(--border);
+    }
+    .price-chart .bar-wrap {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: flex-end; min-width: 0; height: 100%;
+    }
+    .price-chart .bar {
+      width: 100%; max-width: 36px; border-radius: 4px 4px 0 0;
+      background: linear-gradient(180deg, #60a5fa, #3b82f6);
+      min-height: 4px;
+    }
+    .price-chart .bar.down { background: linear-gradient(180deg, #f87171, #ef4444); }
+    .price-chart .bar-label {
+      font-size: 0.65rem; color: var(--muted); margin-top: 6px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+    }
+    .stock-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    .stock-table th, .stock-table td {
+      padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: right;
+    }
+    .stock-table th:first-child, .stock-table td:first-child { text-align: left; }
+    .stock-table th { color: var(--muted); font-weight: 500; font-size: 0.75rem; }
   </style>
 </head>
 <body>
@@ -176,7 +215,7 @@
       <div>
         <h1>QuantPy 持仓仪表盘</h1>
         <p class="sub" id="server-time">加载中…</p>
-        <p class="sub" style="font-size:0.75rem;color:#64748b">版本 v{{ app_version|default('2.6') }} · 超短2万+中线15万</p>
+        <p class="sub" style="font-size:0.75rem;color:#64748b">版本 v{{ app_version|default('2.7') }} · 超短2万+中线15万</p>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <button class="secondary" id="btn-report" type="button">查看日报</button>
@@ -201,7 +240,7 @@
         <div class="stats" id="portfolio-stats"></div>
         <div class="table-wrap" id="portfolio-table"></div>
         <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-          <h2 style="font-size:0.95rem">中线个股推荐</h2>
+          <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">市值&lt;1000亿 · 股价&lt;100 · 点击下钻</span></h2>
           <span class="badge">未持仓</span>
         </div>
         <div class="table-wrap" id="midterm-rec-table"></div>
@@ -225,6 +264,7 @@
         </div>
         <div class="form-tabs">
           <button type="button" class="active" data-tab="portfolio">持仓管理</button>
+          <button type="button" data-tab="cost">修改成本</button>
           <button type="button" data-tab="trade">交易录入</button>
         </div>
         <form class="trade-form form-panel active" id="portfolio-form">
@@ -253,6 +293,22 @@
             <button type="submit">保存持仓</button>
             <button type="button" class="secondary" id="btn-pf-clear">新增/清空</button>
             <button type="button" class="secondary" id="btn-pf-delete">删除此持仓</button>
+          </div>
+        </form>
+        <form class="trade-form form-panel" id="cost-form">
+          <div class="trade-form-grid">
+            <div style="grid-column:1/-1">
+              <label>中线持仓</label>
+              <select id="mc-holding" required><option value="">请选择</option></select>
+            </div>
+            <div><label>代码</label><input id="mc-code" readonly /></div>
+            <div><label>名称</label><input id="mc-name" readonly /></div>
+            <div><label>数量</label><input id="mc-qty" readonly /></div>
+            <div><label>原成本</label><input id="mc-old-cost" readonly /></div>
+            <div><label>新成本价</label><input id="mc-new-cost" type="number" step="0.0001" min="0.01" required /></div>
+          </div>
+          <div class="trade-form-actions">
+            <button type="submit">保存成本</button>
           </div>
         </form>
         <form class="trade-form form-panel" id="trade-form">
@@ -316,6 +372,16 @@
     </div>
   </div>
 
+  <div class="modal" id="stock-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <strong id="stock-title">个股行情</strong>
+        <button class="secondary" id="btn-close-stock" type="button">关闭</button>
+      </div>
+      <div class="modal-body" id="stock-body">加载中…</div>
+    </div>
+  </div>
+
   <script>
     const fmtMoney = (n) => Number(n || 0).toLocaleString("zh-CN", { maximumFractionDigits: 0 });
     const fmtPct = (n) => {
@@ -342,6 +408,216 @@
       el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
     }
 
+    function renderPortfolioTable(positions) {
+      const el = document.getElementById("portfolio-table");
+      if (!positions.length) {
+        el.innerHTML = `<div class="empty">暂无个人持仓。请编辑 data/portfolio_config.json 后运行 portfolio --init</div>`;
+        return;
+      }
+      const head = ["账户", "代码", "名称", "成本", "趋势", "评分", "建议", "浮盈%", "占账户%", "操作"]
+        .map((h) => `<th>${h}</th>`).join("");
+      const body = positions.map((x) => {
+        const isMid = x.bucket === "midterm" || x.bucket_label === "中线";
+        const action = isMid
+          ? `<button type="button" class="link-btn" data-cost-code="${escapeHtml(x.code)}" data-cost-name="${escapeHtml(x.name || "")}" data-cost="${x.cost_price}" data-cost-qty="${x.quantity}">改成本</button>`
+          : "—";
+        return `<tr>` +
+          `<td>${x.bucket_label || "中线"}</td>` +
+          `<td>${x.code}</td><td>${x.name}</td>` +
+          `<td>${Number(x.cost_price).toFixed(4)}</td>` +
+          `<td>${x.midterm_trend || "—"}</td>` +
+          `<td>${x.midterm_score || "—"}</td>` +
+          `<td>${x.midterm_action || "—"}</td>` +
+          `<td>${fmtPct(x.profit_pct)}</td>` +
+          `<td>${x.weight_pct}%</td>` +
+          `<td>${action}</td>` +
+          `</tr>`;
+      }).join("");
+      el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+      el.querySelectorAll("button[data-cost-code]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          openCostEditor({
+            code: btn.dataset.costCode,
+            name: btn.dataset.costName,
+            quantity: btn.dataset.costQty,
+            cost_price: btn.dataset.cost,
+          });
+        });
+      });
+    }
+
+    function fillCostFormOptions(positions) {
+      const sel = document.getElementById("mc-holding");
+      const midterm = (positions || []).filter(
+        (p) => p.bucket === "midterm" || p.bucket_label === "中线"
+      );
+      sel.innerHTML = '<option value="">请选择中线持仓</option>';
+      midterm.forEach((p, i) => {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = `${p.name}(${p.code}) ${p.quantity}股 @${p.cost_price}`;
+        sel.appendChild(opt);
+      });
+      sel._positions = midterm;
+    }
+
+    function applyCostSelection(index) {
+      const positions = document.getElementById("mc-holding")._positions || [];
+      const p = positions[Number(index)];
+      if (!p) {
+        document.getElementById("mc-code").value = "";
+        document.getElementById("mc-name").value = "";
+        document.getElementById("mc-qty").value = "";
+        document.getElementById("mc-old-cost").value = "";
+        document.getElementById("mc-new-cost").value = "";
+        return;
+      }
+      document.getElementById("mc-code").value = p.code;
+      document.getElementById("mc-name").value = p.name;
+      document.getElementById("mc-qty").value = p.quantity;
+      document.getElementById("mc-old-cost").value = p.cost_price;
+      document.getElementById("mc-new-cost").value = p.cost_price;
+      document.getElementById("mc-new-cost").focus();
+      document.getElementById("mc-new-cost").select();
+    }
+
+    function openCostEditor(position) {
+      switchFormTab("cost");
+      const sel = document.getElementById("mc-holding");
+      const positions = sel._positions || [];
+      const idx = positions.findIndex((p) => p.code === position.code);
+      if (idx >= 0) {
+        sel.value = String(idx);
+        applyCostSelection(idx);
+      } else {
+        document.getElementById("mc-code").value = position.code;
+        document.getElementById("mc-name").value = position.name || "";
+        document.getElementById("mc-qty").value = position.quantity || "";
+        document.getElementById("mc-old-cost").value = position.cost_price || "";
+        document.getElementById("mc-new-cost").value = position.cost_price || "";
+        document.getElementById("mc-new-cost").focus();
+      }
+      document.getElementById("panel-suggest").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    async function submitCostUpdate(ev) {
+      ev.preventDefault();
+      const code = document.getElementById("mc-code").value.trim();
+      const newCost = document.getElementById("mc-new-cost").value.trim();
+      if (!code || !newCost) {
+        showToast("请选择持仓并填写新成本价", true);
+        return;
+      }
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/portfolio/position/${encodeURIComponent(code)}/cost`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cost_price: newCost }),
+        });
+        const body = await parseJsonResponse(res);
+        if (body.data) renderAll(body.data);
+        showToast(body.message || "已更新成本", !body.ok);
+      } catch (e) {
+        showToast("更新失败: " + e.message, true);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function renderMidtermRecTable(rec) {
+      const el = document.getElementById("midterm-rec-table");
+      if (!rec.length) {
+        el.innerHTML = `<div class="empty">点击「中线分析」生成推荐</div>`;
+        return;
+      }
+      const head = ["代码", "名称", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "理由"]
+        .map((h) => `<th>${h}</th>`).join("");
+      const body = rec.map((x) =>
+        `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+        `<td>${x.code}</td><td>${x.name}</td>` +
+        `<td>${x.price != null ? Number(x.price).toFixed(2) : "—"}</td>` +
+        `<td>${x.market_cap_yi != null ? Number(x.market_cap_yi).toFixed(1) : "—"}</td>` +
+        `<td>${x.midterm_score}</td>` +
+        `<td>${fmtPct(x.pct_chg)}</td><td>${x.rsi || "—"}</td>` +
+        `<td><span class="tag-list" title="${escapeHtml(x.reason || "")}">${escapeHtml(x.reason || "")}</span></td>` +
+        `</tr>`
+      ).join("");
+      el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+      el.querySelectorAll("tr.drill-row").forEach((row) => {
+        row.addEventListener("click", () => {
+          openStockDrilldown(row.dataset.code, row.dataset.name);
+        });
+      });
+    }
+
+    function renderStockDrilldown(data) {
+      const body = document.getElementById("stock-body");
+      const title = data.name
+        ? `${data.name} (${data.code}) · 近${data.days}日`
+        : `${data.code} · 近${data.days}日`;
+      document.getElementById("stock-title").textContent = title;
+
+      const s = data.summary || {};
+      const summaryHtml = `
+        <div class="stock-summary">
+          <div class="stat"><label>最新收盘</label><span>${Number(s.latest_close || 0).toFixed(2)}</span></div>
+          <div class="stat"><label>区间最高</label><span>${Number(s.period_high || 0).toFixed(2)}</span></div>
+          <div class="stat"><label>区间最低</label><span>${Number(s.period_low || 0).toFixed(2)}</span></div>
+          <div class="stat"><label>区间涨跌</label><span>${fmtPct(s.period_change_pct)}</span></div>
+        </div>`;
+
+      const closes = (data.bars || []).map((b) => b.close);
+      const minClose = Math.min(...closes);
+      const maxClose = Math.max(...closes);
+      const span = maxClose - minClose || 1;
+      const chartHtml = `<div class="price-chart">${
+        (data.bars || []).map((b) => {
+          const h = Math.max(8, ((b.close - minClose) / span) * 72 + 8);
+          const cls = (b.pct_chg || 0) < 0 ? "bar down" : "bar";
+          const label = b.date.slice(5);
+          return `<div class="bar-wrap"><div class="${cls}" style="height:${h}px" title="${b.date} 收${b.close}"></div><div class="bar-label">${label}</div></div>`;
+        }).join("")
+      }</div>`;
+
+      const rows = (data.bars || []).map((b) =>
+        `<tr>` +
+        `<td>${b.date}</td>` +
+        `<td>${Number(b.open).toFixed(2)}</td>` +
+        `<td>${Number(b.close).toFixed(2)}</td>` +
+        `<td>${Number(b.high).toFixed(2)}</td>` +
+        `<td>${Number(b.low).toFixed(2)}</td>` +
+        `<td>${b.pct_chg == null ? "—" : fmtPct(b.pct_chg)}</td>` +
+        `</tr>`
+      ).join("");
+
+      body.innerHTML = summaryHtml + chartHtml +
+        `<table class="stock-table"><thead><tr>` +
+        `<th>日期</th><th>开盘</th><th>收盘</th><th>最高</th><th>最低</th><th>涨跌幅</th>` +
+        `</tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    async function openStockDrilldown(code, name) {
+      const modal = document.getElementById("stock-modal");
+      modal.classList.add("open");
+      document.getElementById("stock-title").textContent = name
+        ? `${name} (${code}) · 近10日`
+        : `${code} · 近10日`;
+      document.getElementById("stock-body").innerHTML = "加载中…";
+      try {
+        const q = new URLSearchParams({ days: "10", name: name || "" });
+        const res = await fetch(`/api/stock/${encodeURIComponent(code)}/history?${q}`);
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.message || `HTTP ${res.status}`);
+        }
+        renderStockDrilldown(data);
+      } catch (e) {
+        document.getElementById("stock-body").innerHTML =
+          `<p class="empty">加载失败: ${escapeHtml(e.message)}</p>`;
+      }
+    }
+
     function renderPortfolio(p) {
       const has = p.has_data;
       const ultra = p.buckets?.ultra_short || {};
@@ -352,30 +628,9 @@
         ["中线账户", has ? `${fmtMoney(mid.market_value || 0)} / ${fmtMoney(p.midterm_capital || 150000)} (${mid.invested_pct || 0}%)` : "—"],
         ["合计浮盈", has ? fmtPct(p.total_float_pnl_pct) : "—"],
       ]);
-      renderTable(
-        document.getElementById("portfolio-table"),
-        ["账户", "代码", "名称", "趋势", "评分", "建议", "浮盈%", "占账户%"],
-        (p.positions || []).map((x) => [
-          x.bucket_label || "中线",
-          x.code, x.name,
-          x.midterm_trend || "—",
-          x.midterm_score || "—",
-          x.midterm_action || "—",
-          fmtPct(x.profit_pct), `${x.weight_pct}%`,
-        ]),
-        "暂无个人持仓。请编辑 data/portfolio_config.json 后运行 portfolio --init"
-      );
+      renderPortfolioTable(p.positions || []);
       const rec = (p.midterm && p.midterm.recommendations) || [];
-      renderTable(
-        document.getElementById("midterm-rec-table"),
-        ["代码", "名称", "评分", "涨幅%", "RSI", "理由"],
-        rec.map((x) => [
-          x.code, x.name, x.midterm_score,
-          fmtPct(x.pct_chg), x.rsi || "—",
-          `<span class="tag-list" title="${x.reason || ""}">${x.reason || ""}</span>`,
-        ]),
-        "点击「中线分析」生成推荐"
-      );
+      renderMidtermRecTable(rec);
     }
 
     function renderSim(s) {
@@ -492,6 +747,8 @@
       document.getElementById("pf-name").value = p.name;
       document.getElementById("pf-qty").value = p.quantity;
       document.getElementById("pf-cost").value = p.cost_price;
+      document.getElementById("pf-buy-date").value = p.buy_date || "";
+      document.getElementById("pf-strategy").value = p.strategy || "中线";
       document.getElementById("pf-note").value = p.note || "";
     }
 
@@ -500,6 +757,7 @@
         btn.classList.toggle("active", btn.dataset.tab === tab);
       });
       document.getElementById("portfolio-form").classList.toggle("active", tab === "portfolio");
+      document.getElementById("cost-form").classList.toggle("active", tab === "cost");
       document.getElementById("trade-form").classList.toggle("active", tab === "trade");
     }
 
@@ -545,6 +803,7 @@
       renderRecentTrades(data.trades);
       fillHoldingOptions(data.portfolio?.positions);
       fillPortfolioForm(data.portfolio);
+      fillCostFormOptions(data.portfolio?.positions);
     }
 
     async function submitPortfolio(ev) {
@@ -829,12 +1088,22 @@
     document.getElementById("report-modal").addEventListener("click", (e) => {
       if (e.target.id === "report-modal") e.target.classList.remove("open");
     });
+    document.getElementById("btn-close-stock").addEventListener("click", () => {
+      document.getElementById("stock-modal").classList.remove("open");
+    });
+    document.getElementById("stock-modal").addEventListener("click", (e) => {
+      if (e.target.id === "stock-modal") e.target.classList.remove("open");
+    });
 
     document.querySelectorAll(".form-tabs button").forEach((btn) => {
       btn.addEventListener("click", () => switchFormTab(btn.dataset.tab));
     });
     document.getElementById("pf-ultra-capital").addEventListener("input", syncPortfolioCapitalFields);
     document.getElementById("pf-mid-capital").addEventListener("input", syncPortfolioCapitalFields);
+    document.getElementById("cost-form").addEventListener("submit", submitCostUpdate);
+    document.getElementById("mc-holding").addEventListener("change", (e) => {
+      applyCostSelection(e.target.value);
+    });
     document.getElementById("portfolio-form").addEventListener("submit", submitPortfolio);
     document.getElementById("pf-edit").addEventListener("change", (e) => {
       applyPortfolioEdit(e.target.value);

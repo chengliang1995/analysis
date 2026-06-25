@@ -31,7 +31,7 @@ from quantpy.midterm_portfolio_advisor import (
     load_latest_midterm_advice,
     run_midterm_advice,
 )
-from quantpy.stock_data import collect_daily_market_close, get_realtime_quotes
+from quantpy.stock_data import collect_daily_market_close, get_realtime_quotes, get_stock_recent_bars
 from quantpy.trade_journal import TradeJournal
 
 BASE_DIR = PROJECT_ROOT
@@ -294,6 +294,37 @@ def api_dashboard():
     return jsonify(get_dashboard_data())
 
 
+@app.route("/api/stock/<code>/history")
+def api_stock_history(code: str):
+    """个股下钻：近 N 日行情（默认 10 个交易日）。"""
+    days = request.args.get("days", 10, type=int)
+    name = str(request.args.get("name") or "").strip()
+    code = str(code).zfill(6)
+    bars = get_stock_recent_bars(code, days=days)
+    if not bars:
+        return jsonify({"ok": False, "message": f"无法获取 {code} 近期行情"}), 404
+
+    closes = [b["close"] for b in bars]
+    highs = [b["high"] for b in bars]
+    lows = [b["low"] for b in bars]
+    first_close = closes[0] if closes[0] else 1.0
+    return jsonify(
+        {
+            "ok": True,
+            "code": code,
+            "name": name,
+            "days": len(bars),
+            "bars": bars,
+            "summary": {
+                "latest_close": closes[-1],
+                "period_high": max(highs),
+                "period_low": min(lows),
+                "period_change_pct": round((closes[-1] - first_close) / first_close * 100, 2),
+            },
+        }
+    )
+
+
 @app.route("/api/report/latest")
 def api_report_latest():
     return jsonify(load_latest_report_content())
@@ -414,6 +445,29 @@ def api_portfolio_upsert():
             "ok": True,
             "message": f"已更新持仓 {data['name']}({str(data['code']).zfill(6)})，已同步配置",
             "portfolio": stats,
+            "data": get_dashboard_data(),
+        })
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "message": f"数据格式错误: {exc}"}), 400
+
+
+@app.route("/api/portfolio/position/<code>/cost", methods=["PATCH"])
+def api_portfolio_update_cost(code: str):
+    data = request.get_json(silent=True) or {}
+    cost_raw = str(data.get("cost_price", "")).strip()
+    if not cost_raw:
+        return jsonify({"ok": False, "message": "缺少 cost_price"}), 400
+    try:
+        cost_price = float(cost_raw)
+        if cost_price <= 0:
+            raise ValueError("成本价须大于 0")
+        pm = PortfolioManager()
+        ok, msg = pm.update_position_cost(code, cost_price)
+        if not ok:
+            return jsonify({"ok": False, "message": msg}), 404
+        return jsonify({
+            "ok": True,
+            "message": f"已更新成本：{msg}，已同步配置",
             "data": get_dashboard_data(),
         })
     except (TypeError, ValueError) as exc:

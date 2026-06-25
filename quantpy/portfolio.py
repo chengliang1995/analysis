@@ -263,6 +263,30 @@ class PortfolioManager:
 
         return False, f"实盘无 {code}，仅记录交易日记"
 
+    def update_position_cost(self, code: str, cost_price: float) -> tuple[bool, str]:
+        """仅修改持仓成本价（数量、策略等保持不变）。"""
+        code = str(code).zfill(6)
+        cost_price = float(cost_price)
+        if cost_price <= 0:
+            return False, "成本价须大于 0"
+
+        for p in self._portfolio.positions:
+            if p.code != code:
+                continue
+            old_cost = p.cost_price
+            self.upsert_position(
+                code=p.code,
+                name=p.name,
+                quantity=p.quantity,
+                cost_price=round(cost_price, 4),
+                buy_date=p.buy_date,
+                strategy=p.strategy,
+                note=p.note,
+            )
+            return True, f"{p.name}({code}) 成本 {old_cost} → {round(cost_price, 4)}"
+
+        return False, f"未找到持仓 {code}"
+
     def apply_buy(self, code: str, name: str, quantity: int, cost_price: float, **kwargs) -> tuple[bool, str]:
         """交易买入后增加或合并实盘持仓（加权成本）。"""
         code = str(code).zfill(6)
@@ -348,6 +372,7 @@ class PortfolioManager:
                 "bucket": bucket,
                 "bucket_label": bucket_label(bucket),
                 "strategy": pos.strategy,
+                "buy_date": pos.buy_date,
                 "note": pos.note,
             })
             total_market_value += market_value

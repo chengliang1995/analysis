@@ -807,6 +807,47 @@ def get_stock_hist(
     return pd.DataFrame()
 
 
+def get_stock_recent_bars(code: str, days: int = 10) -> list[dict]:
+    """最近 N 个交易日 K 线（用于个股下钻）。"""
+    days = max(1, min(int(days), 60))
+    df = get_stock_hist(code, days=max(days * 4, 30))
+    if df.empty:
+        return []
+
+    tail = df.tail(days)
+    bars: list[dict] = []
+    for _, row in tail.iterrows():
+        d = row.get("date")
+        if hasattr(d, "strftime"):
+            date_str = d.strftime("%Y-%m-%d")
+        else:
+            date_str = str(d)[:10]
+
+        close = float(row.get("close") or 0)
+        open_ = float(row.get("open") or close)
+        high = float(row.get("high") or close)
+        low = float(row.get("low") or close)
+        pct = row.get("pct_chg")
+        if pct is None or (isinstance(pct, float) and pd.isna(pct)):
+            pct_val = None
+        else:
+            pct_val = round(float(pct), 2)
+
+        vol = row.get("volume")
+        bars.append(
+            {
+                "date": date_str,
+                "open": round(open_, 2),
+                "close": round(close, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "pct_chg": pct_val,
+                "volume": int(vol) if vol is not None and not pd.isna(vol) else None,
+            }
+        )
+    return bars
+
+
 def get_latest_price(code: str) -> float:
     """获取单只股票最新价（腾讯实时）。"""
     quotes = get_realtime_quotes([code])

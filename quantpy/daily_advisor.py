@@ -317,11 +317,13 @@ def generate_daily_report(
             md_parts.append(f"{i}. {s}\n")
 
     if midterm.get("recommendations"):
-        md_parts.append(f"\n## 四、中线个股推荐\n\n")
+        md_parts.append(f"\n## 四、中线个股推荐（市值&lt;1000亿 · 股价&lt;100元）\n\n")
         rec_rows = [
             [
                 r["code"],
                 r["name"],
+                f"{r.get('price', 0):.2f}",
+                f"{r.get('market_cap_yi', 0):.1f}" if r.get("market_cap_yi") is not None else "—",
                 r["midterm_score"],
                 f"{r.get('pct_chg', 0):.2f}",
                 r.get("rsi", ""),
@@ -331,9 +333,9 @@ def generate_daily_report(
         ]
         md_parts.append(
             format_markdown_table(
-                ["代码", "名称", "评分", "涨幅%", "RSI", "推荐理由"],
+                ["代码", "名称", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "推荐理由"],
                 rec_rows,
-                aligns=["left", "left", "right", "right", "right", "left"],
+                aligns=["left", "left", "right", "right", "right", "right", "right", "left"],
             )
         )
 

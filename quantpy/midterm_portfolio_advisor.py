@@ -46,6 +46,22 @@ def _safe_pct(a: float, b: float) -> float:
     return (a - b) / b * 100
 
 
+def _spot_price_series(df: pd.DataFrame) -> pd.Series:
+    for col in ("price", "close", "最新价"):
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce")
+    return pd.Series(index=df.index, dtype=float)
+
+
+def _market_cap_to_yi(series: pd.Series) -> pd.Series:
+    """总市值统一为亿元（兼容元 / 万元）。"""
+    cap = pd.to_numeric(series, errors="coerce")
+    median = cap.median()
+    if pd.notna(median) and median >= 1e8:
+        return cap / 1e8
+    return cap / 1e4
+
+
 class MidtermPortfolioAdvisor:
     """实盘中线：个股复盘、持仓优化、推荐。"""
 
@@ -53,9 +69,13 @@ class MidtermPortfolioAdvisor:
         self,
         max_single_weight: float = 30.0,
         target_position_count: Tuple[int, int] = (3, 6),
+        max_recommend_market_cap: float = 1000.0,
+        max_recommend_price: float = 100.0,
     ):
         self.max_single_weight = max_single_weight
         self.target_position_count = target_position_count
+        self.max_recommend_market_cap = max_recommend_market_cap
+        self.max_recommend_price = max_recommend_price
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def analyze_stock(
@@ -350,6 +370,12 @@ class MidtermPortfolioAdvisor:
 
         spot_pct = float(spot.get("pct", 0)) if spot else float(hist.get("pct_chg", pd.Series([0])).iloc[-1] or 0)
         turnover = float(spot.get("turnover", 0)) if spot else 0
+        market_cap_yi = spot.get("market_cap_yi") if spot else None
+
+        if price >= self.max_recommend_price:
+            return None
+        if market_cap_yi is not None and float(market_cap_yi) >= self.max_recommend_market_cap:
+            return None
 
         if spot_pct >= 9 or spot_pct <= -9:
             return None
@@ -390,6 +416,7 @@ class MidtermPortfolioAdvisor:
             "code": code,
             "name": name,
             "price": round(price, 2),
+            "market_cap_yi": round(float(market_cap_yi), 1) if market_cap_yi is not None else None,
             "pct_chg": round(spot_pct, 2),
             "turnover": round(turnover, 2),
             "midterm_score": score,
@@ -398,7 +425,12 @@ class MidtermPortfolioAdvisor:
             "ret_20d": round(ret_20d, 2),
             "ma20": round(ma20, 2),
             "tags": ",".join(tags),
-            "reason": f"中线趋势良好，20日涨幅 {ret_20d:.1f}%，RSI {rsi:.0f}",
+            "reason": (
+                f"中线趋势良好，20日涨幅 {ret_20d:.1f}%，RSI {rsi:.0f}；"
+                f"股价{price:.1f}元，市值{market_cap_yi:.0f}亿"
+                if market_cap_yi is not None
+                else f"中线趋势良好，20日涨幅 {ret_20d:.1f}%，RSI {rsi:.0f}；股价{price:.1f}元"
+            ),
         }
 
     def recommend_stocks(
@@ -429,7 +461,22 @@ class MidtermPortfolioAdvisor:
         else:
             df["_turnover"] = 0
 
-        mask = (df["_pct"] >= -2) & (df["_pct"] <= 7) & (df["_turnover"] >= 0.5)
+        df["_price"] = _spot_price_series(df)
+        price_ok = (df["_price"] > 0) & (df["_price"] < self.max_recommend_price)
+        if "market_cap" in df.columns:
+            df["_cap_yi"] = _market_cap_to_yi(df["market_cap"])
+            cap_ok = (df["_cap_yi"] > 0) & (df["_cap_yi"] < self.max_recommend_market_cap)
+        else:
+            df["_cap_yi"] = float("nan")
+            cap_ok = pd.Series(False, index=df.index)
+
+        mask = (
+            (df["_pct"] >= -2)
+            & (df["_pct"] <= 7)
+            & (df["_turnover"] >= 0.5)
+            & price_ok
+            & cap_ok
+        )
         candidates = df[mask].copy()
         candidates["_rank"] = candidates["_pct"] * 0.3 + candidates["_turnover"] * 0.7
         candidates = candidates.sort_values("_rank", ascending=False).head(prefilter)
@@ -440,7 +487,12 @@ class MidtermPortfolioAdvisor:
             if code in exclude:
                 continue
             name = str(row[name_col]) if name_col else code
-            spot = {"pct": row["_pct"], "turnover": row["_turnover"]}
+            cap_yi = row["_cap_yi"]
+            spot = {
+                "pct": row["_pct"],
+                "turnover": row["_turnover"],
+                "market_cap_yi": float(cap_yi) if pd.notna(cap_yi) else None,
+            }
             item = self._score_candidate(code, name, spot)
             if item:
                 results.append(item)
