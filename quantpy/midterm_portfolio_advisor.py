@@ -24,7 +24,7 @@ def _classify_bucket(strategy: str) -> str:
     return "ultra_short" if str(strategy) in ULTRA_SHORT_STRATEGIES else "midterm"
 
 OUTPUT_DIR = MIDTERM_OUTPUT_DIR
-MIDTERM_STRATEGIES = {"中线", "趋势", "手动", "价值", "波段"}
+MIDTERM_STRATEGIES = {"中线", "趋势", "手动", "价值", "波段", "ETF"}
 
 
 def _rsi(close: pd.Series, period: int = 14) -> float:

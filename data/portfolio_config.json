@@ -7,7 +7,7 @@
       "code": "603379",
       "name": "三美股份",
       "quantity": 300,
-      "cost_price": 66.8333,
+      "cost_price": 63.3,
       "buy_date": "2026-06-22",
       "strategy": "中线",
       "note": ""
@@ -19,6 +19,24 @@
       "cost_price": 42.2,
       "buy_date": "2026-06-22",
       "strategy": "中线",
+      "note": ""
+    },
+    {
+      "code": "002326",
+      "name": "永太科技",
+      "quantity": 1000,
+      "cost_price": 23.65,
+      "buy_date": "2026-06-25",
+      "strategy": "超短",
+      "note": ""
+    },
+    {
+      "code": "563530",
+      "name": "卫星ETF易方达",
+      "quantity": 10000,
+      "cost_price": 1.321,
+      "buy_date": "",
+      "strategy": "ETF",
       "note": ""
     }
   ]

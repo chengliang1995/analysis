@@ -31,7 +31,7 @@ from quantpy.midterm_portfolio_advisor import (
     load_latest_midterm_advice,
     run_midterm_advice,
 )
-from quantpy.stock_data import collect_daily_market_close, get_realtime_quotes, get_stock_recent_bars
+from quantpy.stock_data import collect_daily_market_close, get_realtime_quotes, get_stock_recent_bars, is_etf_code, price_step_for_code
 from quantpy.trade_journal import TradeJournal
 
 BASE_DIR = PROJECT_ROOT
@@ -292,6 +292,36 @@ def index():
 @app.route("/api/dashboard")
 def api_dashboard():
     return jsonify(get_dashboard_data())
+
+
+@app.route("/api/instrument/<code>")
+def api_instrument(code: str):
+    """查询证券类型与实时简称（股票/ETF 录入辅助）。"""
+    code = str(code).zfill(6)
+    if not code.isdigit() or len(code) != 6:
+        return jsonify({"ok": False, "message": "代码须为 6 位数字"}), 400
+
+    etf = is_etf_code(code)
+    quotes = get_realtime_quotes([code])
+    name = ""
+    price = None
+    if not quotes.empty:
+        row = quotes.iloc[0]
+        name = str(row.get("name") or "").strip()
+        for col in ("close", "price"):
+            if col in row and pd.notna(row[col]) and float(row[col]) > 0:
+                price = round(float(row[col]), 3 if etf else 2)
+                break
+
+    return jsonify({
+        "ok": True,
+        "code": code,
+        "name": name,
+        "is_etf": etf,
+        "asset_type": "etf" if etf else "stock",
+        "price_step": price_step_for_code(code),
+        "price": price,
+    })
 
 
 @app.route("/api/stock/<code>/history")

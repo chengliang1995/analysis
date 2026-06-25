@@ -85,12 +85,35 @@ def _retry(func: Callable[[], T], retries: int = 3, delay: float = 0.8) -> T:
     raise last_exc
 
 
+SH_ETF_PREFIXES = ("510", "511", "512", "513", "515", "516", "518", "560", "561", "562", "563", "588")
+
+
+def is_etf_code(code: str) -> bool:
+    """判断是否为 A 股 ETF 代码。"""
+    code = str(code).zfill(6)
+    if not code.isdigit():
+        return False
+    prefix3 = code[:3]
+    if prefix3 in SH_ETF_PREFIXES:
+        return True
+    if prefix3 == "159":
+        return True
+    return code[:2] in ("16", "18")
+
+
+def price_step_for_code(code: str) -> float:
+    """行情价格最小变动单位：ETF 0.001，股票 0.01。"""
+    return 0.001 if is_etf_code(code) else 0.01
+
+
 def code_to_symbol(code: str) -> str:
-    """6 位代码转行情接口符号，如 600519 -> sh600519。"""
+    """6 位代码转行情接口符号，如 600519 -> sh600519，563530 -> sh563530。"""
     code = str(code).zfill(6)
     if code.startswith(("4", "8", "92")):
         return f"bj{code}"
     if code.startswith("6"):
+        return f"sh{code}"
+    if is_etf_code(code) and code[:3] in SH_ETF_PREFIXES:
         return f"sh{code}"
     return f"sz{code}"
 
