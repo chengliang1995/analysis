@@ -29,6 +29,15 @@
       "buy_date": "",
       "strategy": "中线",
       "note": ""
+    },
+    {
+      "code": "603380",
+      "name": "易德龙",
+      "quantity": 600,
+      "cost_price": 43.25,
+      "buy_date": "2026-06-23",
+      "strategy": "手动",
+      "note": ""
     }
   ]
 }
