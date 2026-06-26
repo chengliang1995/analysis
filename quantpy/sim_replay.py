@@ -209,6 +209,10 @@ class SimReplayEngine:
         self.state["config"] = asdict(self.config)
         SIM_STATE_FILE.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def reload_state(self) -> None:
+        """从磁盘重新加载状态（避免进程内缓存与文件不一致）。"""
+        self.state = self._load_state()
+
     def _today(self) -> str:
         return datetime.now().strftime("%Y-%m-%d")
 

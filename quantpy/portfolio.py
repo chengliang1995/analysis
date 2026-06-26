@@ -543,9 +543,10 @@ class PortfolioManager:
     def analyze(self, spot_df: Optional[pd.DataFrame] = None) -> Dict:
         self.sync_closed_from_journal()
         codes = [p.code for p in self._portfolio.positions]
-        quote_map = get_realtime_quotes(codes) if codes else pd.DataFrame()
-        if spot_df is None:
-            spot_df = quote_map
+        if spot_df is not None and not spot_df.empty:
+            quote_map = spot_df
+        else:
+            quote_map = get_realtime_quotes(codes) if codes else pd.DataFrame()
 
         rows = []
         total_market_value = 0.0

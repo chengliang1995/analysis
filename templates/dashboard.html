@@ -233,6 +233,21 @@
     @media (max-width: 900px) { .grid-closed { grid-template-columns: 1fr; } }
     .stats.stats-3 { grid-template-columns: repeat(3, 1fr); }
     @media (max-width: 700px) { .stats.stats-3 { grid-template-columns: repeat(2, 1fr); } }
+    .main-tabs {
+      display: flex; gap: 8px; margin-bottom: 16px;
+    }
+    .main-tabs button {
+      padding: 12px 28px; font-size: 0.95rem; font-weight: 600;
+      background: var(--card); color: var(--muted);
+      border: 1px solid var(--border); border-radius: 10px;
+    }
+    .main-tabs button.active {
+      color: #fff; background: var(--accent); border-color: var(--accent);
+    }
+    .main-tab-panel { display: none; }
+    .main-tab-panel.active { display: block; }
+    .toolbar.hidden { display: none; }
+    .panel-head.sub h3 { font-size: 0.95rem; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -244,174 +259,189 @@
         <p class="sub" style="font-size:0.75rem;color:#64748b">版本 v{{ app_version|default('2.7') }} · 超短2万+中线15万</p>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="secondary" id="btn-test-notify" type="button">测试通知</button>
         <button class="secondary" id="btn-report" type="button">查看日报</button>
         <button class="secondary" id="btn-reload" type="button">刷新数据</button>
       </div>
     </header>
 
-    <div class="toolbar">
-      <button type="button" data-action="refresh">刷新行情</button>
+    <div class="main-tabs">
+      <button type="button" class="active" data-main-tab="real">实盘</button>
+      <button type="button" data-main-tab="sim">模拟盘</button>
+    </div>
+
+    <div class="toolbar" id="toolbar-real" data-toolbar="real">
+      <button type="button" data-action="refresh">刷新持仓行情</button>
       <button type="button" data-action="scan">超短扫描</button>
       <button type="button" data-action="report">生成日报</button>
       <button type="button" data-action="midterm">中线分析</button>
       <button type="button" data-action="alerts">价位提醒</button>
       <button type="button" data-action="review">实盘复盘</button>
+      <button type="button" data-action="ai-learn" class="secondary">AI策略学习</button>
+    </div>
+
+    <div class="toolbar hidden" id="toolbar-sim" data-toolbar="sim">
       <button type="button" data-action="sim" data-force="true">模拟选股</button>
       <button type="button" data-action="sim-review">模拟复盘</button>
-      <button type="button" data-action="ai-learn">AI策略学习</button>
       <button type="button" data-action="sim-backtest" class="secondary">模拟回测(20日)</button>
+      <button type="button" data-action="refresh" class="secondary">刷新持仓行情</button>
     </div>
 
-    <div class="alert-banner" id="level-alert-banner">
-      <h3>支撑 / 压力提醒 <span class="badge" id="level-alert-badge">0</span></h3>
-      <ul id="level-alert-list"></ul>
-    </div>
+    <div class="main-tab-panel active" id="tab-real">
+      <div class="alert-banner" id="level-alert-banner">
+        <h3>支撑 / 压力提醒 <span class="badge" id="level-alert-badge">0</span></h3>
+        <ul id="level-alert-list"></ul>
+      </div>
 
-    <div class="grid">
-      <section class="panel">
-        <div class="panel-head"><h2>价位提醒明细</h2><span class="badge" id="level-alerts-table-badge">中线持仓</span></div>
-        <div class="table-wrap" id="level-alerts-table"></div>
-      </section>
-      <section class="panel">
-        <div class="panel-head"><h2>个人持仓</h2><span class="badge">超短2万+中线15万</span></div>
-        <div class="stats stats-3" id="portfolio-stats"></div>
-        <div class="table-wrap" id="portfolio-table"></div>
-        <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-          <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">市值&lt;1000亿 · 股价&lt;100 · 点击下钻</span></h2>
-          <span class="badge">未持仓</span>
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head"><h2>价位提醒明细</h2><span class="badge" id="level-alerts-table-badge">中线持仓</span></div>
+          <div class="table-wrap" id="level-alerts-table"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>个人持仓</h2><span class="badge">超短2万+中线15万</span></div>
+          <div class="stats stats-3" id="portfolio-stats"></div>
+          <div class="table-wrap" id="portfolio-table"></div>
+          <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+            <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">市值&lt;1000亿 · 股价&lt;100 · 点击下钻</span></h2>
+            <span class="badge">未持仓</span>
+          </div>
+          <div class="table-wrap" id="midterm-rec-table"></div>
+        </section>
+      </div>
+
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head"><h2>超短 TOP 10</h2><span class="badge" id="ultra-badge">缓存</span></div>
+          <div class="table-wrap" id="ultra-table"></div>
+        </section>
+        <section class="panel" id="panel-suggest">
+          <div class="panel-head">
+            <h2>优化建议 & 操作</h2>
+            <span class="badge">实盘</span>
+          </div>
+          <div class="form-tabs">
+            <button type="button" class="active" data-tab="portfolio">持仓管理</button>
+            <button type="button" data-tab="cost">修改成本</button>
+            <button type="button" data-tab="trade">交易录入</button>
+          </div>
+          <form class="trade-form form-panel active" id="portfolio-form">
+            <div class="trade-form-grid">
+              <div><label>超短资金</label><input id="pf-ultra-capital" type="number" step="1000" min="0" value="20000" /></div>
+              <div><label>中线资金</label><input id="pf-mid-capital" type="number" step="1000" min="0" value="150000" /></div>
+              <div><label>合计</label><input id="pf-capital" type="number" step="1000" min="0" readonly /></div>
+              <div>
+                <label>编辑已有持仓</label>
+                <select id="pf-edit"><option value="">新增持仓</option></select>
+              </div>
+              <div><label>代码</label><input id="pf-code" placeholder="600519 / 563530" required /></div>
+              <div><label>名称</label><input id="pf-name" placeholder="贵州茅台 / 卫星ETF" required /></div>
+              <div>
+                <label>品种</label>
+                <select id="pf-asset-type">
+                  <option value="auto">自动识别</option>
+                  <option value="stock">股票</option>
+                  <option value="etf">ETF</option>
+                </select>
+              </div>
+              <div><label>数量</label><input id="pf-qty" type="number" min="1" required /></div>
+              <div><label>成本价</label><input id="pf-cost" type="number" step="any" min="0.001" required /></div>
+              <div><label>买入日期</label><input id="pf-buy-date" type="date" /></div>
+              <div>
+                <label>策略</label>
+                <select id="pf-strategy">
+                  <option>中线</option><option>ETF</option><option>手动</option><option>趋势</option><option>波段</option><option>超短</option><option>涨停</option>
+                </select>
+              </div>
+              <div style="grid-column:1/-1"><label>备注</label><input id="pf-note" placeholder="可选" /></div>
+            </div>
+            <div class="trade-form-actions">
+              <button type="submit">保存持仓</button>
+              <button type="button" class="secondary" id="btn-pf-clear">新增/清空</button>
+              <button type="button" class="secondary" id="btn-pf-delete">删除此持仓</button>
+            </div>
+          </form>
+          <form class="trade-form form-panel" id="cost-form">
+            <div class="trade-form-grid">
+              <div style="grid-column:1/-1">
+                <label>中线持仓</label>
+                <select id="mc-holding" required><option value="">请选择</option></select>
+              </div>
+              <div><label>代码</label><input id="mc-code" readonly /></div>
+              <div><label>名称</label><input id="mc-name" readonly /></div>
+              <div><label>数量</label><input id="mc-qty" readonly /></div>
+              <div><label>原成本</label><input id="mc-old-cost" readonly /></div>
+              <div><label>新成本价</label><input id="mc-new-cost" type="number" step="any" min="0.001" required /></div>
+            </div>
+            <div class="trade-form-actions">
+              <button type="submit">保存成本</button>
+            </div>
+          </form>
+          <form class="trade-form form-panel" id="trade-form">
+            <div class="trade-form-grid">
+              <div>
+                <label>从持仓填充</label>
+                <select id="tf-holding"><option value="">手动输入</option></select>
+              </div>
+              <div>
+                <label>策略</label>
+                <select id="tf-strategy">
+                  <option>手动</option><option>ETF</option><option>超短</option><option>涨停</option><option>趋势</option>
+                </select>
+              </div>
+              <div>
+                <label>同步实盘</label>
+                <select id="tf-sync-action">
+                  <option value="sell">卖出扣减持仓</option>
+                  <option value="buy">买入增加持仓</option>
+                  <option value="none">仅记录日记</option>
+                </select>
+              </div>
+              <div><label>代码</label><input id="tf-code" placeholder="600519 / 563530" required /></div>
+              <div><label>名称</label><input id="tf-name" placeholder="贵州茅台 / 卫星ETF" required /></div>
+              <div>
+                <label>品种</label>
+                <select id="tf-asset-type">
+                  <option value="auto">自动识别</option>
+                  <option value="stock">股票</option>
+                  <option value="etf">ETF</option>
+                </select>
+              </div>
+              <div><label>买入日期</label><input id="tf-buy-date" type="date" required /></div>
+              <div><label>买入价</label><input id="tf-buy-price" type="number" step="any" min="0.001" required /></div>
+              <div><label>卖出日期</label><input id="tf-sell-date" type="date" /></div>
+              <div><label>卖出价</label><input id="tf-sell-price" type="number" step="any" min="0.001" placeholder="买入时可留空" /></div>
+              <div><label>数量</label><input id="tf-qty" type="number" value="100" min="1" /></div>
+              <div><label>备注</label><input id="tf-note" placeholder="可选" /></div>
+            </div>
+            <div class="trade-form-actions">
+              <button type="submit">录入交易</button>
+              <button type="button" class="secondary" id="btn-fill-today">卖出日=今天</button>
+            </div>
+          </form>
+          <div class="recent-trades" id="recent-trades">暂无交易记录</div>
+          <div id="suggest-groups"></div>
+        </section>
+      </div>
+
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-head"><h2>实盘清盘记录</h2><span class="badge" id="real-closed-badge">历史</span></div>
+        <div class="stats stats-3" id="real-closed-stats"></div>
+        <div class="table-wrap" id="real-closed-table"></div>
+        <div class="panel-head sub" style="margin-top:1rem">
+          <h3>买卖点复盘</h3><span class="badge" id="trade-review-badge">—</span>
         </div>
-        <div class="table-wrap" id="midterm-rec-table"></div>
+        <div class="table-wrap" id="trade-review-table"></div>
       </section>
-      <section class="panel">
+    </div>
+
+    <div class="main-tab-panel" id="tab-sim">
+      <section class="panel" style="margin-bottom:20px">
         <div class="panel-head"><h2>模拟持仓</h2><span class="badge">20万 · 最多3仓 · T+1</span></div>
         <div class="stats" id="sim-stats"></div>
         <div class="table-wrap" id="sim-table"></div>
       </section>
-    </div>
-
-    <div class="grid">
-      <section class="panel">
-        <div class="panel-head"><h2>超短 TOP 10</h2><span class="badge" id="ultra-badge">缓存</span></div>
-        <div class="table-wrap" id="ultra-table"></div>
-      </section>
-      <section class="panel" id="panel-suggest">
-        <div class="panel-head">
-          <h2>优化建议</h2>
-          <span class="badge">中线 + 超短</span>
-        </div>
-        <div class="form-tabs">
-          <button type="button" class="active" data-tab="portfolio">持仓管理</button>
-          <button type="button" data-tab="cost">修改成本</button>
-          <button type="button" data-tab="trade">交易录入</button>
-        </div>
-        <form class="trade-form form-panel active" id="portfolio-form">
-          <div class="trade-form-grid">
-            <div><label>超短资金</label><input id="pf-ultra-capital" type="number" step="1000" min="0" value="20000" /></div>
-            <div><label>中线资金</label><input id="pf-mid-capital" type="number" step="1000" min="0" value="150000" /></div>
-            <div><label>合计</label><input id="pf-capital" type="number" step="1000" min="0" readonly /></div>
-            <div>
-              <label>编辑已有持仓</label>
-              <select id="pf-edit"><option value="">新增持仓</option></select>
-            </div>
-            <div><label>代码</label><input id="pf-code" placeholder="600519 / 563530" required /></div>
-            <div><label>名称</label><input id="pf-name" placeholder="贵州茅台 / 卫星ETF" required /></div>
-            <div>
-              <label>品种</label>
-              <select id="pf-asset-type">
-                <option value="auto">自动识别</option>
-                <option value="stock">股票</option>
-                <option value="etf">ETF</option>
-              </select>
-            </div>
-            <div><label>数量</label><input id="pf-qty" type="number" min="1" required /></div>
-            <div><label>成本价</label><input id="pf-cost" type="number" step="any" min="0.001" required /></div>
-            <div><label>买入日期</label><input id="pf-buy-date" type="date" /></div>
-            <div>
-              <label>策略</label>
-              <select id="pf-strategy">
-                <option>中线</option><option>ETF</option><option>手动</option><option>趋势</option><option>波段</option><option>超短</option><option>涨停</option>
-              </select>
-            </div>
-            <div style="grid-column:1/-1"><label>备注</label><input id="pf-note" placeholder="可选" /></div>
-          </div>
-          <div class="trade-form-actions">
-            <button type="submit">保存持仓</button>
-            <button type="button" class="secondary" id="btn-pf-clear">新增/清空</button>
-            <button type="button" class="secondary" id="btn-pf-delete">删除此持仓</button>
-          </div>
-        </form>
-        <form class="trade-form form-panel" id="cost-form">
-          <div class="trade-form-grid">
-            <div style="grid-column:1/-1">
-              <label>中线持仓</label>
-              <select id="mc-holding" required><option value="">请选择</option></select>
-            </div>
-            <div><label>代码</label><input id="mc-code" readonly /></div>
-            <div><label>名称</label><input id="mc-name" readonly /></div>
-            <div><label>数量</label><input id="mc-qty" readonly /></div>
-            <div><label>原成本</label><input id="mc-old-cost" readonly /></div>
-            <div><label>新成本价</label><input id="mc-new-cost" type="number" step="any" min="0.001" required /></div>
-          </div>
-          <div class="trade-form-actions">
-            <button type="submit">保存成本</button>
-          </div>
-        </form>
-        <form class="trade-form form-panel" id="trade-form">
-          <div class="trade-form-grid">
-            <div>
-              <label>从持仓填充</label>
-              <select id="tf-holding"><option value="">手动输入</option></select>
-            </div>
-            <div>
-              <label>策略</label>
-              <select id="tf-strategy">
-                <option>手动</option><option>ETF</option><option>超短</option><option>涨停</option><option>趋势</option>
-              </select>
-            </div>
-            <div>
-              <label>同步实盘</label>
-              <select id="tf-sync-action">
-                <option value="sell">卖出扣减持仓</option>
-                <option value="buy">买入增加持仓</option>
-                <option value="none">仅记录日记</option>
-              </select>
-            </div>
-            <div><label>代码</label><input id="tf-code" placeholder="600519 / 563530" required /></div>
-            <div><label>名称</label><input id="tf-name" placeholder="贵州茅台 / 卫星ETF" required /></div>
-            <div>
-              <label>品种</label>
-              <select id="tf-asset-type">
-                <option value="auto">自动识别</option>
-                <option value="stock">股票</option>
-                <option value="etf">ETF</option>
-              </select>
-            </div>
-            <div><label>买入日期</label><input id="tf-buy-date" type="date" required /></div>
-            <div><label>买入价</label><input id="tf-buy-price" type="number" step="any" min="0.001" required /></div>
-            <div><label>卖出日期</label><input id="tf-sell-date" type="date" /></div>
-            <div><label>卖出价</label><input id="tf-sell-price" type="number" step="any" min="0.001" placeholder="买入时可留空" /></div>
-            <div><label>数量</label><input id="tf-qty" type="number" value="100" min="1" /></div>
-            <div><label>备注</label><input id="tf-note" placeholder="可选" /></div>
-          </div>
-          <div class="trade-form-actions">
-            <button type="submit">录入交易</button>
-            <button type="button" class="secondary" id="btn-fill-today">卖出日=今天</button>
-          </div>
-        </form>
-        <div class="recent-trades" id="recent-trades">暂无交易记录</div>
-        <div id="suggest-groups"></div>
-      </section>
-    </div>
-
-    <div class="grid grid-closed">
-      <section class="panel">
-        <div class="panel-head"><h2>实盘清盘记录</h2><span class="badge" id="real-closed-badge">历史</span></div>
-        <div class="stats stats-3" id="real-closed-stats"></div>
-        <div class="table-wrap" id="real-closed-table"></div>
-        <div class="panel-head sub" style="margin-top:1rem"><h3>买卖点复盘</h3><span class="badge" id="trade-review-badge">—</span></div>
-        <div class="table-wrap" id="trade-review-table"></div>
-      </section>
-      <section class="panel">
+      <section class="panel" style="margin-bottom:20px">
         <div class="panel-head"><h2>模拟平仓记录</h2><span class="badge">最近10笔</span></div>
         <div class="table-wrap" id="closed-table"></div>
       </section>
@@ -448,6 +478,7 @@
       "560", "561", "562", "563", "588",
     ]);
     let appBusy = false;
+    let lastDashboardData = null;
     const BUSY_BUTTON_SELECTOR = [
       ".toolbar button[data-action]",
       "#btn-reload", "#btn-report",
@@ -624,6 +655,7 @@
     }
 
     function openCostEditor(position) {
+      switchMainTab("real");
       switchFormTab("cost");
       const sel = document.getElementById("mc-holding");
       const positions = sel._positions || [];
@@ -761,6 +793,7 @@
     }
 
     function renderPortfolio(p) {
+      p = p || {};
       const has = p.has_data;
       const ultra = p.buckets?.ultra_short || {};
       const mid = p.buckets?.midterm || {};
@@ -837,17 +870,23 @@
     }
 
     function renderSim(s) {
+      if (!s) return;
       const cfg = s.config || {};
-      renderStats(document.getElementById("sim-stats"), [
+      const statsEl = document.getElementById("sim-stats");
+      const tableEl = document.getElementById("sim-table");
+      const closedEl = document.getElementById("closed-table");
+      if (!statsEl || !tableEl || !closedEl) return;
+      renderStats(statsEl, [
         ["总权益", `${fmtMoney(s.equity)} 元`],
         ["现金", `${fmtMoney(s.cash)} 元`],
         ["总收益", fmtPct(s.total_return_pct)],
         ["T+1 / 止损止盈", `${cfg.t_plus_one !== false ? "开启" : "关闭"} · ${cfg.stop_loss_pct || -3}% / +${cfg.take_profit_pct || 8}%`],
       ]);
+      const positions = Array.isArray(s.positions) ? s.positions : [];
       renderTable(
-        document.getElementById("sim-table"),
+        tableEl,
         ["代码", "名称", "数量", "买入", "现价", "止损", "止盈", "浮盈%", "可卖"],
-        (s.positions || []).map((x) => [
+        positions.map((x) => [
           x.code, x.name, x.quantity, x.buy_price, x.current_price,
           x.stop_loss, x.take_profit, fmtPct(x.profit_pct),
           x.t_plus_one_locked ? "T+1锁" : (x.sellable_today !== false ? "可卖" : "—"),
@@ -855,7 +894,7 @@
         "模拟账户空仓（点击「模拟选股」）"
       );
       renderTable(
-        document.getElementById("closed-table"),
+        closedEl,
         ["代码", "名称", "买入", "卖出", "收益%", "天数", "原因"],
         (s.closed_trades || []).map((x) => [
           x.code, x.name, x.buy_price, x.sell_price,
@@ -863,6 +902,19 @@
         ]),
         "暂无平仓记录"
       );
+    }
+
+    async function refreshSimPanel() {
+      try {
+        const res = await fetch("/api/sim");
+        const sim = await parseJsonResponse(res);
+        if (lastDashboardData) lastDashboardData.sim = sim;
+        renderSim(sim);
+        return sim;
+      } catch (e) {
+        if (lastDashboardData?.sim) renderSim(lastDashboardData.sim);
+        throw e;
+      }
     }
 
     function renderUltraShort(list) {
@@ -914,6 +966,43 @@
       maybeNotifyLevelAlerts(alerts);
     }
 
+    function showBrowserNotification(title, body, tag) {
+      if (!("Notification" in window)) {
+        showToast("当前浏览器不支持桌面通知", true);
+        return Promise.resolve(false);
+      }
+      const fire = () => {
+        try {
+          new Notification(title, { body, tag: tag || "quantpy-test" });
+          return true;
+        } catch (e) {
+          showToast("通知发送失败: " + e.message, true);
+          return false;
+        }
+      };
+      if (Notification.permission === "granted") {
+        return Promise.resolve(fire());
+      }
+      if (Notification.permission === "denied") {
+        showToast("通知权限已被拒绝，请在浏览器设置中允许本站通知", true);
+        return Promise.resolve(false);
+      }
+      return Notification.requestPermission().then((p) => {
+        if (p === "granted") return fire();
+        showToast("未授予通知权限", true);
+        return false;
+      });
+    }
+
+    async function sendTestNotification() {
+      const ok = await showBrowserNotification(
+        "QuantPy 测试通知",
+        "支撑/压力提醒功能正常。若能看到此消息，说明桌面通知已可用。",
+        "quantpy-test-" + Date.now()
+      );
+      if (ok) showToast("已发送测试通知");
+    }
+
     function maybeNotifyLevelAlerts(alerts) {
       if (!alerts.length || !("Notification" in window)) return;
       const high = alerts.filter((a) => a.severity === "high");
@@ -923,11 +1012,11 @@
       if (seen === key) return;
       const show = () => {
         high.slice(0, 3).forEach((a) => {
-          try {
-            new Notification(`中线${a.signal_label}提醒 · ${a.name}`, {
-              body: a.message.replace(/^【[^】]+】/, ""),
-            });
-          } catch (_) { /* ignore */ }
+          showBrowserNotification(
+            `中线${a.signal_label}提醒 · ${a.name}`,
+            a.message.replace(/^【[^】]+】/, ""),
+            `level-${a.code}-${a.alert_type}`
+          );
         });
         sessionStorage.setItem("level_alert_notified", key);
       };
@@ -1028,6 +1117,25 @@
       document.getElementById("trade-form").classList.toggle("active", tab === "trade");
     }
 
+    const MAIN_TAB_KEY = "quantpy_main_tab";
+
+    function switchMainTab(tab) {
+      if (tab !== "real" && tab !== "sim") tab = "real";
+      document.querySelectorAll("[data-main-tab]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.mainTab === tab);
+      });
+      document.getElementById("tab-real").classList.toggle("active", tab === "real");
+      document.getElementById("tab-sim").classList.toggle("active", tab === "sim");
+      document.querySelectorAll("[data-toolbar]").forEach((tb) => {
+        tb.classList.toggle("hidden", tb.dataset.toolbar !== tab);
+      });
+      localStorage.setItem(MAIN_TAB_KEY, tab);
+      if (tab === "sim") {
+        if (lastDashboardData?.sim) renderSim(lastDashboardData.sim);
+        refreshSimPanel().catch((e) => showToast("模拟盘数据加载失败: " + e.message, true));
+      }
+    }
+
     function fillHoldingOptions(positions) {
       const sel = document.getElementById("tf-holding");
       sel.innerHTML = '<option value="">手动输入</option>';
@@ -1061,20 +1169,26 @@
     }
 
     function renderAll(data) {
+      lastDashboardData = data || {};
       document.getElementById("server-time").textContent =
         `更新时间：${data.server_time}` + (data.report?.name ? ` · 日报：${data.report.name}` : "");
-      renderPortfolio(data.portfolio);
-      renderLevelAlerts(data.level_alerts);
-      renderTradeReview(data.portfolio_review);
-      renderSim(data.sim);
-      renderUltraShort(data.ultra_short);
-      renderSuggestions(data);
-      renderRecentTrades(data.trades);
-      fillHoldingOptions(data.portfolio?.positions);
-      fillPortfolioForm(data.portfolio);
-      fillCostFormOptions(data.portfolio?.positions);
-      syncPriceSteps("pf");
-      syncPriceSteps("tf");
+      try { renderSim(data.sim); } catch (e) { console.error("renderSim", e); }
+      try { renderPortfolio(data.portfolio); } catch (e) { console.error("renderPortfolio", e); }
+      try { renderLevelAlerts(data.level_alerts); } catch (e) { console.error("renderLevelAlerts", e); }
+      try { renderTradeReview(data.portfolio_review); } catch (e) { console.error("renderTradeReview", e); }
+      try { renderUltraShort(data.ultra_short); } catch (e) { console.error("renderUltraShort", e); }
+      try { renderSuggestions(data); } catch (e) { console.error("renderSuggestions", e); }
+      try { renderRecentTrades(data.trades); } catch (e) { console.error("renderRecentTrades", e); }
+      try {
+        fillHoldingOptions(data.portfolio?.positions);
+        fillPortfolioForm(data.portfolio);
+        fillCostFormOptions(data.portfolio?.positions);
+        syncPriceSteps("pf");
+        syncPriceSteps("tf");
+      } catch (e) { console.error("fillForms", e); }
+      if (document.getElementById("tab-sim")?.classList.contains("active")) {
+        refreshSimPanel().catch(() => {});
+      }
     }
 
     async function submitPortfolio(ev) {
@@ -1344,6 +1458,9 @@
           if (body.ultra_short) body.data.ultra_short = body.ultra_short;
           if (body.level_alerts) body.data.level_alerts = body.level_alerts;
           renderAll(body.data);
+          if (["sim", "sim-review", "sim-backtest"].includes(action)) {
+            refreshSimPanel().catch(() => {});
+          }
         }
         if (action === "scan" && body.ultra_short) {
           document.getElementById("ultra-badge").textContent = "刚刚扫描";
@@ -1357,6 +1474,13 @@
             content: body.portfolio_review?.markdown || "暂无复盘内容",
           });
         }
+        if (body.ok) {
+          if (["sim", "sim-review", "sim-backtest"].includes(action)) {
+            switchMainTab("sim");
+          } else if (["midterm", "alerts", "review"].includes(action)) {
+            switchMainTab("real");
+          }
+        }
         showToast(body.message || (body.ok ? "完成" : "失败"), !body.ok);
       } catch (e) {
         showToast("请求失败: " + e.message, true);
@@ -1365,12 +1489,18 @@
       }
     }
 
+    document.querySelectorAll("[data-main-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => switchMainTab(btn.dataset.mainTab));
+    });
+    switchMainTab(localStorage.getItem(MAIN_TAB_KEY) || "real");
+
     document.querySelectorAll("[data-action]").forEach((btn) => {
       btn.addEventListener("click", () => {
         if (appBusy) return;
         runAction(btn.dataset.action, btn.dataset.force === "true");
       });
     });
+    document.getElementById("btn-test-notify").addEventListener("click", sendTestNotification);
     document.getElementById("btn-reload").addEventListener("click", async () => {
       if (!tryBeginBusy()) return;
       try {
@@ -1428,7 +1558,13 @@
     });
     document.getElementById("tf-sell-date").value = todayStr();
 
-    loadDashboard().catch((e) => showToast("加载失败: " + e.message, true));
+    loadDashboard()
+      .then(() => {
+        if (new URLSearchParams(location.search).get("test_notify") === "1") {
+          sendTestNotification();
+        }
+      })
+      .catch((e) => showToast("加载失败: " + e.message, true));
   </script>
 </body>
 </html>

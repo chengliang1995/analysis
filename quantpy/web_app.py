@@ -32,7 +32,7 @@ from quantpy.midterm_portfolio_advisor import (
     run_midterm_advice,
 )
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
-from quantpy.stock_data import collect_daily_market_close, get_realtime_quotes, get_stock_recent_bars, is_etf_code, price_step_for_code
+from quantpy.stock_data import get_realtime_quotes, get_stock_recent_bars, is_etf_code, price_step_for_code
 from quantpy.real_portfolio_reviewer import (
     load_latest_real_review,
     run_real_portfolio_review,
@@ -224,20 +224,30 @@ def get_trades_data(days: int = 30) -> dict:
     }
 
 
-def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
-    summary = engine.get_summary()
-    equity = summary["equity"] or 1.0
-    positions = summary.get("positions", [])
-    quotes = get_realtime_quotes([p["code"] for p in positions]) if positions else None
-    qmap = quotes.set_index("code") if quotes is not None and not quotes.empty else None
+def _enrich_sim_portfolio(
+    engine: SimReplayEngine,
+    quotes_df: Optional[pd.DataFrame] = None,
+) -> dict:
+    positions = list(engine.state.get("positions", []))
+    if quotes_df is not None and not quotes_df.empty:
+        qmap = quotes_df.copy()
+        qmap["code"] = qmap["code"].astype(str).str.zfill(6)
+        qmap = qmap.set_index("code")
+    elif positions:
+        quotes = get_realtime_quotes([p["code"] for p in positions])
+        qmap = quotes.set_index("code") if quotes is not None and not quotes.empty else None
+    else:
+        qmap = None
     today = datetime.now().strftime("%Y-%m-%d")
 
     enriched = []
+    total_market_value = 0.0
     for p in positions:
-        code = p["code"]
+        code = str(p["code"]).zfill(6)
         current = float(qmap.loc[code, "close"]) if qmap is not None and code in qmap.index else p["buy_price"]
         cost_amount = p["buy_price"] * p["quantity"]
         market_value = current * p["quantity"]
+        total_market_value += market_value
         profit_pct = (current - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0.0
         sellable = engine._is_sellable(p["buy_date"], today)
         enriched.append({
@@ -246,10 +256,16 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
             "market_value": round(market_value, 2),
             "profit_amount": round(market_value - cost_amount, 2),
             "profit_pct": round(profit_pct, 2),
-            "weight_pct": round(market_value / equity * 100, 2),
+            "weight_pct": 0.0,
             "sellable_today": sellable,
             "t_plus_one_locked": engine.config.t_plus_one and not sellable,
         })
+
+    cash = float(engine.state.get("cash", 0))
+    equity = cash + total_market_value
+    if enriched:
+        for row in enriched:
+            row["weight_pct"] = round(row["market_value"] / equity * 100, 2) if equity > 0 else 0.0
 
     initial = float(engine.state.get("initial_capital", engine.config.capital))
     closed = list(engine.state.get("closed_trades", []))
@@ -258,12 +274,12 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
     return {
         "has_data": True,
         "initial_capital": initial,
-        "cash": summary["cash"],
-        "market_value": summary["market_value"],
-        "equity": summary["equity"],
-        "total_return_pct": summary["total_return_pct"],
-        "closed_count": summary["closed_count"],
-        "trading_day_count": summary["trading_day_count"],
+        "cash": round(cash, 2),
+        "market_value": round(total_market_value, 2),
+        "equity": round(equity, 2),
+        "total_return_pct": round((equity - initial) / initial * 100, 2) if initial else 0.0,
+        "closed_count": len(closed),
+        "trading_day_count": engine.state.get("trading_day_count", 0),
         "position_count": len(enriched),
         "positions": enriched,
         "closed_trades": closed[:10],
@@ -278,6 +294,42 @@ def _enrich_sim_portfolio(engine: SimReplayEngine) -> dict:
         "updated_at": engine.state.get("updated_at", ""),
         "ai_learning": load_latest_ai_learning(),
     }
+
+
+def _collect_holding_codes() -> list[str]:
+    pm = PortfolioManager()
+    sim_engine = SimReplayEngine()
+    sim_engine.reload_state()
+    codes = {
+        str(p.code).zfill(6) for p in pm.list_positions()
+    } | {
+        str(p["code"]).zfill(6) for p in sim_engine.state.get("positions", [])
+    }
+    return sorted(codes)
+
+
+def refresh_holdings_quotes() -> tuple[dict, dict, str]:
+    """仅刷新实盘 + 模拟盘持仓行情（不扫全市场、不重跑中线分析）。"""
+    codes = _collect_holding_codes()
+    quotes = get_realtime_quotes(codes, verbose=False) if codes else pd.DataFrame()
+
+    pm = PortfolioManager()
+    portfolio_stats = pm.analyze(spot_df=quotes if not quotes.empty else None)
+
+    sim_engine = SimReplayEngine()
+    sim_engine.reload_state()
+    sim_data = _enrich_sim_portfolio(
+        sim_engine,
+        quotes_df=quotes if not quotes.empty else None,
+    )
+
+    n_real = len(portfolio_stats.get("positions", []))
+    n_sim = sim_data.get("position_count", 0)
+    if not codes:
+        log = "暂无持仓，未请求行情"
+    else:
+        log = f"已刷新 {len(codes)} 只持仓行情（实盘 {n_real} · 模拟 {n_sim}）"
+    return portfolio_stats, sim_data, log
 
 
 def get_portfolio_data(
@@ -298,11 +350,19 @@ def get_portfolio_data(
 
 
 def get_sim_data() -> dict:
-    return _enrich_sim_portfolio(SimReplayEngine())
+    engine = SimReplayEngine()
+    engine.reload_state()
+    return _enrich_sim_portfolio(engine)
 
 
-def get_dashboard_data() -> dict:
-    portfolio_stats = PortfolioManager().analyze()
+def get_dashboard_data(
+    portfolio_stats: Optional[dict] = None,
+    sim_data: Optional[dict] = None,
+) -> dict:
+    if portfolio_stats is None:
+        portfolio_stats = PortfolioManager().analyze()
+    if sim_data is None:
+        sim_data = get_sim_data()
     midterm = _resolve_midterm(portfolio_stats)
     level_alerts = scan_midterm_level_alerts(
         portfolio_stats,
@@ -355,6 +415,11 @@ def index():
 @app.route("/api/dashboard")
 def api_dashboard():
     return jsonify(get_dashboard_data())
+
+
+@app.route("/api/sim")
+def api_sim():
+    return jsonify(get_sim_data())
 
 
 @app.route("/api/instrument/<code>")
@@ -625,17 +690,18 @@ def api_action(action: str):
     log = ""
     message = ""
     extra: dict = {}
+    prefetched_dashboard: Optional[dict] = None
 
     try:
         if action == "refresh":
-            _, log = _run_quiet(collect_daily_market_close, verbose=True)
-            pm_stats = PortfolioManager().analyze()
-            midterm = MidtermPortfolioAdvisor().run_quick_advice(pm_stats)
-            alerts = scan_midterm_level_alerts(
-                pm_stats, midterm.get("reviews"), save=True,
+            portfolio_stats, sim_data, log = refresh_holdings_quotes()
+            n_real = len(portfolio_stats.get("positions", []))
+            n_sim = sim_data.get("position_count", 0)
+            message = f"持仓行情已刷新（实盘 {n_real} 只 · 模拟 {n_sim} 只）"
+            prefetched_dashboard = get_dashboard_data(
+                portfolio_stats=portfolio_stats,
+                sim_data=sim_data,
             )
-            n = alerts.get("alert_count", 0)
-            message = f"行情已刷新" + (f"，{n} 条支撑/压力提醒" if n else "，暂无价位提醒")
         elif action == "report":
             from quantpy.daily_advisor import generate_daily_report
 
@@ -744,7 +810,7 @@ def api_action(action: str):
             "ok": True,
             "message": message,
             "log": log.strip(),
-            "data": get_dashboard_data(),
+            "data": prefetched_dashboard or get_dashboard_data(),
             **extra,
         }
         if extra.get("ultra_short") is not None:
