@@ -22,17 +22,27 @@ import pandas as pd
 from flask import Flask, jsonify, render_template, request
 
 from quantpy import __version__ as APP_VERSION
-from quantpy.paths import OUTPUT_DIR, PROJECT_ROOT, REPORT_DIR, TEMPLATES_DIR
+from quantpy.paths import OUTPUT_DIR, LOG_DIR, PROJECT_ROOT, REPORT_DIR, RETENTION_DAYS, TEMPLATES_DIR
 from quantpy.portfolio import PortfolioManager
+from quantpy.retention import prune_retention_files
 from quantpy.sim_replay import SimReplayEngine
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import (
     MidtermPortfolioAdvisor,
+    format_midterm_report_markdown,
     load_latest_midterm_advice,
     run_midterm_advice,
 )
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
-from quantpy.stock_data import get_realtime_quotes, get_stock_recent_bars, is_etf_code, price_step_for_code
+from quantpy.stock_data import (
+    get_instrument_index,
+    get_realtime_quotes,
+    get_stock_recent_bars,
+    is_etf_code,
+    lookup_instrument_by_code,
+    lookup_instrument_by_name,
+    price_step_for_code,
+)
 from quantpy.real_portfolio_reviewer import (
     load_latest_real_review,
     run_real_portfolio_review,
@@ -358,12 +368,14 @@ def get_sim_data() -> dict:
 def get_dashboard_data(
     portfolio_stats: Optional[dict] = None,
     sim_data: Optional[dict] = None,
+    midterm: Optional[dict] = None,
 ) -> dict:
     if portfolio_stats is None:
         portfolio_stats = PortfolioManager().analyze()
     if sim_data is None:
         sim_data = get_sim_data()
-    midterm = _resolve_midterm(portfolio_stats)
+    if midterm is None:
+        midterm = _resolve_midterm(portfolio_stats)
     level_alerts = scan_midterm_level_alerts(
         portfolio_stats,
         midterm.get("reviews") if midterm else None,
@@ -380,7 +392,7 @@ def get_dashboard_data(
             midterm=midterm,
             level_alerts=level_alerts,
         ),
-        "sim": get_sim_data(),
+        "sim": sim_data,
         "ultra_short": load_cached_ultra_short(),
         "suggestions": sug["all"],
         "suggestion_groups": sug,
@@ -397,14 +409,66 @@ def get_dashboard_data(
     }
 
 
-def _run_quiet(func, *args, **kwargs) -> tuple[Any, str]:
+def _today_log_path() -> Path:
+    return LOG_DIR / f"web_{datetime.now().strftime('%Y%m%d')}.log"
+
+
+def _append_action_log(action: str, text: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _today_log_path().open("a", encoding="utf-8") as fh:
+        fh.write(f"[{stamp}] [{action}] {text.rstrip()}\n")
+
+
+class _ActionLogWriter(io.TextIOBase):
+    """Capture stdout and stream each line into the daily action log."""
+
+    def __init__(self, buf: io.StringIO, action: str):
+        self._buf = buf
+        self._action = action
+        self._pending = ""
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+        self._buf.write(s)
+        self._pending += s
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            if line.strip():
+                _append_action_log(self._action, line)
+        return len(s)
+
+    def flush(self) -> None:
+        if self._pending.strip():
+            _append_action_log(self._action, self._pending.rstrip())
+            self._pending = ""
+
+
+def _run_quiet(func, *args, action: str = "", **kwargs) -> tuple[Any, str]:
     buf = io.StringIO()
+    if action:
+        _append_action_log(action, "开始")
     try:
-        with redirect_stdout(buf):
+        out = _ActionLogWriter(buf, action) if action else buf
+        with redirect_stdout(out):
             result = func(*args, **kwargs)
-        return result, buf.getvalue()
+        if action:
+            out.flush()
+        log = buf.getvalue()
+        if action:
+            _append_action_log(action, "完成")
+        return result, log
     except Exception:
-        return None, buf.getvalue() + "\n" + traceback.format_exc()
+        if action:
+            try:
+                out.flush()
+            except Exception:
+                pass
+        log = buf.getvalue() + "\n" + traceback.format_exc()
+        if action:
+            _append_action_log(action, f"失败\n{log}")
+        return None, log
 
 
 @app.route("/")
@@ -417,9 +481,58 @@ def api_dashboard():
     return jsonify(get_dashboard_data())
 
 
+@app.route("/api/logs/today")
+def api_logs_today():
+    """返回当日 Web 操作日志（供前端轮询显示长任务进度）。"""
+    path = _today_log_path()
+    if not path.exists():
+        return jsonify({"ok": True, "content": ""})
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
+    return jsonify({"ok": True, "content": content})
+
+
 @app.route("/api/sim")
 def api_sim():
     return jsonify(get_sim_data())
+
+
+@app.route("/api/instruments/index")
+def api_instruments_index():
+    """A 股代码/名称索引（本地 cache/stock_list.csv）。"""
+    items, updated_at = get_instrument_index()
+    return jsonify({
+        "ok": True,
+        "count": len(items),
+        "updated_at": updated_at,
+        "items": items,
+    })
+
+
+@app.route("/api/instrument/lookup")
+def api_instrument_lookup():
+    """按代码或名称互查（名称不唯一时返回候选列表）。"""
+    code = str(request.args.get("code") or "").strip()
+    name = str(request.args.get("name") or "").strip()
+    if code:
+        hit = lookup_instrument_by_code(code)
+        if not hit:
+            return jsonify({"ok": False, "message": "未找到该代码"}), 404
+        return jsonify({"ok": True, "match": hit, "matches": [hit]})
+    if name:
+        matches = lookup_instrument_by_name(name)
+        if not matches:
+            return jsonify({"ok": False, "message": "未找到该名称"}), 404
+        match = matches[0] if len(matches) == 1 else None
+        return jsonify({
+            "ok": True,
+            "match": match,
+            "matches": matches,
+            "message": None if match else f"找到 {len(matches)} 个匹配，请输入更完整名称",
+        })
+    return jsonify({"ok": False, "message": "请提供 code 或 name 参数"}), 400
 
 
 @app.route("/api/instrument/<code>")
@@ -430,12 +543,16 @@ def api_instrument(code: str):
         return jsonify({"ok": False, "message": "代码须为 6 位数字"}), 400
 
     etf = is_etf_code(code)
+    cached = lookup_instrument_by_code(code)
     quotes = get_realtime_quotes([code])
-    name = ""
+    name = (cached or {}).get("name", "")
     price = None
     if not quotes.empty:
         row = quotes.iloc[0]
-        name = str(row.get("name") or "").strip()
+        quote_name = str(row.get("name") or "").strip()
+        if quote_name:
+            import re
+            name = re.sub(r"^\d+[~～]?", "", quote_name).strip() or quote_name
         for col in ("close", "price"):
             if col in row and pd.notna(row[col]) and float(row[col]) > 0:
                 price = round(float(row[col]), 3 if etf else 2)
@@ -748,19 +865,39 @@ def api_action(action: str):
             if not pm_stats.get("has_data"):
                 return jsonify({"ok": False, "message": "暂无实盘持仓"}), 400
             result, log = _run_quiet(
-                run_midterm_advice, pm_stats, show_progress=False, full=True
+                run_midterm_advice,
+                pm_stats,
+                show_progress=True,
+                full=True,
+                action="midterm",
             )
-            rec_n = len(result.get("recommendations", [])) if isinstance(result, dict) else 0
+            if not isinstance(result, dict):
+                return jsonify({
+                    "ok": False,
+                    "message": "中线分析失败，请查看运行日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
             alerts = scan_midterm_level_alerts(
-                pm_stats, result.get("reviews") if isinstance(result, dict) else None, save=True,
+                pm_stats, result.get("reviews"), save=True,
             )
             alert_n = alerts.get("alert_count", 0)
+            rec_n = len(result.get("recommendations", []))
             message = (
                 f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只"
                 + (f"，{alert_n} 条价位提醒" if alert_n else "")
             )
             extra["midterm"] = result
             extra["level_alerts"] = alerts
+            extra["midterm_content"] = {
+                "name": "实盘中线分析报告",
+                "content": result.get("markdown") or format_midterm_report_markdown(result),
+            }
+            prefetched_dashboard = get_dashboard_data(
+                portfolio_stats=pm_stats,
+                midterm=result,
+            )
+            prefetched_dashboard["level_alerts"] = alerts
         elif action == "alerts":
             pm_stats = PortfolioManager().analyze()
             if not pm_stats.get("has_data"):
@@ -828,6 +965,11 @@ def api_action(action: str):
 def main(host: str = "127.0.0.1", port: int = 5050, debug: bool = False) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    pruned = prune_retention_files()
+    if pruned:
+        n = sum(len(v) for v in pruned.values())
+        print(f"已清理 {n} 个超过 {RETENTION_DAYS} 天的历史文件")
     print(f"仪表盘: http://{host}:{port}")
     print("按 Ctrl+C 停止")
     app.run(host=host, port=port, debug=debug, threaded=True)

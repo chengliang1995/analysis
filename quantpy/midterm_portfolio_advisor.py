@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from quantpy.paths import MIDTERM_OUTPUT_DIR
+from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.stock_data import get_market_spot, get_stock_hist, get_stock_code_column, get_stock_name_column
 
 ULTRA_SHORT_STRATEGIES = frozenset({"超短", "涨停"})
@@ -25,6 +26,11 @@ def _classify_bucket(strategy: str) -> str:
 
 OUTPUT_DIR = MIDTERM_OUTPUT_DIR
 MIDTERM_STRATEGIES = {"中线", "趋势", "手动", "价值", "波段", "ETF"}
+
+
+def _progress(msg: str, show: bool = True) -> None:
+    if show:
+        print(msg, flush=True)
 
 
 def _rsi(close: pd.Series, period: int = 14) -> float:
@@ -239,10 +245,13 @@ class MidtermPortfolioAdvisor:
             f"RSI {rsi} | 支撑 {support} / 阻力 {resistance}"
         )
 
-    def review_holdings(self, positions: List[dict]) -> List[dict]:
+    def review_holdings(self, positions: List[dict], show_progress: bool = False) -> List[dict]:
         """逐只持仓中线复盘。"""
         reviews = []
-        for p in positions:
+        total = len(positions)
+        for i, p in enumerate(positions, 1):
+            if show_progress:
+                _progress(f"  复盘 {p.get('name', p.get('code'))}({p.get('code')}) [{i}/{total}]", True)
             reviews.append(
                 self.analyze_stock(
                     code=p["code"],
@@ -442,8 +451,10 @@ class MidtermPortfolioAdvisor:
     ) -> pd.DataFrame:
         """中线个股推荐（排除已持仓）。"""
         exclude = {str(c).zfill(6) for c in (exclude_codes or [])}
+        _progress("  拉取全市场行情…", show_progress)
         market = get_market_spot(verbose=show_progress, force_refresh=False)
         if market.empty:
+            _progress("  行情为空，跳过推荐", show_progress)
             return pd.DataFrame()
 
         code_col = get_stock_code_column(market)
@@ -480,9 +491,13 @@ class MidtermPortfolioAdvisor:
         candidates = df[mask].copy()
         candidates["_rank"] = candidates["_pct"] * 0.3 + candidates["_turnover"] * 0.7
         candidates = candidates.sort_values("_rank", ascending=False).head(prefilter)
+        _progress(f"  初筛 {len(candidates)} 只，技术面评分中…", show_progress)
 
         results: List[dict] = []
-        for _, row in candidates.iterrows():
+        total = len(candidates)
+        for idx, (_, row) in enumerate(candidates.iterrows(), 1):
+            if show_progress and (idx == 1 or idx % 15 == 0 or idx == total):
+                _progress(f"  评分进度 {idx}/{total}", True)
             code = str(row[code_col]).zfill(6)
             if code in exclude:
                 continue
@@ -498,9 +513,11 @@ class MidtermPortfolioAdvisor:
                 results.append(item)
 
         if not results:
+            _progress("  无符合条件的推荐标的", show_progress)
             return pd.DataFrame()
 
         out = pd.DataFrame(results).sort_values("midterm_score", ascending=False).head(top_n)
+        _progress(f"  推荐命中 {len(out)} 只", show_progress)
         return out.reset_index(drop=True)
 
     def run_quick_advice(self, portfolio_stats: dict) -> dict:
@@ -529,18 +546,29 @@ class MidtermPortfolioAdvisor:
 
     def run_full_advice(self, portfolio_stats: dict, show_progress: bool = False) -> dict:
         """完整实盘中线分析：复盘 + 优化 + 推荐。"""
+        _progress("=" * 50, show_progress)
+        _progress("实盘中线分析开始", show_progress)
         all_positions = portfolio_stats.get("positions", [])
         midterm_positions = [
             p for p in all_positions
             if p.get("bucket", _classify_bucket(p.get("strategy", ""))) == "midterm"
         ]
-        reviews = self.review_holdings(midterm_positions)
+        _progress(f"[1/4] 中线持仓复盘（{len(midterm_positions)} 只）", show_progress)
+        reviews = self.review_holdings(midterm_positions, show_progress=show_progress)
+        ok_n = sum(1 for r in reviews if r.get("ok"))
+        _progress(f"  复盘完成：成功 {ok_n}/{len(reviews)}", show_progress)
+
+        _progress("[2/4] 持仓优化建议", show_progress)
         optimization = self.optimize_positions(portfolio_stats, reviews)
+        _progress(f"  优化建议 {len(optimization.get('suggestions', []))} 条", show_progress)
+
         held_codes = [p["code"] for p in all_positions]
+        _progress("[3/4] 全市场推荐扫描", show_progress)
         recommendations = self.recommend_stocks(
             exclude_codes=held_codes, top_n=8, show_progress=show_progress
         )
 
+        _progress("[4/4] 生成报告", show_progress)
         review_summaries = [r["summary"] for r in reviews if r.get("ok")]
         opt_suggestions = optimization.get("suggestions", [])
         rec_records = recommendations.to_dict("records") if not recommendations.empty else []
@@ -577,7 +605,84 @@ class MidtermPortfolioAdvisor:
             ),
             encoding="utf-8",
         )
+        md = format_midterm_report_markdown(result)
+        md_path = OUTPUT_DIR / f"midterm_{datetime.now().strftime('%Y%m%d')}.md"
+        md_path.write_text(md, encoding="utf-8")
+        result["markdown"] = md
+        result["report_path"] = str(md_path)
+        _progress(f"分析完成：推荐 {len(rec_records)} 只，报告已保存", show_progress)
         return result
+
+
+def format_midterm_report_markdown(result: dict) -> str:
+    """将中线分析结果格式化为 Markdown 报告。"""
+    now = result.get("generated_at", datetime.now().isoformat())[:19].replace("T", " ")
+    parts = [
+        f"# 实盘中线分析报告\n",
+        f"**生成时间**: {now}\n",
+        f"---\n",
+        f"## 一、持仓复盘\n\n",
+    ]
+    review_rows = []
+    for r in result.get("reviews", []):
+        if not r.get("ok"):
+            continue
+        review_rows.append([
+            r["code"],
+            r["name"],
+            r["trend"],
+            r["midterm_score"],
+            f"{r.get('profit_pct', 0):+.2f}",
+            r["rsi"],
+            r.get("support", ""),
+            r.get("resistance", ""),
+            r["action"],
+        ])
+    if review_rows:
+        parts.append(
+            format_markdown_table(
+                ["代码", "名称", "趋势", "评分", "浮盈%", "RSI", "支撑", "压力", "建议"],
+                review_rows,
+                aligns=["left", "left", "left", "right", "right", "right", "right", "right", "left"],
+            )
+        )
+        parts.append("\n")
+    else:
+        parts.append("暂无中线持仓复盘数据。\n\n")
+
+    if result.get("optimize_suggestions"):
+        parts.append("## 二、持仓优化\n\n")
+        for i, s in enumerate(result["optimize_suggestions"], 1):
+            parts.append(f"{i}. {s}\n")
+        parts.append("\n")
+
+    recs = result.get("recommendations", [])
+    if recs:
+        parts.append("## 三、个股推荐（市值<1000亿 · 股价<100元）\n\n")
+        rec_rows = [
+            [
+                r["code"],
+                r["name"],
+                f"{r.get('price', 0):.2f}",
+                f"{r.get('market_cap_yi', 0):.1f}" if r.get("market_cap_yi") is not None else "—",
+                r["midterm_score"],
+                f"{r.get('pct_chg', 0):.2f}",
+                r.get("rsi", ""),
+                truncate_display(r.get("reason", ""), 32),
+            ]
+            for r in recs
+        ]
+        parts.append(
+            format_markdown_table(
+                ["代码", "名称", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "理由"],
+                rec_rows,
+                aligns=["left", "left", "right", "right", "right", "right", "right", "left"],
+            )
+        )
+        parts.append("\n")
+
+    parts.append("---\n*仅供参考，不构成投资建议。*\n")
+    return "".join(parts)
 
 
 def load_latest_midterm_advice() -> dict:

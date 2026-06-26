@@ -12,6 +12,10 @@ SIM_REVIEW_DIR = OUTPUT_DIR / "sim_reviews"
 MIDTERM_OUTPUT_DIR = OUTPUT_DIR / "midterm"
 REAL_REVIEW_DIR = OUTPUT_DIR / "real_review"
 AI_LEARNING_DIR = OUTPUT_DIR / "ai_learning"
+LOG_DIR = PROJECT_ROOT / "logs"
+
+# 按日落盘的日志/报告保留天数（含今天共保留 N 个自然日）
+RETENTION_DAYS = 3
 
 PORTFOLIO_CONFIG_FILE = DATA_DIR / "portfolio_config.json"
 PORTFOLIO_FILE = DATA_DIR / "portfolio.json"

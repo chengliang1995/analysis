@@ -155,10 +155,15 @@
       border: 1px solid var(--border); border-radius: 12px; display: none;
     }
     #log-panel.open { display: block; }
+    #log-panel-head {
+      padding: 10px 16px; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 0.8rem; color: var(--muted);
+    }
     #log-panel pre {
       padding: 16px 20px; font-size: 0.75rem; color: var(--muted);
       white-space: pre-wrap; word-break: break-all;
-      max-height: 240px; overflow-y: auto;
+      max-height: 280px; overflow-y: auto;
     }
     .modal {
       display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65);
@@ -447,7 +452,13 @@
       </section>
     </div>
 
-    <div id="log-panel"><pre id="log-text"></pre></div>
+    <div id="log-panel">
+      <div id="log-panel-head">
+        <span>运行日志（耗时操作会在此显示进度）</span>
+        <button type="button" class="secondary" id="btn-clear-log" style="padding:4px 10px;font-size:0.75rem">清空</button>
+      </div>
+      <pre id="log-text"></pre>
+    </div>
   </div>
 
   <div id="toast"></div>
@@ -478,7 +489,50 @@
       "560", "561", "562", "563", "588",
     ]);
     let appBusy = false;
+    let savedServerTimeText = "";
+    let logPollTimer = null;
+    const ACTION_BUSY_LABEL = {
+      midterm: "中线分析进行中（约 1～3 分钟）…",
+      report: "生成日报中…",
+      review: "实盘复盘中…",
+      scan: "超短扫描中…",
+      "sim-backtest": "模拟回测中…",
+      "ai-learn": "AI 策略学习中…",
+    };
+    const ACTION_TIMEOUT_MS = {
+      midterm: 600000,
+      report: 600000,
+      review: 300000,
+      scan: 300000,
+      "sim-backtest": 300000,
+      default: 180000,
+    };
+    const LONG_RUNNING_ACTIONS = new Set([
+      "midterm", "report", "review", "scan", "sim-backtest", "ai-learn",
+    ]);
     let lastDashboardData = null;
+
+    function appendLog(text) {
+      const el = document.getElementById("log-text");
+      const stamp = new Date().toLocaleTimeString();
+      el.textContent += (el.textContent ? "\n" : "") + `[${stamp}] ${text}`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function openLogPanel(initialText) {
+      document.getElementById("log-panel").classList.add("open");
+      if (initialText !== undefined) {
+        document.getElementById("log-text").textContent = initialText;
+      }
+    }
+
+    function showActionLog(logText) {
+      if (!logText) return;
+      openLogPanel();
+      document.getElementById("log-text").textContent = logText;
+      document.getElementById("log-text").scrollTop = document.getElementById("log-text").scrollHeight;
+    }
+
     const BUSY_BUTTON_SELECTOR = [
       ".toolbar button[data-action]",
       "#btn-reload", "#btn-report",
@@ -519,22 +573,99 @@
       document.getElementById("mc-new-cost").step = isEtfCode(code) ? "0.001" : "any";
     }
 
+    const INSTRUMENT_CACHE_KEY = "instrument_index_v1";
+    let instrumentByCode = new Map();
+    let instrumentByName = new Map();
+    let instrumentIndexReady = null;
+
+    function mergeInstrumentEntry(code, name) {
+      const c = String(code || "").padStart(6, "0");
+      const n = String(name || "").trim();
+      if (!/^\d{6}$/.test(c) || !n) return;
+      instrumentByCode.set(c, n);
+      const list = instrumentByName.get(n) || [];
+      if (!list.includes(c)) list.push(c);
+      instrumentByName.set(n, list);
+    }
+
+    function ingestInstrumentPositions(positions) {
+      (positions || []).forEach((p) => mergeInstrumentEntry(p.code, p.name));
+    }
+
+    async function ensureInstrumentIndex() {
+      if (instrumentIndexReady) return instrumentIndexReady;
+      instrumentIndexReady = (async () => {
+        const today = new Date().toISOString().slice(0, 10);
+        try {
+          const raw = sessionStorage.getItem(INSTRUMENT_CACHE_KEY);
+          if (raw) {
+            const cached = JSON.parse(raw);
+            if (cached.date === today && cached.items?.length) {
+              cached.items.forEach((x) => mergeInstrumentEntry(x.code, x.name));
+              return;
+            }
+          }
+        } catch (_) { /* ignore */ }
+        const res = await fetch("/api/instruments/index", { signal: AbortSignal.timeout(60000) });
+        const data = await parseJsonResponse(res);
+        (data.items || []).forEach((x) => mergeInstrumentEntry(x.code, x.name));
+        try {
+          sessionStorage.setItem(INSTRUMENT_CACHE_KEY, JSON.stringify({
+            date: today,
+            items: data.items || [],
+          }));
+        } catch (_) { /* quota */ }
+      })();
+      return instrumentIndexReady;
+    }
+
+    function findCodeByNameLocal(name) {
+      const query = String(name || "").trim();
+      if (!query) return null;
+      const paren = query.match(/^(.+?)\s*\((\d{6})\)\s*$/);
+      if (paren) return paren[2];
+      const exact = instrumentByName.get(query);
+      if (exact?.length === 1) return exact[0];
+      const prefixHits = [];
+      const containHits = [];
+      for (const [n, codes] of instrumentByName.entries()) {
+        if (n === query) return codes.length === 1 ? codes[0] : null;
+        if (n.startsWith(query)) codes.forEach((c) => { if (!prefixHits.includes(c)) prefixHits.push(c); });
+        else if (n.includes(query)) codes.forEach((c) => { if (!containHits.includes(c)) containHits.push(c); });
+      }
+      if (prefixHits.length === 1) return prefixHits[0];
+      if (prefixHits.length === 0 && containHits.length === 1) return containHits[0];
+      return null;
+    }
+
+    function canAutoFill(targetEl) {
+      return !targetEl.value.trim() || targetEl.dataset.autoFilled === "1";
+    }
+
     async function lookupInstrument(prefix) {
-      const codeRaw = document.getElementById(`${prefix}-code`).value.trim();
+      const codeEl = document.getElementById(`${prefix}-code`);
+      const nameEl = document.getElementById(`${prefix}-name`);
+      const codeRaw = codeEl.value.trim();
       if (!codeRaw) return;
       const code = codeRaw.padStart(6, "0");
       if (!/^\d{6}$/.test(code)) return;
+
+      await ensureInstrumentIndex();
+      const localName = instrumentByCode.get(code);
+      if (localName && canAutoFill(nameEl)) {
+        nameEl.value = localName;
+        nameEl.dataset.autoFilled = "1";
+      }
+
       try {
         const res = await fetch(`/api/instrument/${encodeURIComponent(code)}`);
         const data = await res.json();
         if (!res.ok || !data.ok) return;
-        const nameEl = document.getElementById(`${prefix}-name`);
-        if (data.name) {
+        if (data.name && canAutoFill(nameEl)) {
           const clean = data.name.replace(/^\d+[~～]?/, "").trim();
-          if (!nameEl.value.trim() || nameEl.dataset.autoFilled === "1") {
-            nameEl.value = clean || data.name;
-            nameEl.dataset.autoFilled = "1";
-          }
+          nameEl.value = clean || data.name;
+          nameEl.dataset.autoFilled = "1";
+          mergeInstrumentEntry(code, nameEl.value);
         }
         const assetSel = document.getElementById(`${prefix}-asset-type`);
         if (assetSel) assetSel.value = data.is_etf ? "etf" : "stock";
@@ -548,6 +679,43 @@
           priceField.value = data.price;
         }
       } catch (_) { /* ignore */ }
+    }
+
+    async function lookupInstrumentByName(prefix) {
+      const codeEl = document.getElementById(`${prefix}-code`);
+      const nameEl = document.getElementById(`${prefix}-name`);
+      const name = nameEl.value.trim();
+      if (!name) return;
+
+      await ensureInstrumentIndex();
+      let code = findCodeByNameLocal(name);
+
+      if (!code) {
+        try {
+          const res = await fetch(
+            `/api/instrument/lookup?name=${encodeURIComponent(name)}`,
+            { signal: AbortSignal.timeout(15000) },
+          );
+          const data = await parseJsonResponse(res);
+          if (data.match) {
+            code = data.match.code;
+            if (canAutoFill(nameEl) && data.match.name) {
+              nameEl.value = data.match.name;
+              nameEl.dataset.autoFilled = "1";
+            }
+          } else if (data.matches?.length > 1) {
+            showToast(data.message || `找到 ${data.matches.length} 个匹配，请输入更完整名称`, true);
+            return;
+          }
+        } catch (_) { /* ignore */ }
+      }
+
+      if (code && canAutoFill(codeEl)) {
+        codeEl.value = code;
+        codeEl.dataset.autoFilled = "1";
+        mergeInstrumentEntry(code, nameEl.value.trim());
+        await lookupInstrument(prefix);
+      }
     }
 
     const fmtMoney = (n) => Number(n || 0).toLocaleString("zh-CN", { maximumFractionDigits: 0 });
@@ -1181,6 +1349,7 @@
       try { renderRecentTrades(data.trades); } catch (e) { console.error("renderRecentTrades", e); }
       try {
         fillHoldingOptions(data.portfolio?.positions);
+        ingestInstrumentPositions(data.portfolio?.positions);
         fillPortfolioForm(data.portfolio);
         fillCostFormOptions(data.portfolio?.positions);
         syncPriceSteps("pf");
@@ -1302,12 +1471,41 @@
       showToast._timer = setTimeout(() => t.classList.remove("show"), 5000);
     }
 
-    function setLoading(loading) {
+    function setLoading(loading, statusText) {
       appBusy = loading;
+      const timeEl = document.getElementById("server-time");
+      if (loading) {
+        if (!savedServerTimeText) savedServerTimeText = timeEl.textContent;
+        if (statusText) timeEl.textContent = statusText;
+      } else if (savedServerTimeText) {
+        timeEl.textContent = savedServerTimeText;
+        savedServerTimeText = "";
+      }
       document.body.classList.toggle("app-busy", loading);
       document.querySelectorAll(BUSY_BUTTON_SELECTOR).forEach((btn) => {
         btn.disabled = loading;
       });
+    }
+
+    function startLogPoll() {
+      stopLogPoll();
+      logPollTimer = setInterval(async () => {
+        try {
+          const res = await fetch("/api/logs/today", { signal: AbortSignal.timeout(8000) });
+          const body = await parseJsonResponse(res);
+          if (!body.content) return;
+          const el = document.getElementById("log-text");
+          el.textContent = body.content;
+          el.scrollTop = el.scrollHeight;
+        } catch (_) { /* ignore poll errors */ }
+      }, 2000);
+    }
+
+    function stopLogPoll() {
+      if (logPollTimer) {
+        clearInterval(logPollTimer);
+        logPollTimer = null;
+      }
     }
 
     function tryBeginBusy() {
@@ -1446,17 +1644,29 @@
 
     async function runAction(action, force) {
       if (!tryBeginBusy()) return;
+      setLoading(true, ACTION_BUSY_LABEL[action] || "任务执行中…");
       const url = `/api/actions/${action}` + (force ? "?force=true" : "");
+      const timeoutMs = ACTION_TIMEOUT_MS[action] || ACTION_TIMEOUT_MS.default;
+      if (LONG_RUNNING_ACTIONS.has(action)) {
+        openLogPanel(`[${new Date().toLocaleTimeString()}] ${action} 执行中，请稍候…\n（进度将自动刷新，全市场扫描约 1～3 分钟）\n`);
+        startLogPoll();
+      }
       try {
-        const res = await fetch(url, { method: "POST" });
+        const res = await fetch(url, {
+          method: "POST",
+          signal: AbortSignal.timeout(timeoutMs),
+        });
         const body = await parseJsonResponse(res);
         if (body.log) {
-          document.getElementById("log-panel").classList.add("open");
-          document.getElementById("log-text").textContent = body.log;
+          showActionLog(body.log);
         }
         if (body.data) {
           if (body.ultra_short) body.data.ultra_short = body.ultra_short;
           if (body.level_alerts) body.data.level_alerts = body.level_alerts;
+          if (body.midterm) {
+            body.data.portfolio = body.data.portfolio || {};
+            body.data.portfolio.midterm = body.midterm;
+          }
           renderAll(body.data);
           if (["sim", "sim-review", "sim-backtest"].includes(action)) {
             refreshSimPanel().catch(() => {});
@@ -1474,6 +1684,12 @@
             content: body.portfolio_review?.markdown || "暂无复盘内容",
           });
         }
+        if (action === "midterm" && body.ok) {
+          openReport(body.midterm_content || {
+            name: "实盘中线分析报告",
+            content: body.midterm?.markdown || "暂无报告内容",
+          });
+        }
         if (body.ok) {
           if (["sim", "sim-review", "sim-backtest"].includes(action)) {
             switchMainTab("sim");
@@ -1483,8 +1699,13 @@
         }
         showToast(body.message || (body.ok ? "完成" : "失败"), !body.ok);
       } catch (e) {
-        showToast("请求失败: " + e.message, true);
+        const msg = e.name === "TimeoutError"
+          ? `操作超时（>${Math.round(timeoutMs / 1000)}秒），请查看 logs/web_*.log`
+          : e.message;
+        appendLog("失败: " + msg);
+        showToast("请求失败: " + msg, true);
       } finally {
+        stopLogPoll();
         setLoading(false);
       }
     }
@@ -1501,6 +1722,9 @@
       });
     });
     document.getElementById("btn-test-notify").addEventListener("click", sendTestNotification);
+    document.getElementById("btn-clear-log").addEventListener("click", () => {
+      document.getElementById("log-text").textContent = "";
+    });
     document.getElementById("btn-reload").addEventListener("click", async () => {
       if (!tryBeginBusy()) return;
       try {
@@ -1530,11 +1754,15 @@
     document.getElementById("pf-mid-capital").addEventListener("input", syncPortfolioCapitalFields);
     ["pf", "tf"].forEach((prefix) => {
       document.getElementById(`${prefix}-code`).addEventListener("blur", () => lookupInstrument(prefix));
-      document.getElementById(`${prefix}-code`).addEventListener("input", () => syncPriceSteps(prefix));
-      document.getElementById(`${prefix}-asset-type`).addEventListener("change", () => syncPriceSteps(prefix));
+      document.getElementById(`${prefix}-code`).addEventListener("input", (e) => {
+        if (e.target.value.trim()) e.target.dataset.autoFilled = "0";
+        syncPriceSteps(prefix);
+      });
+      document.getElementById(`${prefix}-name`).addEventListener("blur", () => lookupInstrumentByName(prefix));
       document.getElementById(`${prefix}-name`).addEventListener("input", (e) => {
         if (e.target.value.trim()) e.target.dataset.autoFilled = "0";
       });
+      document.getElementById(`${prefix}-asset-type`).addEventListener("change", () => syncPriceSteps(prefix));
     });
     document.getElementById("cost-form").addEventListener("submit", submitCostUpdate);
     document.getElementById("mc-holding").addEventListener("change", (e) => {
@@ -1565,6 +1793,7 @@
         }
       })
       .catch((e) => showToast("加载失败: " + e.message, true));
+    ensureInstrumentIndex().catch(() => {});
   </script>
 </body>
 </html>

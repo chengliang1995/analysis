@@ -891,3 +891,103 @@ def get_stock_name_column(df: pd.DataFrame) -> Optional[str]:
         if col in df.columns:
             return col
     return None
+
+
+def _clean_display_name(name: str) -> str:
+    import re
+
+    return re.sub(r"^\d+[~～]?", "", str(name or "").strip()).strip()
+
+
+def _instrument_base_df() -> pd.DataFrame:
+    """代码+名称索引（优先本地缓存，不拉实时价）。"""
+    df = _load_stale_cache()
+    if df.empty or "name" not in df.columns:
+        df = get_all_stocks(
+            verbose=False,
+            use_cache=True,
+            allow_offline=True,
+            refresh_prices=False,
+        )
+    if df.empty or "code" not in df.columns or "name" not in df.columns:
+        return pd.DataFrame()
+    out = df[["code", "name"]].copy()
+    out["code"] = out["code"].astype(str).str.zfill(6)
+    out["name"] = out["name"].astype(str).map(_clean_display_name)
+    return out.drop_duplicates(subset=["code"], keep="first")
+
+
+def lookup_instrument_by_code(code: str) -> Optional[dict]:
+    code = str(code or "").strip().zfill(6)
+    if not code.isdigit() or len(code) != 6:
+        return None
+    df = _instrument_base_df()
+    if df.empty:
+        return None
+    row = df[df["code"] == code]
+    if row.empty:
+        return None
+    name = str(row.iloc[0]["name"]).strip()
+    return {"code": code, "name": name, "is_etf": is_etf_code(code)}
+
+
+def lookup_instrument_by_name(name: str, limit: int = 8) -> List[dict]:
+    """按名称查代码：精确 > 前缀 > 包含，仅返回唯一或少量候选。"""
+    import re
+
+    query = _clean_display_name(str(name or "").strip())
+    if not query:
+        return []
+
+    m = re.match(r"^(.+?)\s*\((\d{6})\)\s*$", query)
+    if m:
+        code = m.group(2)
+        hit = lookup_instrument_by_code(code)
+        return [hit] if hit else []
+
+    df = _instrument_base_df()
+    if df.empty:
+        return []
+
+    names = df["name"].astype(str)
+    exact = df[names == query]
+    if len(exact) == 1:
+        return [_row_to_instrument(exact.iloc[0])]
+
+    prefix = df[names.str.startswith(query, na=False)]
+    if len(prefix) == 1:
+        return [_row_to_instrument(prefix.iloc[0])]
+
+    contains = df[names.str.contains(re.escape(query), regex=True, na=False)]
+    if len(contains) == 1:
+        return [_row_to_instrument(contains.iloc[0])]
+
+    if len(contains) > 1:
+        return [_row_to_instrument(row) for _, row in contains.head(limit).iterrows()]
+
+    if len(prefix) > 1:
+        return [_row_to_instrument(row) for _, row in prefix.head(limit).iterrows()]
+
+    return []
+
+
+def _row_to_instrument(row: pd.Series) -> dict:
+    code = str(row["code"]).zfill(6)
+    return {
+        "code": code,
+        "name": str(row["name"]).strip(),
+        "is_etf": is_etf_code(code),
+    }
+
+
+def get_instrument_index() -> tuple[List[dict], str]:
+    df = _instrument_base_df()
+    updated_at = ""
+    if STOCK_LIST_META.exists():
+        try:
+            meta = json.loads(STOCK_LIST_META.read_text(encoding="utf-8"))
+            updated_at = str(meta.get("updated_at") or "")
+        except Exception:
+            pass
+    items = [_row_to_instrument(row) for _, row in df.iterrows()]
+    return items, updated_at

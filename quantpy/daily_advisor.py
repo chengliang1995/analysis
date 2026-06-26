@@ -517,6 +517,13 @@ def generate_daily_report(
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    from quantpy.retention import prune_retention_files
+
+    pruned = prune_retention_files()
+    if pruned:
+        n = sum(len(v) for v in pruned.values())
+        print(f"  已清理 {n} 个超过保留期的历史文件")
+
     print(f"\n报告已保存:")
     print(f"  {report_path}")
     print(f"  {summary_path}")
