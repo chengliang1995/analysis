@@ -104,6 +104,27 @@
       display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;
     }
     .trade-form-actions button { padding: 8px 14px; font-size: 0.8rem; }
+    .hidden { display: none !important; }
+    .tf-type-fields { display: contents; }
+    .tf-type-fields.hidden { display: none; }
+    .tf-type-hint {
+      grid-column: 1 / -1; font-size: 0.75rem; color: var(--muted); margin: 0;
+    }
+    .tf-sync-row {
+      grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem; color: var(--muted);
+    }
+    .tf-sync-row input { width: auto; margin: 0; }
+    .rec-filters {
+      display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end;
+      padding: 8px 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 8px;
+    }
+    .rec-filters label { font-size: 0.75rem; color: var(--muted); display: block; margin-bottom: 4px; }
+    .rec-filters select {
+      min-width: 120px; padding: 6px 8px; border-radius: 6px;
+      border: 1px solid var(--border); background: #0f1419; color: var(--text); font-size: 0.8rem;
+    }
+    .rec-filters button { padding: 6px 12px; font-size: 0.8rem; }
     .form-tabs {
       display: flex; gap: 8px; padding: 12px 20px 0;
     }
@@ -309,7 +330,27 @@
           <div class="table-wrap" id="portfolio-table"></div>
           <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
             <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">市值&lt;1000亿 · 股价&lt;100 · 点击下钻</span></h2>
-            <span class="badge">未持仓</span>
+            <span class="badge" id="midterm-rec-badge">未持仓</span>
+          </div>
+          <div class="rec-filters">
+            <div>
+              <label for="midterm-filter-industry">行业</label>
+              <select id="midterm-filter-industry">
+                <option value="">全部行业</option>
+              </select>
+            </div>
+            <div>
+              <label for="midterm-filter-performance">业绩</label>
+              <select id="midterm-filter-performance">
+                <option value="">全部</option>
+                <option value="profit_growth">净利正增长</option>
+                <option value="high_growth">净利增≥30%</option>
+                <option value="low_pe">低市盈率(0-30)</option>
+                <option value="value_growth">低PE+正增长</option>
+              </select>
+            </div>
+            <button type="button" class="secondary" id="btn-midterm-filter-apply">应用筛选</button>
+            <button type="button" class="secondary" id="btn-midterm-filter-reset">重置</button>
           </div>
           <div class="table-wrap" id="midterm-rec-table"></div>
         </section>
@@ -385,6 +426,14 @@
           <form class="trade-form form-panel" id="trade-form">
             <div class="trade-form-grid">
               <div>
+                <label>交易类型</label>
+                <select id="tf-trade-type">
+                  <option value="buy">买入</option>
+                  <option value="sell" selected>卖出</option>
+                  <option value="t">做T</option>
+                </select>
+              </div>
+              <div>
                 <label>从持仓填充</label>
                 <select id="tf-holding"><option value="">手动输入</option></select>
               </div>
@@ -392,14 +441,6 @@
                 <label>策略</label>
                 <select id="tf-strategy">
                   <option>手动</option><option>ETF</option><option>超短</option><option>涨停</option><option>趋势</option>
-                </select>
-              </div>
-              <div>
-                <label>同步实盘</label>
-                <select id="tf-sync-action">
-                  <option value="sell">卖出扣减持仓</option>
-                  <option value="buy">买入增加持仓</option>
-                  <option value="none">仅记录日记</option>
                 </select>
               </div>
               <div><label>代码</label><input id="tf-code" placeholder="600519 / 563530" required /></div>
@@ -412,16 +453,28 @@
                   <option value="etf">ETF</option>
                 </select>
               </div>
-              <div><label>买入日期</label><input id="tf-buy-date" type="date" required /></div>
-              <div><label>买入价</label><input id="tf-buy-price" type="number" step="any" min="0.001" required /></div>
-              <div><label>卖出日期</label><input id="tf-sell-date" type="date" /></div>
-              <div><label>卖出价</label><input id="tf-sell-price" type="number" step="any" min="0.001" placeholder="买入时可留空" /></div>
+              <div id="tf-buy-fields" class="tf-type-fields hidden">
+                <div><label id="tf-buy-date-label">买入日期</label><input id="tf-buy-date" type="date" /></div>
+                <div><label id="tf-buy-price-label">买入价</label><input id="tf-buy-price" type="number" step="any" min="0.001" /></div>
+              </div>
+              <div id="tf-sell-fields" class="tf-type-fields">
+                <div><label>卖出日期</label><input id="tf-sell-date" type="date" /></div>
+                <div><label>卖出价</label><input id="tf-sell-price" type="number" step="any" min="0.001" placeholder="现价" /></div>
+              </div>
+              <div id="tf-cost-fields" class="tf-type-fields hidden">
+                <div><label>原买入日期</label><input id="tf-cost-date" type="date" /></div>
+                <div><label>原买入价</label><input id="tf-cost-price" type="number" step="any" min="0.001" placeholder="成本价" /></div>
+              </div>
+              <p class="tf-type-hint" id="tf-type-hint"></p>
               <div><label>数量</label><input id="tf-qty" type="number" value="100" min="1" /></div>
               <div><label>备注</label><input id="tf-note" placeholder="可选" /></div>
+              <div class="tf-sync-row" id="tf-sync-row">
+                <label><input type="checkbox" id="tf-sync-portfolio" checked /> 同步实盘持仓</label>
+              </div>
             </div>
             <div class="trade-form-actions">
-              <button type="submit">录入交易</button>
-              <button type="button" class="secondary" id="btn-fill-today">卖出日=今天</button>
+              <button type="submit" id="tf-submit-btn">录入交易</button>
+              <button type="button" class="secondary" id="btn-fill-today">日期=今天</button>
             </div>
           </form>
           <div class="recent-trades" id="recent-trades">暂无交易记录</div>
@@ -867,17 +920,82 @@
       }
     }
 
+    let lastMidtermRecsAll = [];
+
+    const PERFORMANCE_FILTER_FN = {
+      profit_growth: (x) => Number(x.profit_yoy) > 0,
+      high_growth: (x) => Number(x.profit_yoy) >= 30,
+      low_pe: (x) => Number(x.pe) > 0 && Number(x.pe) <= 30,
+      value_growth: (x) => Number(x.profit_yoy) > 0 && Number(x.pe) > 0 && Number(x.pe) <= 40,
+    };
+
+    function formatProfitYoy(v) {
+      if (v == null || v === "") return "—";
+      const n = Number(v);
+      return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
+    }
+
+    function applyMidtermRecFiltersClient(rec) {
+      const industry = document.getElementById("midterm-filter-industry").value;
+      const performance = document.getElementById("midterm-filter-performance").value;
+      let rows = rec || [];
+      if (industry) rows = rows.filter((x) => (x.industry || "") === industry);
+      if (performance && PERFORMANCE_FILTER_FN[performance]) {
+        rows = rows.filter(PERFORMANCE_FILTER_FN[performance]);
+      }
+      return rows;
+    }
+
+    function populateMidtermIndustryOptions(rec) {
+      const sel = document.getElementById("midterm-filter-industry");
+      const current = sel.value;
+      const fromRec = [...new Set((rec || []).map((x) => x.industry).filter(Boolean))];
+      const base = sel._cachedIndustries || [];
+      const merged = [...new Set([...base, ...fromRec])].sort((a, b) => a.localeCompare(b, "zh-CN"));
+      sel.innerHTML = '<option value="">全部行业</option>';
+      merged.forEach((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      if (current && merged.includes(current)) sel.value = current;
+    }
+
+    async function loadIndustryOptions() {
+      try {
+        const res = await fetch("/api/stock/industries");
+        const data = await parseJsonResponse(res);
+        document.getElementById("midterm-filter-industry")._cachedIndustries = data.items || [];
+        populateMidtermIndustryOptions(lastMidtermRecsAll);
+      } catch (_) { /* ignore */ }
+    }
+
     function renderMidtermRecTable(rec) {
       const el = document.getElementById("midterm-rec-table");
+      const badge = document.getElementById("midterm-rec-badge");
+      const filtered = applyMidtermRecFiltersClient(rec);
       if (!rec.length) {
-        el.innerHTML = `<div class="empty">点击「中线分析」生成推荐</div>`;
+        badge.textContent = "未持仓";
+        el.innerHTML = `<div class="empty">点击「中线分析」生成推荐（可先选行业/业绩筛选）</div>`;
         return;
       }
-      const head = ["代码", "名称", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "理由"]
+      populateMidtermIndustryOptions(rec);
+      badge.textContent = filtered.length === rec.length
+        ? `${rec.length} 只`
+        : `${filtered.length}/${rec.length} 只`;
+      if (!filtered.length) {
+        el.innerHTML = `<div class="empty">当前筛选无结果，请放宽行业或业绩条件后重试</div>`;
+        return;
+      }
+      const head = ["代码", "名称", "行业", "PE", "净利同比", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "理由"]
         .map((h) => `<th>${h}</th>`).join("");
-      const body = rec.map((x) =>
+      const body = filtered.map((x) =>
         `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
         `<td>${x.code}</td><td>${x.name}</td>` +
+        `<td>${escapeHtml(x.industry || "—")}</td>` +
+        `<td>${x.pe != null ? Number(x.pe).toFixed(1) : "—"}</td>` +
+        `<td>${formatProfitYoy(x.profit_yoy)}</td>` +
         `<td>${x.price != null ? Number(x.price).toFixed(2) : "—"}</td>` +
         `<td>${x.market_cap_yi != null ? Number(x.market_cap_yi).toFixed(1) : "—"}</td>` +
         `<td>${x.midterm_score}</td>` +
@@ -977,6 +1095,14 @@
       renderPortfolioTable(p.positions || []);
       renderRealClosed(p);
       const rec = (p.midterm && p.midterm.recommendations) || [];
+      lastMidtermRecsAll = rec;
+      const savedFilters = p.midterm?.filters || {};
+      if (savedFilters.industry) {
+        document.getElementById("midterm-filter-industry").value = savedFilters.industry;
+      }
+      if (savedFilters.performance) {
+        document.getElementById("midterm-filter-performance").value = savedFilters.performance;
+      }
       renderMidtermRecTable(rec);
     }
 
@@ -1316,20 +1442,115 @@
       sel._positions = positions || [];
     }
 
+    function getTradeType() {
+      return document.getElementById("tf-trade-type").value;
+    }
+
+    function hasTradeHoldingSelected() {
+      return document.getElementById("tf-holding").value !== "";
+    }
+
+    function resolveTradeBuyInfo() {
+      const type = getTradeType();
+      const positions = document.getElementById("tf-holding")._positions || [];
+      const p = positions[Number(document.getElementById("tf-holding").value)];
+      if (type === "buy" || type === "t") {
+        return {
+          buy_date: document.getElementById("tf-buy-date").value,
+          buy_price: document.getElementById("tf-buy-price").value,
+        };
+      }
+      if (p) {
+        return {
+          buy_date: (p.buy_date || "").slice(0, 10),
+          buy_price: String(p.cost_price ?? ""),
+        };
+      }
+      return {
+        buy_date: document.getElementById("tf-cost-date").value,
+        buy_price: document.getElementById("tf-cost-price").value,
+      };
+    }
+
+    function syncTradeFormLayout() {
+      const type = getTradeType();
+      const buyPanel = document.getElementById("tf-buy-fields");
+      const sellPanel = document.getElementById("tf-sell-fields");
+      const costPanel = document.getElementById("tf-cost-fields");
+      const hint = document.getElementById("tf-type-hint");
+      const syncRow = document.getElementById("tf-sync-row");
+      const syncCb = document.getElementById("tf-sync-portfolio");
+      const submitBtn = document.getElementById("tf-submit-btn");
+      const holding = hasTradeHoldingSelected();
+
+      buyPanel.classList.add("hidden");
+      sellPanel.classList.add("hidden");
+      costPanel.classList.add("hidden");
+      hint.textContent = "";
+      hint.classList.add("hidden");
+
+      document.getElementById("tf-buy-date-label").textContent = "买入日期";
+      document.getElementById("tf-buy-price-label").textContent = "买入价";
+
+      if (type === "buy") {
+        buyPanel.classList.remove("hidden");
+        syncRow.style.display = "";
+        syncCb.checked = true;
+        submitBtn.textContent = "录入买入";
+        hint.textContent = "填写买入价与数量；勾选同步实盘可加仓。";
+        hint.classList.remove("hidden");
+      } else if (type === "sell") {
+        sellPanel.classList.remove("hidden");
+        if (!holding) costPanel.classList.remove("hidden");
+        syncRow.style.display = "";
+        syncCb.checked = true;
+        submitBtn.textContent = "录入卖出";
+        hint.textContent = holding
+          ? "已从持仓带入成本，填写卖出价与数量即可。"
+          : "手动卖出请补充原买入日期与成本价。";
+        hint.classList.remove("hidden");
+      } else if (type === "t") {
+        buyPanel.classList.remove("hidden");
+        sellPanel.classList.remove("hidden");
+        document.getElementById("tf-buy-date-label").textContent = "T买入日期";
+        document.getElementById("tf-buy-price-label").textContent = "T买入价";
+        syncRow.style.display = "none";
+        syncCb.checked = false;
+        submitBtn.textContent = "录入做T";
+        hint.textContent = "同日高抛低吸，记入交易日记；默认不同步持仓数量。";
+        hint.classList.remove("hidden");
+        const today = todayStr();
+        if (!document.getElementById("tf-buy-date").value) {
+          document.getElementById("tf-buy-date").value = today;
+        }
+        if (!document.getElementById("tf-sell-date").value) {
+          document.getElementById("tf-sell-date").value = today;
+        }
+      }
+    }
+
     function applyHolding(index) {
       const positions = document.getElementById("tf-holding")._positions || [];
       const p = positions[Number(index)];
       if (!p) return;
       document.getElementById("tf-code").value = p.code;
       document.getElementById("tf-name").value = p.name;
-      document.getElementById("tf-buy-price").value = p.cost_price;
       document.getElementById("tf-qty").value = p.quantity;
-      const syncAction = document.getElementById("tf-sync-action").value;
-      if (syncAction === "sell") {
+      document.getElementById("tf-buy-price").value = p.cost_price;
+      document.getElementById("tf-cost-price").value = p.cost_price;
+      const bd = (p.buy_date || "").slice(0, 10);
+      document.getElementById("tf-buy-date").value = bd;
+      document.getElementById("tf-cost-date").value = bd;
+      const type = getTradeType();
+      if (type === "sell") {
         document.getElementById("tf-sell-price").value = p.current_price;
+      } else if (type === "t") {
+        document.getElementById("tf-sell-price").value = p.current_price;
+        document.getElementById("tf-buy-price").value = p.current_price;
       } else {
         document.getElementById("tf-sell-price").value = "";
       }
+      syncTradeFormLayout();
     }
 
     function todayStr() {
@@ -1418,33 +1639,56 @@
 
     async function submitTrade(ev) {
       ev.preventDefault();
-      const syncAction = document.getElementById("tf-sync-action").value;
+      const type = getTradeType();
+      const syncPortfolio = document.getElementById("tf-sync-portfolio").checked;
       const sellPrice = document.getElementById("tf-sell-price").value.trim();
       const sellDate = document.getElementById("tf-sell-date").value;
-      if (syncAction === "sell" && !sellPrice) {
-        showToast("卖出扣减持仓时请填写卖出价", true);
-        return;
+      const buyInfo = resolveTradeBuyInfo();
+
+      if (type === "buy") {
+        if (!buyInfo.buy_date || !buyInfo.buy_price) {
+          showToast("请填写买入日期与买入价", true);
+          return;
+        }
+        if (Number(buyInfo.buy_price) <= 0) {
+          showToast("买入价须大于 0", true);
+          return;
+        }
+      } else {
+        if (!sellPrice) {
+          showToast(type === "t" ? "做T 请填写卖出价" : "卖出请填写卖出价", true);
+          return;
+        }
+        if (!sellDate) {
+          showToast("请填写卖出日期", true);
+          return;
+        }
+        if (Number(sellPrice) <= 0) {
+          showToast("卖出价须大于 0", true);
+          return;
+        }
+        if (!buyInfo.buy_date || !buyInfo.buy_price) {
+          showToast(type === "t" ? "做T 请填写买入日期与买入价" : "请填写原买入日期与成本价", true);
+          return;
+        }
+        if (Number(buyInfo.buy_price) <= 0) {
+          showToast("买入价/成本价须大于 0", true);
+          return;
+        }
       }
-      if (sellPrice && !sellDate) {
-        showToast("填写卖出价时请同时填写卖出日期", true);
-        return;
-      }
-      if (sellPrice && Number(sellPrice) <= 0) {
-        showToast("卖出价须大于 0", true);
-        return;
-      }
+
       const payload = {
         code: document.getElementById("tf-code").value.trim(),
         name: document.getElementById("tf-name").value.trim(),
-        buy_date: document.getElementById("tf-buy-date").value,
-        buy_price: document.getElementById("tf-buy-price").value,
-        sell_date: sellDate,
-        sell_price: sellPrice,
+        buy_date: buyInfo.buy_date,
+        buy_price: buyInfo.buy_price,
+        sell_date: type === "buy" ? "" : sellDate,
+        sell_price: type === "buy" ? "" : sellPrice,
         quantity: document.getElementById("tf-qty").value,
         strategy: document.getElementById("tf-strategy").value,
         note: document.getElementById("tf-note").value.trim(),
-        sync_portfolio: syncAction !== "none",
-        trade_action: syncAction === "buy" ? "buy" : "sell",
+        sync_portfolio: type === "t" ? false : syncPortfolio,
+        trade_action: type,
       };
       if (!tryBeginBusy()) return;
       try {
@@ -1645,7 +1889,17 @@
     async function runAction(action, force) {
       if (!tryBeginBusy()) return;
       setLoading(true, ACTION_BUSY_LABEL[action] || "任务执行中…");
-      const url = `/api/actions/${action}` + (force ? "?force=true" : "");
+      let url = `/api/actions/${action}` + (force ? "?force=true" : "");
+      if (action === "midterm") {
+        const qs = new URLSearchParams();
+        if (force) qs.set("force", "true");
+        const industry = document.getElementById("midterm-filter-industry").value;
+        const performance = document.getElementById("midterm-filter-performance").value;
+        if (industry) qs.set("industry", industry);
+        if (performance) qs.set("performance", performance);
+        const q = qs.toString();
+        if (q) url = `/api/actions/midterm?${q}`;
+      }
       const timeoutMs = ACTION_TIMEOUT_MS[action] || ACTION_TIMEOUT_MS.default;
       if (LONG_RUNNING_ACTIONS.has(action)) {
         openLogPanel(`[${new Date().toLocaleTimeString()}] ${action} 执行中，请稍候…\n（进度将自动刷新，全市场扫描约 1～3 分钟）\n`);
@@ -1778,13 +2032,41 @@
     });
     document.getElementById("btn-pf-delete").addEventListener("click", deletePortfolio);
     document.getElementById("trade-form").addEventListener("submit", submitTrade);
+    document.getElementById("tf-trade-type").addEventListener("change", syncTradeFormLayout);
     document.getElementById("tf-holding").addEventListener("change", (e) => {
       if (e.target.value !== "") applyHolding(e.target.value);
+      else syncTradeFormLayout();
     });
     document.getElementById("btn-fill-today").addEventListener("click", () => {
-      document.getElementById("tf-sell-date").value = todayStr();
+      const type = getTradeType();
+      const today = todayStr();
+      if (type === "buy") {
+        document.getElementById("tf-buy-date").value = today;
+      } else if (type === "sell") {
+        document.getElementById("tf-sell-date").value = today;
+      } else {
+        document.getElementById("tf-buy-date").value = today;
+        document.getElementById("tf-sell-date").value = today;
+      }
     });
     document.getElementById("tf-sell-date").value = todayStr();
+    syncTradeFormLayout();
+
+    document.getElementById("btn-midterm-filter-apply").addEventListener("click", () => {
+      renderMidtermRecTable(lastMidtermRecsAll);
+      showToast("已应用筛选（重新「中线分析」将按条件扫描）");
+    });
+    document.getElementById("btn-midterm-filter-reset").addEventListener("click", () => {
+      document.getElementById("midterm-filter-industry").value = "";
+      document.getElementById("midterm-filter-performance").value = "";
+      renderMidtermRecTable(lastMidtermRecsAll);
+    });
+    document.getElementById("midterm-filter-industry").addEventListener("change", () => {
+      renderMidtermRecTable(lastMidtermRecsAll);
+    });
+    document.getElementById("midterm-filter-performance").addEventListener("change", () => {
+      renderMidtermRecTable(lastMidtermRecsAll);
+    });
 
     loadDashboard()
       .then(() => {
@@ -1794,6 +2076,7 @@
       })
       .catch((e) => showToast("加载失败: " + e.message, true));
     ensureInstrumentIndex().catch(() => {});
+    loadIndustryOptions().catch(() => {});
   </script>
 </body>
 </html>

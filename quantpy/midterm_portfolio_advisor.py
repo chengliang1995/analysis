@@ -16,7 +16,14 @@ import pandas as pd
 
 from quantpy.paths import MIDTERM_OUTPUT_DIR
 from quantpy.report_format import format_markdown_table, truncate_display
-from quantpy.stock_data import get_market_spot, get_stock_hist, get_stock_code_column, get_stock_name_column
+from quantpy.stock_data import (
+    ensure_industry_map,
+    get_fundamental_map,
+    get_market_spot,
+    get_stock_hist,
+    get_stock_code_column,
+    get_stock_name_column,
+)
 
 ULTRA_SHORT_STRATEGIES = frozenset({"超短", "涨停"})
 
@@ -26,6 +33,49 @@ def _classify_bucket(strategy: str) -> str:
 
 OUTPUT_DIR = MIDTERM_OUTPUT_DIR
 MIDTERM_STRATEGIES = {"中线", "趋势", "手动", "价值", "波段", "ETF"}
+
+PERFORMANCE_FILTER_OPTIONS = {
+    "profit_growth": "净利正增长",
+    "high_growth": "净利增≥30%",
+    "low_pe": "低市盈率(0-30)",
+    "value_growth": "低PE+正增长",
+}
+
+
+def _num(value) -> float:
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _passes_performance_filter(item: dict, performance: str) -> bool:
+    pe = _num(item.get("pe"))
+    yoy = _num(item.get("profit_yoy"))
+    if performance == "profit_growth":
+        return yoy > 0
+    if performance == "high_growth":
+        return yoy >= 30
+    if performance == "low_pe":
+        return 0 < pe <= 30
+    if performance == "value_growth":
+        return yoy > 0 and 0 < pe <= 40
+    return True
+
+
+def _apply_recommendation_filters(
+    items: List[dict],
+    industry: Optional[str] = None,
+    performance: Optional[str] = None,
+) -> List[dict]:
+    out = items
+    if industry:
+        out = [r for r in out if (r.get("industry") or "") == industry]
+    if performance:
+        out = [r for r in out if _passes_performance_filter(r, performance)]
+    return out
 
 
 def _progress(msg: str, show: bool = True) -> None:
@@ -421,6 +471,21 @@ class MidtermPortfolioAdvisor:
         if score < 70:
             return None
 
+        pe = spot.get("pe") if spot else None
+        profit_yoy = spot.get("profit_yoy") if spot else None
+        industry = spot.get("industry") if spot else None
+
+        yoy_part = ""
+        if profit_yoy is not None and pd.notna(profit_yoy):
+            yoy_part = f"，净利同比{float(profit_yoy):+.1f}%"
+        if market_cap_yi is not None:
+            reason = (
+                f"中线趋势良好，20日涨幅 {ret_20d:.1f}%，RSI {rsi:.0f}；"
+                f"股价{price:.1f}元，市值{market_cap_yi:.0f}亿{yoy_part}"
+            )
+        else:
+            reason = f"中线趋势良好，20日涨幅 {ret_20d:.1f}%，RSI {rsi:.0f}；股价{price:.1f}元{yoy_part}"
+
         return {
             "code": code,
             "name": name,
@@ -433,24 +498,35 @@ class MidtermPortfolioAdvisor:
             "rsi": round(rsi, 1),
             "ret_20d": round(ret_20d, 2),
             "ma20": round(ma20, 2),
+            "pe": round(float(pe), 2) if pe is not None and pd.notna(pe) else None,
+            "profit_yoy": round(float(profit_yoy), 2) if profit_yoy is not None and pd.notna(profit_yoy) else None,
+            "industry": industry or "",
             "tags": ",".join(tags),
-            "reason": (
-                f"中线趋势良好，20日涨幅 {ret_20d:.1f}%，RSI {rsi:.0f}；"
-                f"股价{price:.1f}元，市值{market_cap_yi:.0f}亿"
-                if market_cap_yi is not None
-                else f"中线趋势良好，20日涨幅 {ret_20d:.1f}%，RSI {rsi:.0f}；股价{price:.1f}元"
-            ),
+            "reason": reason,
         }
 
     def recommend_stocks(
         self,
         exclude_codes: Optional[List[str]] = None,
-        top_n: int = 8,
+        top_n: int = 20,
         prefilter: int = 150,
         show_progress: bool = False,
+        industry: Optional[str] = None,
+        performance: Optional[str] = None,
     ) -> pd.DataFrame:
-        """中线个股推荐（排除已持仓）。"""
+        """中线个股推荐（排除已持仓，支持行业/业绩筛选）。"""
         exclude = {str(c).zfill(6) for c in (exclude_codes or [])}
+        industry = (industry or "").strip() or None
+        performance = (performance or "").strip() or None
+        if industry:
+            _progress(f"  筛选行业: {industry}", show_progress)
+        if performance:
+            label = PERFORMANCE_FILTER_OPTIONS.get(performance, performance)
+            _progress(f"  筛选业绩: {label}", show_progress)
+
+        _progress("  拉取基本面(PE/净利同比)…", show_progress)
+        fundamental_map = get_fundamental_map()
+
         _progress("  拉取全市场行情…", show_progress)
         market = get_market_spot(verbose=show_progress, force_refresh=False)
         if market.empty:
@@ -503,10 +579,13 @@ class MidtermPortfolioAdvisor:
                 continue
             name = str(row[name_col]) if name_col else code
             cap_yi = row["_cap_yi"]
+            fund = fundamental_map.get(code, {})
             spot = {
                 "pct": row["_pct"],
                 "turnover": row["_turnover"],
                 "market_cap_yi": float(cap_yi) if pd.notna(cap_yi) else None,
+                "pe": fund.get("pe"),
+                "profit_yoy": fund.get("profit_yoy"),
             }
             item = self._score_candidate(code, name, spot)
             if item:
@@ -516,7 +595,20 @@ class MidtermPortfolioAdvisor:
             _progress("  无符合条件的推荐标的", show_progress)
             return pd.DataFrame()
 
-        out = pd.DataFrame(results).sort_values("midterm_score", ascending=False).head(top_n)
+        results.sort(key=lambda x: x["midterm_score"], reverse=True)
+        enrich_codes = [r["code"] for r in results[: max(top_n * 3, 40)]]
+        industry_map = ensure_industry_map(enrich_codes, verbose=show_progress)
+        for item in results:
+            item["industry"] = industry_map.get(item["code"], item.get("industry") or "")
+
+        filtered = _apply_recommendation_filters(results, industry=industry, performance=performance)
+        if industry or performance:
+            _progress(f"  筛选后剩余 {len(filtered)} 只", show_progress)
+        if not filtered:
+            _progress("  筛选后无推荐标的，可放宽行业/业绩条件", show_progress)
+            return pd.DataFrame()
+
+        out = pd.DataFrame(filtered).head(top_n)
         _progress(f"  推荐命中 {len(out)} 只", show_progress)
         return out.reset_index(drop=True)
 
@@ -544,7 +636,13 @@ class MidtermPortfolioAdvisor:
             "optimize_suggestions": opt_suggestions,
         }
 
-    def run_full_advice(self, portfolio_stats: dict, show_progress: bool = False) -> dict:
+    def run_full_advice(
+        self,
+        portfolio_stats: dict,
+        show_progress: bool = False,
+        industry: Optional[str] = None,
+        performance: Optional[str] = None,
+    ) -> dict:
         """完整实盘中线分析：复盘 + 优化 + 推荐。"""
         _progress("=" * 50, show_progress)
         _progress("实盘中线分析开始", show_progress)
@@ -565,7 +663,11 @@ class MidtermPortfolioAdvisor:
         held_codes = [p["code"] for p in all_positions]
         _progress("[3/4] 全市场推荐扫描", show_progress)
         recommendations = self.recommend_stocks(
-            exclude_codes=held_codes, top_n=8, show_progress=show_progress
+            exclude_codes=held_codes,
+            top_n=20,
+            show_progress=show_progress,
+            industry=industry,
+            performance=performance,
         )
 
         _progress("[4/4] 生成报告", show_progress)
@@ -583,6 +685,10 @@ class MidtermPortfolioAdvisor:
         result = {
             "generated_at": datetime.now().isoformat(),
             "style": "中线",
+            "filters": {
+                "industry": industry or "",
+                "performance": performance or "",
+            },
             "reviews": reviews,
             "optimization": optimization,
             "recommendations": rec_records,
@@ -663,20 +769,23 @@ def format_midterm_report_markdown(result: dict) -> str:
             [
                 r["code"],
                 r["name"],
+                r.get("industry") or "—",
+                f"{r.get('pe', 0):.1f}" if r.get("pe") is not None else "—",
+                f"{r.get('profit_yoy', 0):+.1f}%" if r.get("profit_yoy") is not None else "—",
                 f"{r.get('price', 0):.2f}",
                 f"{r.get('market_cap_yi', 0):.1f}" if r.get("market_cap_yi") is not None else "—",
                 r["midterm_score"],
                 f"{r.get('pct_chg', 0):.2f}",
                 r.get("rsi", ""),
-                truncate_display(r.get("reason", ""), 32),
+                truncate_display(r.get("reason", ""), 28),
             ]
             for r in recs
         ]
         parts.append(
             format_markdown_table(
-                ["代码", "名称", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "理由"],
+                ["代码", "名称", "行业", "PE", "净利同比", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "理由"],
                 rec_rows,
-                aligns=["left", "left", "right", "right", "right", "right", "right", "left"],
+                aligns=["left", "left", "left", "right", "right", "right", "right", "right", "right", "right", "left"],
             )
         )
         parts.append("\n")
@@ -699,6 +808,8 @@ def run_midterm_advice(
     portfolio_stats: Optional[dict] = None,
     show_progress: bool = True,
     full: bool = True,
+    industry: Optional[str] = None,
+    performance: Optional[str] = None,
 ) -> dict:
     from quantpy.portfolio import PortfolioManager
 
@@ -706,5 +817,10 @@ def run_midterm_advice(
         portfolio_stats = PortfolioManager().analyze()
     advisor = MidtermPortfolioAdvisor()
     if full:
-        return advisor.run_full_advice(portfolio_stats, show_progress=show_progress)
+        return advisor.run_full_advice(
+            portfolio_stats,
+            show_progress=show_progress,
+            industry=industry,
+            performance=performance,
+        )
     return advisor.run_quick_advice(portfolio_stats)

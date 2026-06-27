@@ -499,6 +499,13 @@ def api_sim():
     return jsonify(get_sim_data())
 
 
+@app.route("/api/stock/industries")
+def api_stock_industries():
+    from quantpy.stock_data import list_industries_from_map
+
+    return jsonify({"ok": True, "items": list_industries_from_map()})
+
+
 @app.route("/api/instruments/index")
 def api_instruments_index():
     """A 股代码/名称索引（本地 cache/stock_list.csv）。"""
@@ -658,13 +665,18 @@ def api_trades_add():
         note = str(data.get("note") or "")
         sync_portfolio = data.get("sync_portfolio", True) not in (False, "false", 0, "0")
         trade_action = str(data.get("trade_action") or "sell").lower()
+        if trade_action not in ("buy", "sell", "t"):
+            trade_action = "sell"
 
         sell_price_raw = str(data.get("sell_price", "")).strip()
         sell_date_raw = str(data.get("sell_date", "")).strip()
         has_sell = bool(sell_price_raw)
 
-        if trade_action == "sell" and not has_sell:
-            return jsonify({"ok": False, "message": "卖出扣减持仓时需填写卖出价"}), 400
+        if trade_action in ("sell", "t") and not has_sell:
+            label = "做T" if trade_action == "t" else "卖出"
+            return jsonify({"ok": False, "message": f"{label}时需填写卖出价"}), 400
+        if trade_action == "buy" and has_sell:
+            return jsonify({"ok": False, "message": "买入类型无需填写卖出价"}), 400
         if has_sell and float(sell_price_raw) <= 0:
             return jsonify({"ok": False, "message": "卖出价须大于 0"}), 400
         if has_sell and not sell_date_raw:
@@ -686,16 +698,19 @@ def api_trades_add():
                 strategy=strategy,
                 note=note,
             )
-            message = f"已录入 {record.name} 收益 {record.profit_pct:+.2f}%"
+            if trade_action == "t":
+                message = f"已录入做T {record.name} 收益 {record.profit_pct:+.2f}%"
+            else:
+                message = f"已录入卖出 {record.name} 收益 {record.profit_pct:+.2f}%"
         elif trade_action == "buy":
             message = f"已记录买入 {name}({code})，未写入交易日记（未平仓）"
         else:
             return jsonify({
                 "ok": False,
-                "message": "请填写卖出价，或选择「买入增加持仓」仅同步实盘",
+                "message": "请填写卖出价，或选择买入类型",
             }), 400
 
-        if sync_portfolio:
+        if sync_portfolio and trade_action != "t":
             pm = PortfolioManager()
             if trade_action == "buy":
                 ok, sync_msg = pm.apply_buy(
@@ -864,11 +879,15 @@ def api_action(action: str):
             pm_stats = PortfolioManager().analyze()
             if not pm_stats.get("has_data"):
                 return jsonify({"ok": False, "message": "暂无实盘持仓"}), 400
+            industry = str(request.args.get("industry") or "").strip() or None
+            performance = str(request.args.get("performance") or "").strip() or None
             result, log = _run_quiet(
                 run_midterm_advice,
                 pm_stats,
                 show_progress=True,
                 full=True,
+                industry=industry,
+                performance=performance,
                 action="midterm",
             )
             if not isinstance(result, dict):
@@ -883,8 +902,17 @@ def api_action(action: str):
             )
             alert_n = alerts.get("alert_count", 0)
             rec_n = len(result.get("recommendations", []))
+            filter_bits = []
+            if industry:
+                filter_bits.append(f"行业={industry}")
+            if performance:
+                from quantpy.midterm_portfolio_advisor import PERFORMANCE_FILTER_OPTIONS
+                filter_bits.append(
+                    PERFORMANCE_FILTER_OPTIONS.get(performance, performance)
+                )
             message = (
                 f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只"
+                + (f"（{' · '.join(filter_bits)}）" if filter_bits else "")
                 + (f"，{alert_n} 条价位提醒" if alert_n else "")
             )
             extra["midterm"] = result

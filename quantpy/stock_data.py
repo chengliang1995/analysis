@@ -20,6 +20,9 @@ from quantpy.paths import CACHE_DIR
 
 STOCK_LIST_CACHE = CACHE_DIR / "stock_list.csv"
 STOCK_LIST_META = CACHE_DIR / "stock_list_meta.json"
+STOCK_FUNDAMENTALS_CACHE = CACHE_DIR / "stock_fundamentals.csv"
+STOCK_FUNDAMENTALS_META = CACHE_DIR / "stock_fundamentals_meta.json"
+STOCK_INDUSTRY_CACHE = CACHE_DIR / "stock_industry.json"
 DAILY_CLOSE_DIR = CACHE_DIR / "daily_close"
 CACHE_MAX_AGE_HOURS = 24
 TENCENT_QT_BATCH = 60
@@ -58,6 +61,8 @@ COLUMN_ALIASES = {
     "price": ["最新价", "现价", "price", "收盘", "trade"],
     "turnover": ["换手率", "turnover", "turnoverratio"],
     "roe": ["roe", "ROE", "净资产收益率"],
+    "industry": ["所属行业", "行业", "industry"],
+    "profit_yoy": ["净利润同比", "净利同比", "profit_yoy"],
 }
 
 # 网络全部失败时的最小兜底列表（常见蓝筹 + 热门股）
@@ -978,6 +983,248 @@ def _row_to_instrument(row: pd.Series) -> dict:
         "name": str(row["name"]).strip(),
         "is_etf": is_etf_code(code),
     }
+
+
+def code_to_secid(code: str) -> str:
+    """6 位代码转东财 secid。"""
+    code = str(code).zfill(6)
+    if code.startswith(("4", "8", "92")):
+        return f"0.{code}"
+    if code.startswith("6"):
+        return f"1.{code}"
+    return f"0.{code}"
+
+
+def _fetch_fundamentals_via_eastmoney() -> pd.DataFrame:
+    """东财 A 股列表：PE / PB / 净利润同比。"""
+    hosts = [
+        "https://push2.eastmoney.com",
+        "http://82.push2.eastmoney.com",
+        "http://80.push2.eastmoney.com",
+    ]
+    fields = "f12,f14,f9,f23,f184"
+    fs = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23"
+    headers = {**DEFAULT_HEADERS, "Referer": "https://quote.eastmoney.com/"}
+
+    for host in hosts:
+        df_total = pd.DataFrame()
+        page_number = 1
+        url = f"{host}/api/qt/clist/get"
+        try:
+            while page_number <= 100:
+                params = {
+                    "pn": str(page_number),
+                    "pz": "200",
+                    "po": "1",
+                    "np": "1",
+                    "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                    "fltt": "2",
+                    "invt": "2",
+                    "fid": "f3",
+                    "fs": fs,
+                    "fields": fields,
+                }
+                time.sleep(0.15)
+                response = requests.get(url, headers=headers, params=params, timeout=20)
+                response.raise_for_status()
+                payload = response.json()
+                if not payload.get("data") or not payload["data"].get("diff"):
+                    break
+                batch = payload["data"]["diff"]
+                df_total = pd.concat([df_total, pd.DataFrame(batch)], ignore_index=True)
+                page_number += 1
+                if not batch:
+                    break
+
+            if df_total.empty:
+                continue
+
+            rename = {
+                "f12": "code",
+                "f14": "name",
+                "f9": "pe",
+                "f23": "pb",
+                "f184": "profit_yoy",
+            }
+            existing = {k: v for k, v in rename.items() if k in df_total.columns}
+            out = df_total.rename(columns=existing)
+            out["code"] = out["code"].astype(str).str.zfill(6)
+            for col in ("pe", "pb", "profit_yoy"):
+                if col in out.columns:
+                    out[col] = pd.to_numeric(out[col], errors="coerce")
+            keep = [c for c in ("code", "name", "pe", "pb", "profit_yoy") if c in out.columns]
+            return out[keep].drop_duplicates(subset=["code"], keep="first")
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
+def _save_fundamentals_cache(df: pd.DataFrame, source: str) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(STOCK_FUNDAMENTALS_CACHE, index=False, encoding="utf-8-sig")
+    STOCK_FUNDAMENTALS_META.write_text(
+        json.dumps(
+            {
+                "source": source,
+                "count": len(df),
+                "updated_at": datetime.now().isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _load_fundamentals_cache(max_age_hours: Optional[int] = CACHE_MAX_AGE_HOURS) -> pd.DataFrame:
+    if not STOCK_FUNDAMENTALS_CACHE.exists():
+        return pd.DataFrame()
+    try:
+        if STOCK_FUNDAMENTALS_META.exists() and max_age_hours is not None:
+            meta = json.loads(STOCK_FUNDAMENTALS_META.read_text(encoding="utf-8"))
+            updated_at = datetime.fromisoformat(meta["updated_at"])
+            if datetime.now() - updated_at > timedelta(hours=max_age_hours):
+                return pd.DataFrame()
+        df = pd.read_csv(STOCK_FUNDAMENTALS_CACHE, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_stock_fundamentals(verbose: bool = False, use_cache: bool = True) -> pd.DataFrame:
+    """全市场 PE / PB / 净利润同比（本地缓存 24h）。"""
+    if use_cache:
+        cached = _load_fundamentals_cache()
+        if not cached.empty:
+            if verbose:
+                print(f"使用基本面缓存: {len(cached)} 只")
+            return cached
+
+    for name, fetcher in (
+        ("东财 API", _fetch_fundamentals_via_eastmoney),
+        ("AKShare", lambda: _merge_fundamentals_from_spot(_fetch_via_akshare())),
+    ):
+        try:
+            if verbose:
+                print(f"拉取基本面: {name}...")
+            df = fetcher()
+            if not df.empty:
+                if verbose:
+                    print(f"基本面 {len(df)} 只 ({name})")
+                _save_fundamentals_cache(df, name)
+                return df
+        except Exception as exc:
+            if verbose:
+                print(f"{name} 基本面失败: {exc}")
+
+    stale = _load_fundamentals_cache(max_age_hours=None)
+    if not stale.empty:
+        return stale
+    return pd.DataFrame()
+
+
+def _merge_fundamentals_from_spot(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "code" not in df.columns:
+        return pd.DataFrame()
+    out = df.copy()
+    out["code"] = out["code"].astype(str).str.zfill(6)
+    cols = {"code": "code"}
+    for std in ("pe", "pb", "profit_yoy"):
+        for alias in COLUMN_ALIASES.get(std, [std]):
+            if alias in out.columns:
+                cols[alias] = std
+                break
+    out = out.rename(columns=cols)
+    keep = [c for c in ("code", "pe", "pb", "profit_yoy") if c in out.columns]
+    return out[keep].drop_duplicates(subset=["code"], keep="first")
+
+
+def get_fundamental_map() -> dict[str, dict]:
+    df = get_stock_fundamentals(verbose=False, use_cache=True)
+    if df.empty:
+        return {}
+    out: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        code = str(row["code"]).zfill(6)
+        item: dict = {}
+        for col in ("pe", "pb", "profit_yoy"):
+            if col in row and pd.notna(row[col]):
+                try:
+                    val = float(row[col])
+                    if col == "profit_yoy" and val in (-9999, 9999):
+                        continue
+                    item[col] = round(val, 2)
+                except (TypeError, ValueError):
+                    pass
+        out[code] = item
+    return out
+
+
+def _load_industry_cache() -> dict[str, str]:
+    if not STOCK_INDUSTRY_CACHE.exists():
+        return {}
+    try:
+        raw = json.loads(STOCK_INDUSTRY_CACHE.read_text(encoding="utf-8"))
+        return {str(k).zfill(6): str(v) for k, v in raw.items() if v}
+    except Exception:
+        return {}
+
+
+def _save_industry_cache(mapping: dict[str, str]) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    STOCK_INDUSTRY_CACHE.write_text(
+        json.dumps(mapping, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def fetch_stock_industry(code: str) -> str:
+    """单只股票所属行业（东财）。"""
+    code = str(code).zfill(6)
+    try:
+        response = requests.get(
+            "https://push2.eastmoney.com/api/qt/stock/get",
+            params={"secid": code_to_secid(code), "fields": "f127"},
+            headers={**DEFAULT_HEADERS, "Referer": "https://quote.eastmoney.com/"},
+            timeout=12,
+        )
+        response.raise_for_status()
+        data = response.json().get("data") or {}
+        industry = str(data.get("f127") or "").strip()
+        if industry and industry != "-":
+            return industry
+    except Exception:
+        pass
+    return ""
+
+
+def ensure_industry_map(codes: List[str], verbose: bool = False) -> dict[str, str]:
+    """补齐股票行业映射（增量写入缓存）。"""
+    mapping = _load_industry_cache()
+    missing = [str(c).zfill(6) for c in codes if str(c).zfill(6) not in mapping]
+    if not missing:
+        return mapping
+
+    if verbose:
+        print(f"  拉取行业数据 {len(missing)} 只…")
+    for i, code in enumerate(missing, 1):
+        industry = fetch_stock_industry(code)
+        if industry:
+            mapping[code] = industry
+        if verbose and (i == 1 or i % 20 == 0 or i == len(missing)):
+            print(f"  行业进度 {i}/{len(missing)}", flush=True)
+        time.sleep(0.08)
+
+    if missing:
+        _save_industry_cache(mapping)
+    return mapping
+
+
+def list_industries_from_map(mapping: Optional[dict[str, str]] = None) -> List[str]:
+    src = mapping if mapping is not None else _load_industry_cache()
+    items = sorted({v.strip() for v in src.values() if v and v.strip()})
+    return items
 
 
 def get_instrument_index() -> tuple[List[dict], str]:
