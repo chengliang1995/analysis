@@ -374,7 +374,11 @@ def generate_daily_report(
             md_parts.append(f"{i}. {s}\n")
 
     if midterm.get("recommendations"):
-        md_parts.append(f"\n## 四、中线个股推荐（市值&lt;1000亿 · 股价&lt;100元）\n\n")
+        md_parts.append(f"\n## 四、中线个股推荐（市值150-1000亿 · 均线多头 · 放量上涨）\n\n")
+        from quantpy.midterm_portfolio_advisor import MIDTERM_SELECT_CONDITIONS
+        md_parts.append(
+            "选股条件：" + " · ".join(c["label"] for c in MIDTERM_SELECT_CONDITIONS) + "\n\n"
+        )
         rec_rows = [
             [
                 r["code"],

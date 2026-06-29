@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from quantpy.paths import DATA_DIR, SIM_REVIEW_DIR, SIM_STATE_FILE
+from quantpy.sim_midterm import ensure_midterm_state
 from quantpy.qstock_strategy_optimizer import StrategyOptimizer
 from quantpy.stock_data import get_market_spot, get_realtime_quotes, get_stock_hist
 from quantpy.ultra_short_scanner import UltraShortScanner
@@ -184,13 +185,15 @@ class SimReplayEngine:
     def _load_state(self) -> dict:
         if SIM_STATE_FILE.exists():
             try:
-                return json.loads(SIM_STATE_FILE.read_text(encoding="utf-8"))
+                state = json.loads(SIM_STATE_FILE.read_text(encoding="utf-8"))
+                ensure_midterm_state(state)
+                return state
             except json.JSONDecodeError:
                 pass
         return self._default_state()
 
     def _default_state(self) -> dict:
-        return {
+        state = {
             "config": asdict(self.config),
             "cash": self.config.capital,
             "initial_capital": self.config.capital,
@@ -203,6 +206,8 @@ class SimReplayEngine:
             "param_history": [],
             "updated_at": datetime.now().isoformat(),
         }
+        ensure_midterm_state(state)
+        return state
 
     def _save_state(self) -> None:
         self.state["updated_at"] = datetime.now().isoformat()

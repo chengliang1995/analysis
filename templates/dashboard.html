@@ -125,6 +125,20 @@
       border: 1px solid var(--border); background: #0f1419; color: var(--text); font-size: 0.8rem;
     }
     .rec-filters button { padding: 6px 12px; font-size: 0.8rem; }
+    .rec-filter-summary {
+      font-size: 0.75rem; color: var(--muted); margin: 6px 0 8px; line-height: 1.5;
+      padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .rec-filter-summary.warn { color: #fbbf24; border-color: rgba(251, 191, 36, 0.25); }
+    .rec-conditions {
+      display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 8px;
+    }
+    .rec-conditions .cond-chip {
+      font-size: 0.72rem; padding: 3px 8px; border-radius: 999px;
+      background: rgba(236, 72, 153, 0.12); color: #f9a8d4; border: 1px solid rgba(236, 72, 153, 0.25);
+    }
+    .rec-conditions .cond-chip.tech { background: rgba(59, 130, 246, 0.12); color: #93c5fd; border-color: rgba(59, 130, 246, 0.25); }
     .form-tabs {
       display: flex; gap: 8px; padding: 12px 20px 0;
     }
@@ -230,6 +244,9 @@
     }
     @media (max-width: 700px) { .stock-summary { grid-template-columns: repeat(2, 1fr); } }
     .stock-summary .stat { padding: 10px 12px; background: #111827; border-radius: 8px; }
+    .stock-pnl-block { margin: 14px 0; padding-top: 12px; border-top: 1px solid var(--border); }
+    .stock-pnl-block h3 { font-size: 0.85rem; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+    .stock-pnl-block .stock-summary { margin-bottom: 10px; }
     .price-chart {
       display: flex; align-items: flex-end; gap: 6px;
       height: 120px; padding: 12px 8px 28px; margin-bottom: 16px;
@@ -309,6 +326,7 @@
     <div class="toolbar hidden" id="toolbar-sim" data-toolbar="sim">
       <button type="button" data-action="sim" data-force="true">模拟选股</button>
       <button type="button" data-action="sim-review">模拟复盘</button>
+      <button type="button" data-action="sim-midterm">模拟中线复盘</button>
       <button type="button" data-action="sim-backtest" class="secondary">模拟回测(20日)</button>
       <button type="button" data-action="refresh" class="secondary">刷新持仓行情</button>
     </div>
@@ -325,13 +343,14 @@
           <div class="table-wrap" id="level-alerts-table"></div>
         </section>
         <section class="panel">
-          <div class="panel-head"><h2>个人持仓</h2><span class="badge">超短2万+中线15万</span></div>
+          <div class="panel-head"><h2>个人持仓</h2><span class="badge">超短2万+中线15万 · 点击行查看历史盈亏</span></div>
           <div class="stats stats-3" id="portfolio-stats"></div>
           <div class="table-wrap" id="portfolio-table"></div>
           <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-            <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">市值&lt;1000亿 · 股价&lt;100 · 点击下钻</span></h2>
+            <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">放宽趋势筛选 · 市值150-1000亿</span></h2>
             <span class="badge" id="midterm-rec-badge">未持仓</span>
           </div>
+          <div class="rec-conditions" id="midterm-select-conditions"></div>
           <div class="rec-filters">
             <div>
               <label for="midterm-filter-industry">行业</label>
@@ -352,6 +371,7 @@
             <button type="button" class="secondary" id="btn-midterm-filter-apply">应用筛选</button>
             <button type="button" class="secondary" id="btn-midterm-filter-reset">重置</button>
           </div>
+          <div class="rec-filter-summary" id="midterm-filter-summary" style="display:none"></div>
           <div class="table-wrap" id="midterm-rec-table"></div>
         </section>
       </div>
@@ -495,13 +515,30 @@
 
     <div class="main-tab-panel" id="tab-sim">
       <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>模拟持仓</h2><span class="badge">20万 · 最多3仓 · T+1</span></div>
+        <div class="panel-head"><h2>超短模拟持仓</h2><span class="badge">20万 · 最多3仓 · T+1</span></div>
         <div class="stats" id="sim-stats"></div>
         <div class="table-wrap" id="sim-table"></div>
       </section>
       <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>模拟平仓记录</h2><span class="badge">最近10笔</span></div>
+        <div class="panel-head"><h2>超短平仓记录</h2><span class="badge">最近10笔</span></div>
         <div class="table-wrap" id="closed-table"></div>
+      </section>
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-head"><h2>中线模拟持仓</h2><span class="badge" id="sim-mid-badge">15万 · 最多5仓</span></div>
+        <div class="stats" id="sim-mid-stats"></div>
+        <div class="table-wrap" id="sim-mid-table"></div>
+      </section>
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-head"><h2>中线选股记录</h2><span class="badge" id="sim-mid-pick-badge">—</span></div>
+        <div class="table-wrap" id="sim-mid-pick-table"></div>
+      </section>
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-head"><h2>中线模拟复盘</h2><span class="badge" id="sim-mid-review-badge">—</span></div>
+        <div class="table-wrap" id="sim-mid-review-table"></div>
+      </section>
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-head"><h2>中线模拟平仓</h2><span class="badge">最近10笔</span></div>
+        <div class="table-wrap" id="sim-mid-closed-table"></div>
       </section>
     </div>
 
@@ -550,6 +587,7 @@
       review: "实盘复盘中…",
       scan: "超短扫描中…",
       "sim-backtest": "模拟回测中…",
+      "sim-midterm": "模拟中线复盘中…",
       "ai-learn": "AI 策略学习中…",
     };
     const ACTION_TIMEOUT_MS = {
@@ -802,19 +840,20 @@
         el.innerHTML = `<div class="empty">暂无个人持仓。请编辑 data/portfolio_config.json 后运行 portfolio --init</div>`;
         return;
       }
-      const head = ["账户", "代码", "名称", "成本", "趋势", "评分", "建议", "浮盈%", "占账户%", "操作"]
+      const head = ["账户", "代码", "名称", "成本", "趋势", "评分", "建议", "浮盈%", "历史盈亏", "占账户%", "操作"]
         .map((h) => `<th>${h}</th>`).join("");
       const body = positions.map((x) => {
         const isMid = x.bucket === "midterm" || x.bucket_label === "中线";
         const alert = x.level_alert;
-        const rowCls = alert ? ` class="row-alert-${alert.signal}"` : "";
+        const rowCls = alert ? ` class="row-alert-${alert.signal} drill-row"` : ` class="drill-row"`;
         const actionCell = alert
           ? `<span class="alert-tag ${alert.signal}">${escapeHtml(alert.signal_label)}</span>${escapeHtml(alert.alert_label)}`
           : (x.midterm_action || "—");
         const action = isMid
           ? `<button type="button" class="link-btn" data-cost-code="${escapeHtml(x.code)}" data-cost-name="${escapeHtml(x.name || "")}" data-cost="${x.cost_price}" data-cost-qty="${x.quantity}">改成本</button>`
           : "—";
-        return `<tr${rowCls}>` +
+        const histCell = formatHistoricalPnl(x.historical_pnl);
+        return `<tr${rowCls} data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
           `<td>${x.bucket_label || "中线"}</td>` +
           `<td>${x.code}</td><td>${x.name}</td>` +
           `<td>${Number(x.cost_price).toFixed(4)}</td>` +
@@ -822,11 +861,18 @@
           `<td>${x.midterm_score || "—"}</td>` +
           `<td>${isMid ? actionCell : "—"}</td>` +
           `<td>${fmtPct(x.profit_pct)}</td>` +
+          `<td title="点击查看明细">${histCell}</td>` +
           `<td>${x.weight_pct}%</td>` +
           `<td>${action}</td>` +
           `</tr>`;
       }).join("");
       el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+      el.querySelectorAll("tr.drill-row").forEach((row) => {
+        row.addEventListener("click", (ev) => {
+          if (ev.target.closest("button.link-btn")) return;
+          openStockDrilldown(row.dataset.code, row.dataset.name);
+        });
+      });
       el.querySelectorAll("button[data-cost-code]").forEach((btn) => {
         btn.addEventListener("click", () => {
           openCostEditor({
@@ -921,6 +967,24 @@
     }
 
     let lastMidtermRecsAll = [];
+    const DEFAULT_MIDTERM_CONDITIONS = [
+      { id: "cap_range", label: "市值150-1000亿", category: "基本面" },
+      { id: "price_cap", label: "股价<100元", category: "基本面" },
+      { id: "ma_bull", label: "站上MA20/均线多头", category: "技术面" },
+      { id: "ma_rise", label: "均线上移", category: "技术面" },
+      { id: "volume_surge", label: "放量上涨", category: "技术面" },
+      { id: "daily_gain", label: "近3日1日涨幅>2%", category: "技术面" },
+      { id: "rsi_band", label: "RSI 40-70", category: "技术面" },
+      { id: "trend_20d", label: "20日涨幅≥0", category: "技术面" },
+    ];
+
+    function renderMidtermSelectConditions(conditions) {
+      const el = document.getElementById("midterm-select-conditions");
+      const items = (conditions && conditions.length) ? conditions : DEFAULT_MIDTERM_CONDITIONS;
+      el.innerHTML = items.map((c) =>
+        `<span class="cond-chip ${c.category === "技术面" ? "tech" : ""}" title="${escapeHtml(c.category || "")}">${escapeHtml(c.label)}</span>`
+      ).join("");
+    }
 
     const PERFORMANCE_FILTER_FN = {
       profit_growth: (x) => Number(x.profit_yoy) > 0,
@@ -935,15 +999,117 @@
       return `${n > 0 ? "+" : ""}${n.toFixed(1)}%`;
     }
 
+    const PERFORMANCE_FILTER_LABELS = {
+      profit_growth: "净利正增长",
+      high_growth: "净利增≥30%",
+      low_pe: "低市盈率(0-30)",
+      value_growth: "低PE+正增长",
+    };
+
     function applyMidtermRecFiltersClient(rec) {
       const industry = document.getElementById("midterm-filter-industry").value;
       const performance = document.getElementById("midterm-filter-performance").value;
       let rows = rec || [];
-      if (industry) rows = rows.filter((x) => (x.industry || "") === industry);
-      if (performance && PERFORMANCE_FILTER_FN[performance]) {
-        rows = rows.filter(PERFORMANCE_FILTER_FN[performance]);
+      const stats = {
+        input: rows.length,
+        industry,
+        performance,
+        afterIndustry: rows.length,
+        afterPerformance: rows.length,
+        industryNoData: 0,
+        noPe: 0,
+        noYoy: 0,
+        notMatch: 0,
+        output: rows.length,
+      };
+      if (industry) {
+        stats.industryNoData = rows.filter((x) => !(x.industry || "").trim()).length;
+        rows = rows.filter((x) => (x.industry || "") === industry);
+        stats.afterIndustry = rows.length;
       }
-      return rows;
+      if (performance && PERFORMANCE_FILTER_FN[performance]) {
+        const fn = PERFORMANCE_FILTER_FN[performance];
+        const needPe = performance === "low_pe" || performance === "value_growth";
+        const needYoy = performance !== "low_pe";
+        const passed = [];
+        rows.forEach((x) => {
+          const peMissing = x.pe == null || x.pe === "";
+          const yoyMissing = x.profit_yoy == null || x.profit_yoy === "";
+          if (needPe && peMissing) { stats.noPe += 1; return; }
+          if (needYoy && yoyMissing) { stats.noYoy += 1; return; }
+          if (fn(x)) passed.push(x);
+          else stats.notMatch += 1;
+        });
+        rows = passed;
+        stats.afterPerformance = rows.length;
+      }
+      stats.output = rows.length;
+      return { rows, stats };
+    }
+
+    function formatMidtermFilterSummary(stats, backendStats, fallbackUsed) {
+      if (!stats && !backendStats) return "";
+      const lines = [];
+      if (backendStats) {
+        const b = backendStats;
+        lines.push(
+          `扫描: 全市场 ${b.market_total || "—"} 只 → 初筛 ${b.prefilter_count || 0} → 技术命中 ${b.scored_pass || 0}`
+          + (b.excluded_held ? `（排除持仓 ${b.excluded_held}）` : "")
+        );
+        const f = b.filter || {};
+        if (f.industry || f.performance) {
+          let seg = "条件筛选: " + (f.input_count || 0);
+          if (f.industry) seg += ` → 行业「${f.industry}」${f.after_industry}`;
+          if (f.performance) {
+            const pl = PERFORMANCE_FILTER_LABELS[f.performance] || f.performance;
+            seg += ` → 业绩「${pl}」${f.after_performance}`;
+            const bits = [];
+            if (f.performance_no_pe) bits.push(`缺PE ${f.performance_no_pe}`);
+            if (f.performance_no_yoy) bits.push(`缺净利同比 ${f.performance_no_yoy}`);
+            if (f.performance_not_match) bits.push(`未达标 ${f.performance_not_match}`);
+            if (bits.length) seg += `（${bits.join("，")}）`;
+          }
+          lines.push(seg);
+        }
+        if (fallbackUsed || b.fallback_used) {
+          lines.push("行业/业绩无匹配，已回退展示全部技术命中标的");
+        }
+        if (f.top_industries && f.top_industries.length) {
+          lines.push("行业分布: " + f.top_industries.join(" · "));
+        }
+      }
+      if (stats && (stats.industry || stats.performance)) {
+        let seg = `前端筛选: ${stats.input} 只`;
+        if (stats.industry) {
+          seg += ` → 行业「${stats.industry}」${stats.afterIndustry}`;
+          if (stats.industryNoData) seg += `（${stats.industryNoData} 只无行业）`;
+        }
+        if (stats.performance) {
+          const pl = PERFORMANCE_FILTER_LABELS[stats.performance] || stats.performance;
+          seg += ` → 业绩「${pl}」${stats.afterPerformance}`;
+          const bits = [];
+          if (stats.noPe) bits.push(`缺PE ${stats.noPe}`);
+          if (stats.noYoy) bits.push(`缺净利同比 ${stats.noYoy}`);
+          if (stats.notMatch) bits.push(`未达标 ${stats.notMatch}`);
+          if (bits.length) seg += `（${bits.join("，")}）`;
+        }
+        lines.push(seg);
+      }
+      return lines.join("\n");
+    }
+
+    function renderMidtermFilterSummary(stats, backendStats, fallbackUsed) {
+      const el = document.getElementById("midterm-filter-summary");
+      const text = formatMidtermFilterSummary(stats, backendStats, fallbackUsed);
+      if (!text) {
+        el.style.display = "none";
+        el.textContent = "";
+        el.classList.remove("warn");
+        return;
+      }
+      el.style.display = "block";
+      el.textContent = text;
+      el.classList.toggle("warn", fallbackUsed || (stats && stats.output === 0));
     }
 
     function populateMidtermIndustryOptions(rec) {
@@ -971,10 +1137,16 @@
       } catch (_) { /* ignore */ }
     }
 
-    function renderMidtermRecTable(rec) {
+    function renderMidtermRecTable(rec, backendStats) {
       const el = document.getElementById("midterm-rec-table");
       const badge = document.getElementById("midterm-rec-badge");
-      const filtered = applyMidtermRecFiltersClient(rec);
+      const { rows: filtered, stats } = applyMidtermRecFiltersClient(rec);
+      const fallbackUsed = Boolean(
+        backendStats?.fallback_used
+        && (stats.industry || stats.performance)
+        && stats.output === rec.length
+      );
+      renderMidtermFilterSummary(stats, backendStats, fallbackUsed);
       if (!rec.length) {
         badge.textContent = "未持仓";
         el.innerHTML = `<div class="empty">点击「中线分析」生成推荐（可先选行业/业绩筛选）</div>`;
@@ -985,14 +1157,19 @@
         ? `${rec.length} 只`
         : `${filtered.length}/${rec.length} 只`;
       if (!filtered.length) {
-        el.innerHTML = `<div class="empty">当前筛选无结果，请放宽行业或业绩条件后重试</div>`;
+        const hint = formatMidtermFilterSummary(stats, null, false);
+        el.innerHTML = `<div class="empty">当前筛选无结果，请放宽行业或业绩条件后重试`
+          + (hint ? `<br><span style="font-size:0.8rem;color:var(--muted)">${escapeHtml(hint)}</span>` : "")
+          + `</div>`;
         return;
       }
-      const head = ["代码", "名称", "行业", "PE", "净利同比", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "理由"]
+      const head = ["代码", "名称", "命中条件", "行业", "PE", "净利同比", "股价", "市值(亿)", "评分", "涨幅%", "RSI"]
         .map((h) => `<th>${h}</th>`).join("");
-      const body = filtered.map((x) =>
-        `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+      const body = filtered.map((x) => {
+        const condText = (x.condition_labels || (x.tags || "").split(",").filter(Boolean)).slice(0, 4).join(" · ") || "—";
+        return `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
         `<td>${x.code}</td><td>${x.name}</td>` +
+        `<td><span class="tag-list" title="${escapeHtml((x.condition_labels || []).join(" · "))}">${escapeHtml(condText)}</span></td>` +
         `<td>${escapeHtml(x.industry || "—")}</td>` +
         `<td>${x.pe != null ? Number(x.pe).toFixed(1) : "—"}</td>` +
         `<td>${formatProfitYoy(x.profit_yoy)}</td>` +
@@ -1000,15 +1177,73 @@
         `<td>${x.market_cap_yi != null ? Number(x.market_cap_yi).toFixed(1) : "—"}</td>` +
         `<td>${x.midterm_score}</td>` +
         `<td>${fmtPct(x.pct_chg)}</td><td>${x.rsi || "—"}</td>` +
-        `<td><span class="tag-list" title="${escapeHtml(x.reason || "")}">${escapeHtml(x.reason || "")}</span></td>` +
-        `</tr>`
-      ).join("");
+        `</tr>`;
+      }).join("");
       el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
       el.querySelectorAll("tr.drill-row").forEach((row) => {
         row.addEventListener("click", () => {
           openStockDrilldown(row.dataset.code, row.dataset.name);
         });
       });
+    }
+
+    function formatHistoricalPnl(hist) {
+      if (!hist || !hist.trade_count) return "—";
+      const amt = Number(hist.total_profit_amount || 0);
+      const sign = amt > 0 ? "+" : "";
+      return `${sign}${fmtMoney(amt)} · ${hist.trade_count}笔`;
+    }
+
+    function renderStockPnlHistory(pnl) {
+      if (!pnl || !pnl.has_data) return "";
+      const parts = [];
+      const summaryItems = [];
+      if (pnl.trade_count) {
+        summaryItems.push(
+          ["历史笔数", `${pnl.trade_count} 笔`],
+          ["历史胜率", `${pnl.win_rate || 0}%`],
+          ["累计盈亏", `${pnl.total_profit_amount > 0 ? "+" : ""}${fmtMoney(pnl.total_profit_amount || 0)} 元`],
+          ["均收益", fmtPct(pnl.avg_profit_pct || 0)],
+        );
+      }
+      const cur = pnl.current_position;
+      if (cur) {
+        summaryItems.push(
+          ["当前持仓", `${cur.quantity}股 @${Number(cur.cost_price).toFixed(3)}`],
+          ["浮动盈亏", fmtPct(cur.profit_pct)],
+        );
+      }
+      if (summaryItems.length) {
+        parts.push(
+          `<div class="stock-pnl-block"><h3>历史盈亏${pnl.trade_count ? ` · ${pnl.trade_count}笔` : ""}</h3>` +
+          `<div class="stock-summary">${
+            summaryItems.map(([label, value]) =>
+              `<div class="stat"><label>${label}</label><span>${value}</span></div>`
+            ).join("")
+          }</div>`
+        );
+      }
+      if (pnl.trades && pnl.trades.length) {
+        const rows = pnl.trades.map((t) =>
+          `<tr>` +
+          `<td>${t.sell_date || "—"}</td>` +
+          `<td>${t.bucket === "ultra_short" ? "超短" : "中线"}</td>` +
+          `<td>${Number(t.buy_price).toFixed(3)}</td>` +
+          `<td>${Number(t.sell_price).toFixed(3)}</td>` +
+          `<td>${t.quantity}</td>` +
+          `<td>${fmtPct(t.profit_pct)}</td>` +
+          `<td>${t.profit_amount > 0 ? "+" : ""}${fmtMoney(t.profit_amount)}</td>` +
+          `</tr>`
+        ).join("");
+        parts.push(
+          `<table class="stock-table"><thead><tr>` +
+          `<th>卖出日</th><th>账户</th><th>买入</th><th>卖出</th><th>数量</th><th>盈亏%</th><th>盈亏额</th>` +
+          `</tr></thead><tbody>${rows}</tbody></table></div>`
+        );
+      } else if (parts.length) {
+        parts.push("</div>");
+      }
+      return parts.join("");
     }
 
     function renderStockDrilldown(data) {
@@ -1051,7 +1286,7 @@
         `</tr>`
       ).join("");
 
-      body.innerHTML = summaryHtml + chartHtml +
+      body.innerHTML = renderStockPnlHistory(data.pnl_history) + summaryHtml + chartHtml +
         `<table class="stock-table"><thead><tr>` +
         `<th>日期</th><th>开盘</th><th>收盘</th><th>最高</th><th>最低</th><th>涨跌幅</th>` +
         `</tr></thead><tbody>${rows}</tbody></table>`;
@@ -1096,6 +1331,8 @@
       renderRealClosed(p);
       const rec = (p.midterm && p.midterm.recommendations) || [];
       lastMidtermRecsAll = rec;
+      window._lastMidtermSelectStats = p.midterm?.select_stats || null;
+      renderMidtermSelectConditions(p.midterm?.select_conditions);
       const savedFilters = p.midterm?.filters || {};
       if (savedFilters.industry) {
         document.getElementById("midterm-filter-industry").value = savedFilters.industry;
@@ -1103,7 +1340,7 @@
       if (savedFilters.performance) {
         document.getElementById("midterm-filter-performance").value = savedFilters.performance;
       }
-      renderMidtermRecTable(rec);
+      renderMidtermRecTable(rec, p.midterm?.select_stats);
     }
 
     function renderRealClosed(p) {
@@ -1121,7 +1358,8 @@
         closed.slice(0, 15).map((x) => [
           x.sell_date || "—",
           x.bucket === "ultra_short" ? "超短" : "中线",
-          x.code, x.name,
+          `<span class="link-btn" data-drill-code="${escapeHtml(x.code)}" data-drill-name="${escapeHtml(x.name || "")}">${x.code}</span>`,
+          x.name,
           Number(x.cost_price).toFixed(3),
           Number(x.sell_price).toFixed(3),
           fmtPct(x.profit_pct),
@@ -1129,6 +1367,12 @@
         ]),
         "暂无清盘记录。卖出扣减持仓并填写卖出价后自动记入"
       );
+      document.getElementById("real-closed-table").querySelectorAll("[data-drill-code]").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          openStockDrilldown(el.dataset.drillCode, el.dataset.drillName);
+        });
+      });
     }
 
     function renderTradeReview(rv) {
@@ -1185,7 +1429,7 @@
           x.stop_loss, x.take_profit, fmtPct(x.profit_pct),
           x.t_plus_one_locked ? "T+1锁" : (x.sellable_today !== false ? "可卖" : "—"),
         ]),
-        "模拟账户空仓（点击「模拟选股」）"
+        "超短模拟空仓（点击「模拟选股」）"
       );
       renderTable(
         closedEl,
@@ -1195,6 +1439,79 @@
           fmtPct(x.profit_pct), x.hold_days, x.exit_reason || "",
         ]),
         "暂无平仓记录"
+      );
+      renderSimMidterm(s.midterm);
+    }
+
+    function renderSimMidterm(mt) {
+      const m = mt || {};
+      const cfg = m.config || {};
+      const statsEl = document.getElementById("sim-mid-stats");
+      const tableEl = document.getElementById("sim-mid-table");
+      const pickEl = document.getElementById("sim-mid-pick-table");
+      const reviewEl = document.getElementById("sim-mid-review-table");
+      const closedEl = document.getElementById("sim-mid-closed-table");
+      if (!statsEl) return;
+      const badge = document.getElementById("sim-mid-badge");
+      if (badge) {
+        badge.textContent = `15万 · ${m.position_count || 0}/${cfg.max_positions || 5}仓`;
+      }
+      renderStats(statsEl, [
+        ["总权益", m.equity != null ? `${fmtMoney(m.equity)} 元` : "—"],
+        ["现金", m.cash != null ? `${fmtMoney(m.cash)} 元` : "—"],
+        ["总收益", m.total_return_pct != null ? fmtPct(m.total_return_pct) : "—"],
+        ["止损/止盈/最长", `${cfg.stop_loss_pct || -8}% / +${cfg.take_profit_pct || 15}% / ${cfg.max_hold_days || 30}日`],
+      ]);
+      const positions = Array.isArray(m.positions) ? m.positions : [];
+      renderTable(
+        tableEl,
+        ["代码", "名称", "评分", "数量", "买入", "现价", "仓位%", "浮盈%", "可卖"],
+        positions.map((x) => [
+          x.code, x.name, x.midterm_score || "—", x.quantity, x.buy_price, x.current_price,
+          x.weight_pct != null ? `${Number(x.weight_pct).toFixed(1)}%` : "—",
+          fmtPct(x.profit_pct),
+          x.t_plus_one_locked ? "T+1锁" : (x.sellable_today !== false ? "可卖" : "—"),
+        ]),
+        "中线模拟空仓（「中线分析」后自动按推荐建仓）"
+      );
+      const picks = Array.isArray(m.pick_log) ? m.pick_log : [];
+      const pickBadge = document.getElementById("sim-mid-pick-badge");
+      if (pickBadge) pickBadge.textContent = picks.length ? `最近 ${picks.length} 条` : "暂无";
+      renderTable(
+        pickEl,
+        ["日期", "代码", "名称", "评分", "参考价", "动作", "说明"],
+        picks.map((x) => [
+          x.date || "—",
+          x.code,
+          x.name,
+          x.midterm_score != null ? Number(x.midterm_score).toFixed(0) : "—",
+          x.price != null ? Number(x.price).toFixed(2) : "—",
+          x.action === "bought" ? "已买入" : (x.action === "skipped" ? "跳过" : "记录"),
+          x.skip_reason || (x.reason || "").slice(0, 40) || "—",
+        ]),
+        "暂无选股记录，运行「中线分析」后自动写入"
+      );
+      const reviews = Array.isArray(m.last_reviews) ? m.last_reviews : [];
+      const reviewBadge = document.getElementById("sim-mid-review-badge");
+      if (reviewBadge) reviewBadge.textContent = reviews.length ? `${reviews.length} 只` : "点击「模拟中线复盘」";
+      renderTable(
+        reviewEl,
+        ["代码", "名称", "趋势", "评分", "浮盈%", "RSI", "建议"],
+        reviews.filter((x) => x.ok).map((x) => [
+          x.code, x.name, x.trend || "—", x.midterm_score || "—",
+          x.profit_pct != null ? fmtPct(x.profit_pct) : "—",
+          x.rsi || "—", x.action || "—",
+        ]),
+        "暂无复盘，可点击「模拟中线复盘」"
+      );
+      renderTable(
+        closedEl,
+        ["代码", "名称", "买入", "卖出", "收益%", "天数", "原因"],
+        (m.closed_trades || []).map((x) => [
+          x.code, x.name, x.buy_price, x.sell_price,
+          fmtPct(x.profit_pct), x.hold_days, x.exit_reason || "",
+        ]),
+        "暂无中线模拟平仓"
       );
     }
 
@@ -1922,7 +2239,7 @@
             body.data.portfolio.midterm = body.midterm;
           }
           renderAll(body.data);
-          if (["sim", "sim-review", "sim-backtest"].includes(action)) {
+          if (["sim", "sim-review", "sim-backtest", "sim-midterm"].includes(action)) {
             refreshSimPanel().catch(() => {});
           }
         }
@@ -1945,7 +2262,7 @@
           });
         }
         if (body.ok) {
-          if (["sim", "sim-review", "sim-backtest"].includes(action)) {
+          if (["sim", "sim-review", "sim-backtest", "sim-midterm"].includes(action)) {
             switchMainTab("sim");
           } else if (["midterm", "alerts", "review"].includes(action)) {
             switchMainTab("real");
@@ -2053,20 +2370,22 @@
     syncTradeFormLayout();
 
     document.getElementById("btn-midterm-filter-apply").addEventListener("click", () => {
-      renderMidtermRecTable(lastMidtermRecsAll);
+      renderMidtermRecTable(lastMidtermRecsAll, window._lastMidtermSelectStats);
       showToast("已应用筛选（重新「中线分析」将按条件扫描）");
     });
     document.getElementById("btn-midterm-filter-reset").addEventListener("click", () => {
       document.getElementById("midterm-filter-industry").value = "";
       document.getElementById("midterm-filter-performance").value = "";
-      renderMidtermRecTable(lastMidtermRecsAll);
+      renderMidtermRecTable(lastMidtermRecsAll, window._lastMidtermSelectStats);
     });
     document.getElementById("midterm-filter-industry").addEventListener("change", () => {
-      renderMidtermRecTable(lastMidtermRecsAll);
+      renderMidtermRecTable(lastMidtermRecsAll, window._lastMidtermSelectStats);
     });
     document.getElementById("midterm-filter-performance").addEventListener("change", () => {
-      renderMidtermRecTable(lastMidtermRecsAll);
+      renderMidtermRecTable(lastMidtermRecsAll, window._lastMidtermSelectStats);
     });
+
+    renderMidtermSelectConditions(DEFAULT_MIDTERM_CONDITIONS);
 
     loadDashboard()
       .then(() => {

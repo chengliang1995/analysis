@@ -26,6 +26,7 @@ from quantpy.paths import OUTPUT_DIR, LOG_DIR, PROJECT_ROOT, REPORT_DIR, RETENTI
 from quantpy.portfolio import PortfolioManager
 from quantpy.retention import prune_retention_files
 from quantpy.sim_replay import SimReplayEngine
+from quantpy.sim_midterm import apply_midterm_recommendations_to_sim, enrich_midterm_sim
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import (
     MidtermPortfolioAdvisor,
@@ -47,6 +48,7 @@ from quantpy.real_portfolio_reviewer import (
     load_latest_real_review,
     run_real_portfolio_review,
 )
+from quantpy.stock_pnl_history import get_stock_pnl_history
 from quantpy.trade_journal import TradeJournal
 
 BASE_DIR = PROJECT_ROOT
@@ -283,6 +285,7 @@ def _enrich_sim_portfolio(
 
     return {
         "has_data": True,
+        "bucket": "ultra_short",
         "initial_capital": initial,
         "cash": round(cash, 2),
         "market_value": round(total_market_value, 2),
@@ -303,6 +306,7 @@ def _enrich_sim_portfolio(
         },
         "updated_at": engine.state.get("updated_at", ""),
         "ai_learning": load_latest_ai_learning(),
+        "midterm": enrich_midterm_sim(engine.state, quotes_df=quotes_df),
     }
 
 
@@ -314,6 +318,9 @@ def _collect_holding_codes() -> list[str]:
         str(p.code).zfill(6) for p in pm.list_positions()
     } | {
         str(p["code"]).zfill(6) for p in sim_engine.state.get("positions", [])
+    } | {
+        str(p["code"]).zfill(6)
+        for p in sim_engine.state.get("midterm", {}).get("positions", [])
     }
     return sorted(codes)
 
@@ -590,11 +597,12 @@ def api_stock_history(code: str):
     highs = [b["high"] for b in bars]
     lows = [b["low"] for b in bars]
     first_close = closes[0] if closes[0] else 1.0
+    pnl = get_stock_pnl_history(code, include_current=True)
     return jsonify(
         {
             "ok": True,
             "code": code,
-            "name": name,
+            "name": name or pnl.get("name", ""),
             "days": len(bars),
             "bars": bars,
             "summary": {
@@ -603,6 +611,7 @@ def api_stock_history(code: str):
                 "period_low": min(lows),
                 "period_change_pct": round((closes[-1] - first_close) / first_close * 100, 2),
             },
+            "pnl_history": pnl,
         }
     )
 
@@ -902,6 +911,7 @@ def api_action(action: str):
             )
             alert_n = alerts.get("alert_count", 0)
             rec_n = len(result.get("recommendations", []))
+            select_stats = result.get("select_stats") or {}
             filter_bits = []
             if industry:
                 filter_bits.append(f"行业={industry}")
@@ -910,11 +920,35 @@ def api_action(action: str):
                 filter_bits.append(
                     PERFORMANCE_FILTER_OPTIONS.get(performance, performance)
                 )
+            scan_bit = (
+                f"初筛{select_stats.get('prefilter_count', 0)}"
+                f"→技术{select_stats.get('scored_pass', 0)}"
+            )
             message = (
-                f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只"
+                f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只（{scan_bit}）"
                 + (f"（{' · '.join(filter_bits)}）" if filter_bits else "")
                 + (f"，{alert_n} 条价位提醒" if alert_n else "")
             )
+            if select_stats.get("fallback_used"):
+                message += "；筛选无匹配已回退"
+            sim_engine = SimReplayEngine()
+            sim_engine.reload_state()
+            sim_mt, sim_log = _run_quiet(
+                apply_midterm_recommendations_to_sim,
+                sim_engine,
+                result.get("recommendations", []),
+                show_progress=True,
+                action="midterm",
+            )
+            log = (log + "\n" + sim_log).strip()
+            if isinstance(sim_mt, dict):
+                bought_n = len(sim_mt.get("bought", []))
+                logged_n = sim_mt.get("pick_logged", 0)
+                if logged_n:
+                    message += f"；模拟记录选股 {logged_n}"
+                if bought_n:
+                    message += f"，买入 {bought_n} 只"
+                extra["sim_midterm"] = sim_mt
             extra["midterm"] = result
             extra["level_alerts"] = alerts
             extra["midterm_content"] = {
@@ -939,6 +973,23 @@ def api_action(action: str):
             n = result.get("alert_count", 0)
             message = f"价位提醒检查完成：{n} 条" if n else "价位提醒检查完成：暂无触发"
             extra["level_alerts"] = result
+        elif action == "sim-midterm":
+            from quantpy.sim_midterm import (
+                check_midterm_exits,
+                run_midterm_sim_review,
+            )
+
+            engine = SimReplayEngine()
+            engine.reload_state()
+            def _sim_midterm_run():
+                check_midterm_exits(engine, show_progress=True)
+                reviews = run_midterm_sim_review(engine, show_progress=True)
+                return {"reviews": reviews, "summary": enrich_midterm_sim(engine.state)}
+
+            result, log = _run_quiet(_sim_midterm_run, action="sim-midterm")
+            n = len(result.get("reviews", [])) if isinstance(result, dict) else 0
+            message = f"模拟中线复盘完成：{n} 只持仓"
+            extra["sim_midterm"] = result
         elif action == "sim-backtest":
             engine = SimReplayEngine()
             result, log = _run_quiet(engine.replay_backtest, days=days, show_progress=False)

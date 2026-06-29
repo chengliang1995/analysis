@@ -551,6 +551,9 @@ class PortfolioManager:
         rows = []
         total_market_value = 0.0
         total_cost = 0.0
+        from quantpy.stock_pnl_history import build_pnl_summary_by_code
+
+        pnl_by_code = build_pnl_summary_by_code()
 
         for pos in self._portfolio.positions:
             price = self._fetch_price(pos.code, quote_map)
@@ -576,6 +579,11 @@ class PortfolioManager:
                 "strategy": pos.strategy,
                 "buy_date": pos.buy_date,
                 "note": pos.note,
+                "historical_pnl": pnl_by_code.get(str(pos.code).zfill(6), {
+                    "trade_count": 0,
+                    "total_profit_amount": 0.0,
+                    "win_rate": 0.0,
+                }),
             })
             total_market_value += market_value
             total_cost += cost_amount

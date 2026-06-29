@@ -1,18 +1,27 @@
 {
   "ultra_short_capital": 22850,
-  "midterm_capital": 144068.9,
-  "total_capital": 166918.9,
+  "midterm_capital": 146378.9,
+  "total_capital": 169228.9,
   "initial_ultra_short_capital": 20000.0,
   "initial_midterm_capital": 150000.0,
   "journal_closed_synced": true,
   "positions": [
     {
+      "code": "002472",
+      "name": "双环传动",
+      "quantity": 900,
+      "cost_price": 37.52,
+      "buy_date": "2026-06-26",
+      "strategy": "手动",
+      "note": ""
+    },
+    {
       "code": "603379",
       "name": "三美股份",
-      "quantity": 300,
-      "cost_price": 63.3,
+      "quantity": 200,
+      "cost_price": 55.5,
       "buy_date": "2026-06-22",
-      "strategy": "中线",
+      "strategy": "手动",
       "note": ""
     }
   ],
@@ -240,6 +249,22 @@
       "note": "",
       "id": "3b8cdd7071a9",
       "closed_at": "2026-06-26T15:11:02.812366"
+    },
+    {
+      "code": "603379",
+      "name": "三美股份",
+      "quantity": 300,
+      "cost_price": 63.3,
+      "sell_price": 71.0,
+      "buy_date": "2026-06-22",
+      "sell_date": "2026-06-29",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": 2310.0,
+      "profit_pct": 12.16,
+      "note": "",
+      "id": "074eaf3d0227",
+      "closed_at": "2026-06-29T11:10:57.514909"
     }
   ]
 }
