@@ -26,7 +26,11 @@ from quantpy.paths import OUTPUT_DIR, LOG_DIR, PROJECT_ROOT, REPORT_DIR, RETENTI
 from quantpy.portfolio import PortfolioManager
 from quantpy.retention import prune_retention_files
 from quantpy.sim_replay import SimReplayEngine
-from quantpy.sim_midterm import apply_midterm_recommendations_to_sim, enrich_midterm_sim
+from quantpy.sim_midterm import (
+    apply_midterm_recommendations_to_sim,
+    enrich_midterm_sim,
+    run_sim_midterm_select,
+)
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import (
     MidtermPortfolioAdvisor,
@@ -973,6 +977,30 @@ def api_action(action: str):
             n = result.get("alert_count", 0)
             message = f"价位提醒检查完成：{n} 条" if n else "价位提醒检查完成：暂无触发"
             extra["level_alerts"] = result
+        elif action == "sim-midterm-select":
+            force = str(request.args.get("force") or "").lower() in ("1", "true", "yes")
+            use_cache = str(request.args.get("cache") or "").lower() in ("1", "true", "yes")
+            industry = str(request.args.get("industry") or "").strip() or None
+            performance = str(request.args.get("performance") or "").strip() or None
+            engine = SimReplayEngine()
+            engine.reload_state()
+            result, log = _run_quiet(
+                run_sim_midterm_select,
+                engine,
+                show_progress=True,
+                force=force,
+                industry=industry,
+                performance=performance,
+                use_cache=use_cache,
+                action="sim-midterm-select",
+            )
+            if isinstance(result, dict) and result.get("ok"):
+                message = result.get("message") or "模拟中线选股完成"
+            elif isinstance(result, dict):
+                message = result.get("message") or "无推荐标的"
+            else:
+                message = "模拟中线选股失败"
+            extra["sim_midterm"] = result
         elif action == "sim-midterm":
             from quantpy.sim_midterm import (
                 check_midterm_exits,

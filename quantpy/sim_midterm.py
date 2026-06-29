@@ -398,18 +398,99 @@ def run_midterm_sim_review(engine: SimReplayEngine, show_progress: bool = False)
     return reviews
 
 
+def _sim_held_codes(engine: SimReplayEngine) -> set[str]:
+    mt = ensure_midterm_state(engine.state)
+    held = {str(p["code"]).zfill(6) for p in mt.get("positions", [])}
+    held |= {str(p["code"]).zfill(6) for p in engine.state.get("positions", [])}
+    return held
+
+
+def run_sim_midterm_select(
+    engine: SimReplayEngine,
+    *,
+    show_progress: bool = False,
+    force: bool = False,
+    industry: Optional[str] = None,
+    performance: Optional[str] = None,
+    use_cache: bool = False,
+) -> dict:
+    """
+    模拟盘中线选股：全市场扫描（或读缓存）→ 记录 → 15万账户建仓 → 复盘。
+    不依赖实盘持仓。
+    """
+    from quantpy.midterm_portfolio_advisor import (
+        MidtermPortfolioAdvisor,
+        load_latest_midterm_advice,
+    )
+
+    _progress("=" * 50, show_progress)
+    _progress("模拟中线选股（15万账户）", show_progress)
+    ensure_midterm_state(engine.state)
+    held = _sim_held_codes(engine)
+
+    recommendations: List[dict] = []
+    select_stats: dict = {}
+
+    if use_cache:
+        cached = load_latest_midterm_advice()
+        recommendations = list(cached.get("recommendations") or [])
+        select_stats = dict(cached.get("select_stats") or {})
+        if recommendations:
+            _progress(f"  使用最近中线报告推荐 {len(recommendations)} 只", show_progress)
+
+    if not recommendations:
+        _progress("  全市场中线扫描…", show_progress)
+        advisor = MidtermPortfolioAdvisor()
+        df, select_stats = advisor.recommend_stocks(
+            exclude_codes=sorted(held),
+            top_n=20,
+            show_progress=show_progress,
+            industry=industry,
+            performance=performance,
+        )
+        recommendations = df.to_dict("records") if not df.empty else []
+
+    if not recommendations:
+        _progress("  无符合条件的推荐标的", show_progress)
+        return {
+            "ok": False,
+            "message": "无推荐标的",
+            "recommendations": [],
+            "select_stats": select_stats,
+            "summary": enrich_midterm_sim(engine.state),
+        }
+
+    result = apply_midterm_recommendations_to_sim(
+        engine,
+        recommendations,
+        show_progress=show_progress,
+        force=force,
+    )
+    result["ok"] = True
+    result["recommendations"] = recommendations[:20]
+    result["select_stats"] = select_stats
+    result["message"] = (
+        f"推荐 {len(recommendations)} 只，记录 {result.get('pick_logged', 0)}，"
+        f"买入 {len(result.get('bought', []))} 只"
+    )
+    return result
+
+
 def apply_midterm_recommendations_to_sim(
     engine: SimReplayEngine,
     recommendations: List[dict],
     *,
     show_progress: bool = False,
+    force: bool = False,
 ) -> dict:
     """中线分析后：检查卖出 → 记录选股 → 模拟买入 → 复盘。"""
     _progress("[模拟中线] 15万账户处理推荐…", show_progress)
     ensure_midterm_state(engine.state)
     closed = check_midterm_exits(engine, show_progress=show_progress)
     logged = record_midterm_picks(engine, recommendations, show_progress=show_progress)
-    buy_result = run_midterm_sim_buy(engine, recommendations, show_progress=show_progress)
+    buy_result = run_midterm_sim_buy(
+        engine, recommendations, show_progress=show_progress, force=force,
+    )
     reviews = run_midterm_sim_review(engine, show_progress=show_progress)
     return {
         "closed_today": closed,
