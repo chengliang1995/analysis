@@ -208,8 +208,9 @@
     }
     #log-panel pre {
       padding: 16px 20px; font-size: 0.75rem; color: var(--muted);
-      white-space: pre-wrap; word-break: break-all;
-      max-height: 280px; overflow-y: auto;
+      font-family: "Cascadia Mono", "Microsoft YaHei Mono", Consolas, monospace;
+      white-space: pre; word-break: normal;
+      max-height: 280px; overflow: auto;
     }
     .modal {
       display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65);
@@ -232,7 +233,8 @@
     }
     .modal-body pre.report-text {
       font-family: "Cascadia Mono", "Microsoft YaHei Mono", Consolas, monospace;
-      white-space: pre-wrap; margin: 0 0 1rem;
+      white-space: pre; word-break: normal; margin: 0 0 1rem;
+      overflow-x: auto;
     }
     .report-table {
       width: 100%; border-collapse: collapse; margin: 12px 0 16px;
@@ -327,6 +329,7 @@
     <div class="toolbar" id="toolbar-real" data-toolbar="real">
       <button type="button" data-action="refresh">刷新持仓行情</button>
       <button type="button" data-action="scan">超短扫描</button>
+      <button type="button" data-action="sector">板块推荐</button>
       <button type="button" data-action="report">生成日报</button>
       <button type="button" data-action="midterm">中线分析</button>
       <button type="button" data-action="alerts">价位提醒</button>
@@ -396,6 +399,39 @@
           <div class="table-wrap" id="midterm-rec-table"></div>
         </section>
       </div>
+
+      <section class="panel" style="margin-bottom:20px" id="sector-panel">
+        <div class="panel-head">
+          <h2>板块股票推荐<span class="drill-hint">概念/行业热点 · 成份股优选</span></h2>
+          <span class="badge" id="sector-badge">点击「板块推荐」</span>
+        </div>
+        <div class="rec-filters">
+          <div>
+            <label for="sector-board-type">板块类型</label>
+            <select id="sector-board-type">
+              <option value="concept">概念板块</option>
+              <option value="industry">行业板块</option>
+            </select>
+          </div>
+          <div>
+            <label for="sector-board-select">指定板块</label>
+            <select id="sector-board-select">
+              <option value="">自动 · 热门 Top 8</option>
+            </select>
+          </div>
+          <button type="button" class="secondary" id="btn-sector-boards-load">加载板块列表</button>
+          <button type="button" data-action="sector" id="btn-sector-run">板块推荐</button>
+        </div>
+        <div class="rec-filter-summary" id="sector-summary" style="display:none"></div>
+        <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <h3>热门板块</h3>
+        </div>
+        <div class="table-wrap" id="sector-boards-table"></div>
+        <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <h3>成份股推荐</h3>
+        </div>
+        <div class="table-wrap" id="sector-stocks-table"></div>
+      </section>
 
       <div class="grid">
         <section class="panel">
@@ -536,7 +572,7 @@
 
     <div class="main-tab-panel" id="tab-sim">
       <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>超短模拟持仓</h2><span class="badge">20万 · 最多3仓 · T+1</span></div>
+        <div class="panel-head"><h2>超短模拟持仓</h2><span class="badge">20万 · 实时买点 · T+1</span></div>
         <div class="stats" id="sim-stats"></div>
         <div class="table-wrap" id="sim-table"></div>
       </section>
@@ -612,6 +648,7 @@
       report: "生成日报中…",
       review: "实盘复盘中…",
       scan: "超短扫描中…",
+      sector: "板块推荐扫描中…",
       "sim-backtest": "模拟回测中…",
       "sim-midterm": "模拟中线复盘中…",
       "sim-midterm-select": "中线模拟选股中（约 1～3 分钟）…",
@@ -622,12 +659,13 @@
       report: 600000,
       review: 300000,
       scan: 300000,
+      sector: 300000,
       "sim-backtest": 300000,
       "sim-midterm-select": 900000,
       default: 180000,
     };
     const LONG_RUNNING_ACTIONS = new Set([
-      "midterm", "report", "review", "scan", "sim-backtest", "sim-midterm-select", "ai-learn",
+      "midterm", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "ai-learn",
     ]);
     let lastDashboardData = null;
 
@@ -1163,6 +1201,95 @@
         document.getElementById("midterm-filter-industry")._cachedIndustries = data.items || [];
         populateMidtermIndustryOptions(lastMidtermRecsAll);
       } catch (_) { /* ignore */ }
+    }
+
+    function renderSector(sector) {
+      const badge = document.getElementById("sector-badge");
+      const summaryEl = document.getElementById("sector-summary");
+      const boardsEl = document.getElementById("sector-boards-table");
+      const stocksEl = document.getElementById("sector-stocks-table");
+      if (!sector || !sector.recommendations) {
+        if (!sector || !sector.hot_boards) {
+          badge.textContent = "点击「板块推荐」";
+          boardsEl.innerHTML = `<div class="empty">选择板块类型后点击「板块推荐」，或先「加载板块列表」</div>`;
+          stocksEl.innerHTML = `<div class="empty">暂无推荐</div>`;
+          summaryEl.style.display = "none";
+          return;
+        }
+      }
+      const label = sector.board_type_label || "板块";
+      const stats = sector.stats || {};
+      badge.textContent = `${label} · ${stats.stock_count || 0} 只`;
+      if (sector.generated_at) {
+        summaryEl.textContent = `更新：${sector.generated_at} · ${stats.board_count || 0} 个板块 · ${stats.stock_count || 0} 只推荐`;
+        summaryEl.style.display = "block";
+      }
+      if (sector.board_type) {
+        document.getElementById("sector-board-type").value = sector.board_type;
+      }
+      const hot = sector.hot_boards || [];
+      if (!hot.length) {
+        boardsEl.innerHTML = `<div class="empty">暂无板块数据</div>`;
+      } else {
+        const head = ["排名", "板块", "代码", "涨幅%", "上涨", "下跌", "领涨股", "领涨%"]
+          .map((h) => `<th>${h}</th>`).join("");
+        const body = hot.map((b, i) =>
+          `<tr class="sector-board-row" data-code="${escapeHtml(b.code || "")}" data-name="${escapeHtml(b.name || "")}">` +
+          `<td>${i + 1}</td><td>${escapeHtml(b.name || "")}</td><td>${escapeHtml(b.code || "")}</td>` +
+          `<td>${fmtPct(b.pct_chg)}</td><td>${b.up_count ?? "—"}</td><td>${b.down_count ?? "—"}</td>` +
+          `<td>${escapeHtml(b.leader_name || "—")}</td><td>${fmtPct(b.leader_pct)}</td></tr>`
+        ).join("");
+        boardsEl.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+        boardsEl.querySelectorAll(".sector-board-row").forEach((row) => {
+          row.addEventListener("click", () => {
+            const sel = document.getElementById("sector-board-select");
+            if (sel && row.dataset.code) {
+              sel.value = row.dataset.code;
+              runAction("sector");
+            }
+          });
+        });
+      }
+      const recs = sector.recommendations || [];
+      if (!recs.length) {
+        stocksEl.innerHTML = `<div class="empty">当前板块无推荐标的</div>`;
+        return;
+      }
+      const head2 = ["板块", "代码", "名称", "现价", "涨幅%", "换手%", "评分", "标签"]
+        .map((h) => `<th>${h}</th>`).join("");
+      const body2 = recs.map((x) =>
+        `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+        `<td>${escapeHtml(x.board_name || "")}</td><td>${x.code}</td><td>${escapeHtml(x.name || "")}</td>` +
+        `<td>${x.price != null ? Number(x.price).toFixed(2) : "—"}</td>` +
+        `<td>${fmtPct(x.pct_chg)}</td><td>${x.turnover != null ? Number(x.turnover).toFixed(2) : "—"}</td>` +
+        `<td>${x.score ?? "—"}</td>` +
+        `<td>${escapeHtml((x.tags || []).join(", ") || "—")}</td></tr>`
+      ).join("");
+      stocksEl.innerHTML = `<table><thead><tr>${head2}</tr></thead><tbody>${body2}</tbody></table>`;
+      stocksEl.querySelectorAll("tr.drill-row").forEach((row) => {
+        row.addEventListener("click", () => openStockDrilldown(row.dataset.code, row.dataset.name));
+      });
+    }
+
+    async function loadSectorBoardOptions() {
+      const boardType = document.getElementById("sector-board-type").value || "concept";
+      const sel = document.getElementById("sector-board-select");
+      const current = sel.value;
+      try {
+        const res = await fetch(`/api/sector/boards?type=${encodeURIComponent(boardType)}`);
+        const data = await parseJsonResponse(res);
+        const items = data.items || [];
+        sel.innerHTML = `<option value="">自动 · 热门 Top 8</option>`;
+        items.slice(0, 120).forEach((b) => {
+          const opt = document.createElement("option");
+          opt.value = b.code || "";
+          opt.textContent = `${b.name || b.code} (${fmtPct(b.pct_chg)})`;
+          sel.appendChild(opt);
+        });
+        if (current) sel.value = current;
+      } catch (e) {
+        appendLog("加载板块列表失败: " + e.message);
+      }
     }
 
     function renderMidtermRecTable(rec, backendStats) {
@@ -2005,6 +2132,7 @@
       try { renderLevelAlerts(data.level_alerts); } catch (e) { console.error("renderLevelAlerts", e); }
       try { renderTradeReview(data.portfolio_review); } catch (e) { console.error("renderTradeReview", e); }
       try { renderUltraShort(data.ultra_short); } catch (e) { console.error("renderUltraShort", e); }
+      try { renderSector(data.sector); } catch (e) { console.error("renderSector", e); }
       try { renderSuggestions(data); } catch (e) { console.error("renderSuggestions", e); }
       try { renderRecentTrades(data.trades); } catch (e) { console.error("renderRecentTrades", e); }
       try {
@@ -2350,6 +2478,14 @@
         const q = qs.toString();
         url = q ? `/api/actions/sim-midterm-select?${q}` : `/api/actions/sim-midterm-select`;
       }
+      if (action === "sector") {
+        const qs = new URLSearchParams();
+        const boardType = document.getElementById("sector-board-type")?.value || "concept";
+        const board = document.getElementById("sector-board-select")?.value || "";
+        qs.set("type", boardType);
+        if (board) qs.set("board", board);
+        url = `/api/actions/sector?${qs.toString()}`;
+      }
       const timeoutMs = ACTION_TIMEOUT_MS[action] || ACTION_TIMEOUT_MS.default;
       if (LONG_RUNNING_ACTIONS.has(action)) {
         openLogPanel(`[${new Date().toLocaleTimeString()}] ${action} 执行中，请稍候…\n（进度将自动刷新，全市场扫描约 1～3 分钟）\n`);
@@ -2366,6 +2502,7 @@
         }
         if (body.data) {
           if (body.ultra_short) body.data.ultra_short = body.ultra_short;
+          if (body.sector) body.data.sector = body.sector;
           if (body.level_alerts) body.data.level_alerts = body.level_alerts;
           if (body.midterm) {
             body.data.portfolio = body.data.portfolio || {};
@@ -2378,6 +2515,9 @@
         }
         if (action === "scan" && body.ultra_short) {
           document.getElementById("ultra-badge").textContent = "刚刚扫描";
+        }
+        if (action === "sector" && body.ok) {
+          document.getElementById("sector-badge").textContent = "刚刚更新";
         }
         if (action === "report" && body.ok) {
           openReport(body.report_content);
@@ -2524,6 +2664,14 @@
     });
     document.getElementById("midterm-filter-performance").addEventListener("change", () => {
       renderMidtermRecTable(lastMidtermRecsAll, window._lastMidtermSelectStats);
+    });
+
+    document.getElementById("sector-board-type").addEventListener("change", () => {
+      document.getElementById("sector-board-select").value = "";
+      loadSectorBoardOptions().catch(() => {});
+    });
+    document.getElementById("btn-sector-boards-load").addEventListener("click", () => {
+      loadSectorBoardOptions().then(() => showToast("板块列表已加载")).catch((e) => showToast(e.message, true));
     });
 
     renderMidtermSelectConditions(DEFAULT_MIDTERM_CONDITIONS);

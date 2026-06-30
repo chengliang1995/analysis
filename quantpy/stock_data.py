@@ -23,6 +23,12 @@ STOCK_LIST_META = CACHE_DIR / "stock_list_meta.json"
 STOCK_FUNDAMENTALS_CACHE = CACHE_DIR / "stock_fundamentals.csv"
 STOCK_FUNDAMENTALS_META = CACHE_DIR / "stock_fundamentals_meta.json"
 STOCK_INDUSTRY_CACHE = CACHE_DIR / "stock_industry.json"
+BOARD_LIST_CACHE = {
+    "concept": CACHE_DIR / "board_list_concept.json",
+    "industry": CACHE_DIR / "board_list_industry.json",
+}
+BOARD_CONS_CACHE_DIR = CACHE_DIR / "board_constituents"
+BOARD_CACHE_MAX_AGE_MINUTES = 30
 DAILY_CLOSE_DIR = CACHE_DIR / "daily_close"
 CACHE_MAX_AGE_HOURS = 24
 TENCENT_QT_BATCH = 60
@@ -1238,3 +1244,357 @@ def get_instrument_index() -> tuple[List[dict], str]:
             pass
     items = [_row_to_instrument(row) for _, row in df.iterrows()]
     return items, updated_at
+
+
+EM_BOARD_HOSTS = [
+    "https://17.push2.eastmoney.com",
+    "https://push2.eastmoney.com",
+    "https://79.push2.eastmoney.com",
+    "https://29.push2.eastmoney.com",
+    "http://82.push2.eastmoney.com",
+    "http://80.push2.eastmoney.com",
+]
+
+BOARD_LIST_FS = {
+    "concept": "m:90 t:3 f:!50",
+    "industry": "m:90 t:2 f:!50",
+}
+
+BOARD_LIST_FIELDS = "f3,f8,f12,f14,f104,f105,f128,f136,f140"
+
+
+def _board_cache_fresh(path: Path, max_age_minutes: int = BOARD_CACHE_MAX_AGE_MINUTES) -> bool:
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        updated_at = payload.get("updated_at")
+        if not updated_at:
+            return False
+        ts = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")
+        return datetime.now() - ts < timedelta(minutes=max_age_minutes)
+    except Exception:
+        return False
+
+
+def _fetch_em_clist(
+    fs: str,
+    fields: str,
+    fid: str = "f3",
+    page_size: int = 100,
+    max_pages: int = 20,
+) -> List[dict]:
+    headers = {**DEFAULT_HEADERS, "Referer": "https://quote.eastmoney.com/"}
+    for host in EM_BOARD_HOSTS:
+        rows: List[dict] = []
+        url = f"{host}/api/qt/clist/get"
+        try:
+            for page in range(1, max_pages + 1):
+                params = {
+                    "pn": str(page),
+                    "pz": str(page_size),
+                    "po": "1",
+                    "np": "1",
+                    "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                    "fltt": "2",
+                    "invt": "2",
+                    "fid": fid,
+                    "fs": fs,
+                    "fields": fields,
+                }
+                time.sleep(0.12)
+                response = requests.get(url, headers=headers, params=params, timeout=20)
+                response.raise_for_status()
+                data = response.json().get("data") or {}
+                batch = data.get("diff") or []
+                if not batch:
+                    break
+                rows.extend(batch)
+                total = int(data.get("total") or 0)
+                if total and len(rows) >= total:
+                    break
+            if rows:
+                return rows
+        except Exception:
+            continue
+    return []
+
+
+def _fetch_board_list_akshare(board_type: str) -> List[dict]:
+    """akshare 备用：板块列表。"""
+    try:
+        import akshare as ak
+    except ImportError:
+        return []
+    try:
+        if board_type == "industry":
+            df = ak.stock_board_industry_name_em()
+        else:
+            df = ak.stock_board_concept_name_em()
+        if df is None or df.empty:
+            return []
+        items: List[dict] = []
+        for _, row in df.iterrows():
+            try:
+                pct_chg = float(row.get("涨跌幅") or 0)
+            except (TypeError, ValueError):
+                pct_chg = 0.0
+            try:
+                turnover = float(row.get("换手率") or 0)
+            except (TypeError, ValueError):
+                turnover = 0.0
+            try:
+                up_count = int(float(row.get("上涨家数") or 0))
+            except (TypeError, ValueError):
+                up_count = 0
+            try:
+                down_count = int(float(row.get("下跌家数") or 0))
+            except (TypeError, ValueError):
+                down_count = 0
+            try:
+                leader_pct = float(row.get("领涨股票-涨跌幅") or 0)
+            except (TypeError, ValueError):
+                leader_pct = 0.0
+            code = str(row.get("板块代码") or "").strip()
+            name = str(row.get("板块名称") or "").strip()
+            if not code:
+                continue
+            board_score = round(
+                pct_chg * 2 + up_count * 0.35 - down_count * 0.15 + min(turnover, 15) * 0.2,
+                2,
+            )
+            items.append({
+                "code": code,
+                "name": name,
+                "pct_chg": round(pct_chg, 2),
+                "turnover": round(turnover, 2),
+                "up_count": up_count,
+                "down_count": down_count,
+                "leader_name": str(row.get("领涨股票") or "").strip(),
+                "leader_code": "",
+                "leader_pct": round(leader_pct, 2),
+                "board_score": board_score,
+            })
+        items.sort(key=lambda x: x.get("board_score", 0), reverse=True)
+        return items
+    except Exception:
+        return []
+
+
+def _fetch_board_constituents_akshare(board_code: str) -> List[dict]:
+    """akshare 备用：板块成份。"""
+    try:
+        import akshare as ak
+    except ImportError:
+        return []
+    board_code = str(board_code or "").strip().upper()
+    if not board_code:
+        return []
+    try:
+        if board_code.startswith("BK"):
+            fetcher = ak.stock_board_concept_cons_em
+            try:
+                df = fetcher(symbol=board_code)
+            except Exception:
+                df = ak.stock_board_industry_cons_em(symbol=board_code)
+        else:
+            return []
+        if df is None or df.empty:
+            return []
+        items: List[dict] = []
+        for _, row in df.iterrows():
+            code = str(row.get("代码") or "").strip().zfill(6)
+            name = str(row.get("名称") or "").strip()
+            if not code or not name:
+                continue
+            try:
+                price = float(row.get("最新价") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            try:
+                pct_chg = float(row.get("涨跌幅") or 0)
+            except (TypeError, ValueError):
+                pct_chg = 0.0
+            try:
+                turnover = float(row.get("换手率") or 0)
+            except (TypeError, ValueError):
+                turnover = 0.0
+            items.append({
+                "code": code,
+                "name": name,
+                "price": round(price, 2),
+                "pct_chg": round(pct_chg, 2),
+                "turnover": round(turnover, 2),
+            })
+        items.sort(key=lambda x: x.get("pct_chg", 0), reverse=True)
+        return items
+    except Exception:
+        return []
+
+
+def _load_stale_board_cache(path: Path) -> List[dict]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload.get("items") or []
+    except Exception:
+        return []
+
+
+def _parse_board_row(row: dict) -> dict:
+    code = str(row.get("f12") or "").strip()
+    name = str(row.get("f14") or "").strip()
+    leader_name = str(row.get("f128") or "").strip()
+    leader_code = str(row.get("f140") or "").strip().zfill(6) if row.get("f140") else ""
+    try:
+        leader_pct = float(row.get("f136") or 0)
+    except (TypeError, ValueError):
+        leader_pct = 0.0
+    try:
+        pct_chg = float(row.get("f3") or 0)
+    except (TypeError, ValueError):
+        pct_chg = 0.0
+    try:
+        turnover = float(row.get("f8") or 0)
+    except (TypeError, ValueError):
+        turnover = 0.0
+    try:
+        up_count = int(float(row.get("f104") or 0))
+    except (TypeError, ValueError):
+        up_count = 0
+    try:
+        down_count = int(float(row.get("f105") or 0))
+    except (TypeError, ValueError):
+        down_count = 0
+    board_score = round(pct_chg * 2 + up_count * 0.35 - down_count * 0.15 + min(turnover, 15) * 0.2, 2)
+    return {
+        "code": code,
+        "name": name,
+        "pct_chg": round(pct_chg, 2),
+        "turnover": round(turnover, 2),
+        "up_count": up_count,
+        "down_count": down_count,
+        "leader_name": leader_name,
+        "leader_code": leader_code,
+        "leader_pct": round(leader_pct, 2),
+        "board_score": board_score,
+    }
+
+
+def fetch_board_list(
+    board_type: str = "concept",
+    force_refresh: bool = False,
+) -> List[dict]:
+    """拉取概念/行业板块列表（东财，带缓存）。"""
+    board_type = board_type if board_type in BOARD_LIST_FS else "concept"
+    cache_path = BOARD_LIST_CACHE[board_type]
+    if not force_refresh and _board_cache_fresh(cache_path):
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            return payload.get("items") or []
+        except Exception:
+            pass
+
+    rows = _fetch_em_clist(
+        BOARD_LIST_FS[board_type],
+        BOARD_LIST_FIELDS,
+        fid="f3",
+        page_size=100,
+        max_pages=10,
+    )
+    items = [_parse_board_row(r) for r in rows if r.get("f12")]
+    if not items:
+        items = _fetch_board_list_akshare(board_type)
+    if not items and cache_path.exists():
+        items = _load_stale_board_cache(cache_path)
+    items.sort(key=lambda x: x.get("board_score", 0), reverse=True)
+
+    if items:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "board_type": board_type,
+                    "items": items,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    return items
+
+
+def fetch_board_constituents(
+    board_code: str,
+    force_refresh: bool = False,
+) -> List[dict]:
+    """拉取板块成份股（东财，带缓存）。"""
+    board_code = str(board_code or "").strip().upper()
+    if not board_code:
+        return []
+
+    BOARD_CONS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = BOARD_CONS_CACHE_DIR / f"{board_code}.json"
+    if not force_refresh and _board_cache_fresh(cache_path, max_age_minutes=20):
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            return payload.get("items") or []
+        except Exception:
+            pass
+
+    fields = "f2,f3,f8,f12,f14"
+    rows = _fetch_em_clist(
+        f"b:{board_code} f:!50",
+        fields,
+        fid="f3",
+        page_size=100,
+        max_pages=15,
+    )
+    items: List[dict] = []
+    for row in rows:
+        code = str(row.get("f12") or "").strip().zfill(6)
+        name = str(row.get("f14") or "").strip()
+        if not code or not name:
+            continue
+        try:
+            price = float(row.get("f2") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            pct_chg = float(row.get("f3") or 0)
+        except (TypeError, ValueError):
+            pct_chg = 0.0
+        try:
+            turnover = float(row.get("f8") or 0)
+        except (TypeError, ValueError):
+            turnover = 0.0
+        items.append({
+            "code": code,
+            "name": name,
+            "price": round(price, 2),
+            "pct_chg": round(pct_chg, 2),
+            "turnover": round(turnover, 2),
+        })
+    items.sort(key=lambda x: x.get("pct_chg", 0), reverse=True)
+    if not items:
+        items = _fetch_board_constituents_akshare(board_code)
+    if not items and cache_path.exists():
+        items = _load_stale_board_cache(cache_path)
+
+    if items:
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "board_code": board_code,
+                    "items": items,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    return items

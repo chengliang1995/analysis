@@ -1,6 +1,6 @@
 """
 模拟复盘系统
-- 每个交易日 9:30-9:45 超短选股（最多 3 只）
+- 每个交易日 9:30-9:45 超短选股（最多 3 只），按实时价在买点区间内成交
 - 模拟资金 20 万，自动买卖与持仓管理
 - A 股 T+1：当日买入次日方可卖出
 - 每 5 个交易日自动复盘，优化选票与买卖点参数
@@ -39,7 +39,9 @@ class SimConfig:
     min_score: int = 40
     max_open_gap_pct: float = 7.0
     min_open_gap_pct: float = 0.5
-    buy_premium_pct: float = 0.5  # 9:45 买入相对开盘价溢价估算
+    buy_premium_pct: float = 0.5  # 买点区间上沿：开盘价 +0.5%
+    max_intraday_chase_pct: float = 2.0  # 现价相对开盘最大可追高%
+    max_chase_above_zone_pct: float = 0.3  # 可略高于买点上沿的容忍%
     top_prefilter: int = 200
     t_plus_one: bool = True  # A股 T+1：买入当日不可卖出
 
@@ -82,47 +84,84 @@ class MorningSelector:
         self.scanner = UltraShortScanner()
         self.optimizer = StrategyOptimizer()
 
-    def _morning_filters(self, item: dict, quote: Optional[pd.Series]) -> Tuple[bool, str, float]:
-        """返回 (是否通过, 拒绝原因, 早盘评分加成)。"""
+    def _evaluate_live_buy(
+        self,
+        item: dict,
+        quote: Optional[pd.Series],
+    ) -> Tuple[bool, str, float, dict]:
+        """
+        根据实时行情判断是否可买入，返回 (通过, 原因, 成交价, 元数据)。
+        成交价使用当前价，且必须在买点区间内（不允许随意价成交）。
+        """
         if quote is None or (isinstance(quote, pd.Series) and quote.empty):
-            return True, "", 0.0
+            return False, "无实时行情", 0.0, {}
 
-        open_px = float(quote.get("open", item.get("price", 0)))
-        pre_close = float(quote.get("pre_close", 0))
-        current = float(quote.get("close", open_px))
+        open_px = float(quote.get("open", item.get("open_price", 0)) or 0)
+        pre_close = float(quote.get("pre_close", item.get("pre_close", 0)) or 0)
+        current = float(quote.get("close", quote.get("price", 0)) or 0)
 
-        if pre_close <= 0 or open_px <= 0:
-            return True, "", 0.0
+        if pre_close <= 0 or open_px <= 0 or current <= 0:
+            return False, "行情数据不全", 0.0, {}
 
         gap_pct = (open_px - pre_close) / pre_close * 100
         intraday_pct = (current - open_px) / open_px * 100 if open_px > 0 else 0
 
         if gap_pct > self.config.max_open_gap_pct:
-            return False, f"高开过大{gap_pct:.1f}%", 0.0
+            return False, f"高开过大{gap_pct:.1f}%", 0.0, {}
         if gap_pct < self.config.min_open_gap_pct:
-            return False, f"低开/平开{gap_pct:.1f}%", 0.0
+            return False, f"低开/平开{gap_pct:.1f}%", 0.0, {}
+        if intraday_pct > 5.0:
+            return False, "开盘至今急拉", 0.0, {}
+
+        zone_low = round(open_px * 0.998, 2)
+        zone_high = round(open_px * (1 + self.config.buy_premium_pct / 100), 2)
+        chase_cap = round(
+            zone_high * (1 + self.config.max_chase_above_zone_pct / 100), 2,
+        )
+
+        if current > chase_cap:
+            return (
+                False,
+                f"现价{current:.2f}超买点{zone_high:.2f}（日内+{intraday_pct:.1f}%）",
+                0.0,
+                {},
+            )
+        if intraday_pct > self.config.max_intraday_chase_pct:
+            return False, f"日内已拉升{intraday_pct:.1f}%", 0.0, {}
+        if current < zone_low * 0.995:
+            return False, f"现价{current:.2f}低于买点下轨{zone_low:.2f}", 0.0, {}
 
         bonus = 0.0
-        tags = []
+        tags: List[str] = []
         if 1.0 <= gap_pct <= 4.0:
             bonus += 8
             tags.append("理想高开")
-        if -1.0 <= intraday_pct <= 2.0:
+        if -1.0 <= intraday_pct <= self.config.max_intraday_chase_pct:
             bonus += 6
-            tags.append("9:45未急拉")
-        if intraday_pct > 5.0:
-            return False, "开盘15分钟急拉", 0.0
+            tags.append("买点可接")
 
-        buy_price = round(open_px * (1 + self.config.buy_premium_pct / 100), 2)
-        item["open_price"] = round(open_px, 2)
-        item["pre_close"] = round(pre_close, 2)
-        item["gap_pct"] = round(gap_pct, 2)
-        item["buy_price_suggest"] = buy_price
-        item["buy_zone"] = f"{round(open_px * 0.998, 2)}-{round(open_px * 1.02, 2)}"
-        item["morning_bonus"] = bonus
+        meta = {
+            "open_price": round(open_px, 2),
+            "live_price": round(current, 2),
+            "pre_close": round(pre_close, 2),
+            "gap_pct": round(gap_pct, 2),
+            "intraday_pct": round(intraday_pct, 2),
+            "buy_zone": f"{zone_low}-{zone_high}",
+            "buy_price_suggest": round(current, 2),
+            "morning_bonus": bonus,
+        }
         if tags:
-            item["tags"] = item.get("tags", "") + "," + ",".join(tags)
-        return True, "", bonus
+            meta["morning_tags"] = tags
+        return True, "", round(current, 2), meta
+
+    def _morning_filters(self, item: dict, quote: Optional[pd.Series]) -> Tuple[bool, str, float]:
+        """兼容旧接口，内部走实时买点评估。"""
+        ok, reason, buy_price, meta = self._evaluate_live_buy(item, quote)
+        if ok:
+            item.update(meta)
+            if meta.get("morning_tags"):
+                item["tags"] = item.get("tags", "") + "," + ",".join(meta["morning_tags"])
+        return ok, reason, meta.get("morning_bonus", 0.0)
 
     def select(
         self,
@@ -151,6 +190,7 @@ class MorningSelector:
         quote_map = quotes.set_index("code") if not quotes.empty else pd.DataFrame()
 
         filtered = []
+        skipped: List[str] = []
         for _, row in picks.iterrows():
             code = str(row["code"]).zfill(6)
             item = row.to_dict()
@@ -159,14 +199,22 @@ class MorningSelector:
             if ok:
                 item["final_score"] = item["ultra_short_score"] + bonus
                 filtered.append(item)
-            elif show_progress and len(filtered) < 3:
-                pass  # 静默过滤
+            elif show_progress:
+                skipped.append(f"{item.get('name', code)}({code}): {reason}")
+
+        if show_progress and skipped:
+            print(f"  实时买点过滤 {len(skipped)} 只:")
+            for line in skipped[:8]:
+                print(f"    - {line}")
+            if len(skipped) > 8:
+                print(f"    … 另有 {len(skipped) - 8} 只")
 
         if not filtered:
             return pd.DataFrame()
 
         df = pd.DataFrame(filtered).sort_values("final_score", ascending=False)
-        df = df.head(self.config.max_positions).reset_index(drop=True)
+        pool_n = max(self.config.max_positions * 3, 8)
+        df = df.head(pool_n).reset_index(drop=True)
         df["rank"] = range(1, len(df) + 1)
         return df
 
@@ -276,46 +324,74 @@ class SimReplayEngine:
             self._save_state()
             return picks
 
-        picks = picks.head(open_slots)
         bought = []
+        skipped_buy: List[str] = []
+
+        codes = [str(row["code"]).zfill(6) for _, row in picks.iterrows()]
+        live_quotes = get_realtime_quotes(codes)
+        live_map = live_quotes.set_index("code") if not live_quotes.empty else pd.DataFrame()
 
         for _, row in picks.iterrows():
-            buy_price = float(row.get("buy_price_suggest", row.get("price", 0)))
-            if buy_price <= 0:
+            if len(self.state["positions"]) >= self.config.max_positions:
+                break
+            if len(bought) >= open_slots:
+                break
+            code = str(row["code"]).zfill(6)
+            name = str(row["name"])
+            item = row.to_dict()
+            q = live_map.loc[code] if code in live_map.index else None
+            ok, reason, buy_price, meta = self.selector._evaluate_live_buy(item, q)
+            if not ok:
+                skipped_buy.append(f"{name}({code}): {reason}")
                 continue
+            if buy_price <= 0:
+                skipped_buy.append(f"{name}({code}): 无效成交价")
+                continue
+
             slots_left = self.config.max_positions - len(self.state["positions"])
             qty = self._calc_quantity(buy_price, slots_left)
             if qty <= 0:
+                skipped_buy.append(f"{name}({code}): 资金不足")
                 continue
             cost = buy_price * qty
             if cost > float(self.state["cash"]):
+                skipped_buy.append(f"{name}({code}): 现金不足")
                 continue
 
+            zone = meta.get("buy_zone", "")
+            tag_extra = ""
+            if meta.get("morning_tags"):
+                tag_extra = "," + ",".join(meta["morning_tags"])
             pos = SimPosition(
-                code=str(row["code"]).zfill(6),
-                name=str(row["name"]),
+                code=code,
+                name=name,
                 quantity=qty,
                 buy_price=buy_price,
                 buy_date=today,
                 stop_loss=round(buy_price * (1 + self.config.stop_loss_pct / 100), 2),
                 take_profit=round(buy_price * (1 + self.config.take_profit_pct / 100), 2),
                 score=float(row.get("final_score", row.get("ultra_short_score", 0))),
-                tags=str(row.get("tags", "")),
+                tags=f"{row.get('tags', '')}{tag_extra},买点{zone}".strip(","),
             )
             self.state["cash"] = float(self.state["cash"]) - cost
             self.state["positions"].append(asdict(pos))
-            bought.append(row)
+            bought.append({**item, **meta, "buy_price": buy_price})
 
         self.state["last_select_date"] = today
         self.state["trading_day_count"] = int(self.state.get("trading_day_count", 0)) + 1
         self._save_state()
 
+        if show_progress and skipped_buy:
+            print(f"\n未买入 {len(skipped_buy)} 只（现价不在买点）:")
+            for line in skipped_buy:
+                print(f"  - {line}")
         if show_progress and bought:
-            print(f"\n模拟买入 {len(bought)} 只:")
+            print(f"\n模拟买入 {len(bought)} 只（按实时价成交）:")
             for row in bought:
                 print(
-                    f"  {row['name']}({row['code']}) 建议价 {row.get('buy_price_suggest')} "
-                    f"区间 {row.get('buy_zone')} 评分 {row.get('final_score', 0):.0f}"
+                    f"  {row['name']}({row['code']}) 现价 {row.get('live_price', row['buy_price'])} "
+                    f"买点 {row.get('buy_zone')} 开盘 {row.get('open_price')} "
+                    f"评分 {row.get('final_score', 0):.0f}"
                 )
         return picks
 
@@ -653,6 +729,10 @@ class SimReplayEngine:
         t1 = "开启" if self.config.t_plus_one else "关闭"
         print(f"参数: T+1={t1} 止损{self.config.stop_loss_pct}% 止盈{self.config.take_profit_pct}% "
               f"最长{self.config.max_hold_days}日 min_score={self.config.min_score}")
+        print(
+            f"买点: 开盘~+{self.config.buy_premium_pct}% 按实时价成交，"
+            f"日内追高≤{self.config.max_intraday_chase_pct}%"
+        )
         print("-" * 60)
         today = self._today()
         if s["positions"]:

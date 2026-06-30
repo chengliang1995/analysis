@@ -74,6 +74,16 @@ def _format_ultra_short_table(df: pd.DataFrame, top_n: int = 20) -> str:
     )
 
 
+def _print_table_section(title: str, table_md: str) -> None:
+    """将 Markdown 表格输出到 stdout，供 Web 日志面板对齐展示。"""
+    if not table_md or not table_md.strip():
+        return
+    print(f"\n{'=' * 60}")
+    print(title)
+    print("=" * 60)
+    print(table_md, end="" if table_md.endswith("\n") else "\n")
+
+
 def _cross_reference_suggestions(journal: TradeJournal, ultra_df: pd.DataFrame) -> list[str]:
     """结合交易历史与今日机会，给出交叉建议。"""
     extra: list[str] = []
@@ -246,12 +256,14 @@ def generate_daily_report(
 
     # 3. 生成 Markdown 报告
     report_path = REPORT_DIR / f"daily_report_{datetime.now().strftime('%Y%m%d')}.md"
+    ultra_table = _format_ultra_short_table(ultra_df, top_n=20)
+    _print_table_section("一、超短个股 TOP 20", ultra_table)
     md_parts = [
         f"# 每日顾问报告\n",
         f"**生成时间**: {now_str}\n",
         f"---\n",
         f"## 一、超短个股 TOP 20\n",
-        _format_ultra_short_table(ultra_df, top_n=20),
+        ultra_table,
         f"\n## 二、当前持仓（超短 {portfolio_stats['ultra_short_capital']/10000:.1f}万 + 中线 {portfolio_stats['midterm_capital']/10000:.1f}万 = 合计 {portfolio_stats['total_capital']/10000:.1f}万）\n\n",
     ]
     if portfolio_stats.get("has_data"):
@@ -283,13 +295,13 @@ def generate_daily_report(
             ]
             for p in portfolio_stats["positions"]
         ]
-        md_parts.append(
-            format_markdown_table(
-                ["账户", "代码", "名称", "数量", "成本", "现价", "浮盈%", "占账户%"],
-                portfolio_rows,
-                aligns=["left", "left", "left", "right", "right", "right", "right", "right"],
-            )
+        portfolio_table = format_markdown_table(
+            ["账户", "代码", "名称", "数量", "成本", "现价", "浮盈%", "占账户%"],
+            portfolio_rows,
+            aligns=["left", "left", "left", "right", "right", "right", "right", "right"],
         )
+        _print_table_section("二、当前持仓", portfolio_table)
+        md_parts.append(portfolio_table)
         closed = portfolio_stats.get("closed_positions") or []
         if closed:
             md_parts.append(f"\n### 实盘清盘记录（最近 {min(len(closed), 10)} 笔）\n\n")
@@ -331,13 +343,13 @@ def generate_daily_report(
                 truncate_display(r.get("tags", ""), 20),
             ])
         if review_rows:
-            md_parts.append(
-                format_markdown_table(
-                    ["代码", "名称", "趋势", "评分", "浮盈%", "RSI", "建议", "标签"],
-                    review_rows,
-                    aligns=["left", "left", "left", "right", "right", "right", "left", "left"],
-                )
+            review_table = format_markdown_table(
+                ["代码", "名称", "趋势", "评分", "浮盈%", "RSI", "建议", "标签"],
+                review_rows,
+                aligns=["left", "left", "left", "right", "right", "right", "left", "left"],
             )
+            _print_table_section("三、实盘中线个股复盘", review_table)
+            md_parts.append(review_table)
         for s in midterm.get("review_summaries", []):
             md_parts.append(f"- {s}\n")
 
@@ -392,13 +404,13 @@ def generate_daily_report(
             ]
             for r in midterm["recommendations"][:8]
         ]
-        md_parts.append(
-            format_markdown_table(
-                ["代码", "名称", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "推荐理由"],
-                rec_rows,
-                aligns=["left", "left", "right", "right", "right", "right", "right", "left"],
-            )
+        rec_table = format_markdown_table(
+            ["代码", "名称", "股价", "市值(亿)", "评分", "涨幅%", "RSI", "推荐理由"],
+            rec_rows,
+            aligns=["left", "left", "right", "right", "right", "right", "right", "left"],
         )
+        _print_table_section("四、中线个股推荐", rec_table)
+        md_parts.append(rec_table)
 
     portfolio_review = load_latest_real_review()
     if not portfolio_review.get("has_data") and portfolio_stats.get("closed_count", 0) > 0:

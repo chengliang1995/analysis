@@ -46,30 +46,12 @@ def pad_cell(text: object, width: int, align: str = "left") -> str:
     return text + " " * padding
 
 
-def _pad_cell_to_char_len(
-    text: object,
-    display_target: int,
-    char_target: int,
-    align: str = "left",
-) -> str:
-    """在显示宽度对齐后，再补齐字符长度，保证各行列宽一致。"""
-    inner = pad_cell(text, display_target, align)
-    extra = char_target - len(inner)
-    if extra <= 0:
-        return inner
-    if align == "right":
-        return " " * extra + inner
-    if align == "center":
-        left = extra // 2
-        return " " * left + inner + " " * (extra - left)
-    return inner + " " * extra
-
-
 def format_markdown_table(
     headers: Sequence[str],
     rows: Iterable[Sequence[object]],
     aligns: Sequence[str] | None = None,
 ) -> str:
+    """生成列对齐的 Markdown 表格（终端 / 日志按显示宽度对齐）。"""
     str_rows: List[List[str]] = [[str(cell) for cell in row] for row in rows]
     if aligns is None:
         aligns = ["left"] * len(headers)
@@ -80,32 +62,29 @@ def format_markdown_table(
         for i in range(len(headers))
     ]
 
-    col_char_lens: List[int] = []
-    for col_idx in range(len(headers)):
-        align = aligns[col_idx] if col_idx < len(aligns) else "left"
-        part_lens = [
-            len(f" {pad_cell(row[col_idx], col_widths[col_idx], align)} ")
-            for row in all_rows
-        ]
-        col_char_lens.append(max(part_lens))
-
     def _format_row(cells: Sequence[str]) -> tuple[str, List[str]]:
         parts: List[str] = []
         for col_idx in range(len(headers)):
             align = aligns[col_idx] if col_idx < len(aligns) else "left"
-            inner = _pad_cell_to_char_len(
-                cells[col_idx],
-                col_widths[col_idx],
-                col_char_lens[col_idx] - 2,
-                align,
-            )
+            inner = pad_cell(cells[col_idx], col_widths[col_idx], align)
             parts.append(f" {inner} ")
         return "|" + "|".join(parts) + "|", parts
 
     header_line, header_parts = _format_row(headers)
     lines = [header_line]
-    lines.append("|" + "|".join("-" * len(part) for part in header_parts) + "|")
+    lines.append(
+        "|" + "|".join("-" * display_width(part) for part in header_parts) + "|"
+    )
     for row in str_rows:
         line, _ = _format_row(row)
         lines.append(line)
     return "\n".join(lines) + "\n"
+
+
+def format_plain_table(
+    headers: Sequence[str],
+    rows: Iterable[Sequence[object]],
+    aligns: Sequence[str] | None = None,
+) -> str:
+    """纯文本表格（与 Markdown 表格相同对齐规则，便于日志输出）。"""
+    return format_markdown_table(headers, rows, aligns=aligns)

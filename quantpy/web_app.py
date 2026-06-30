@@ -42,6 +42,7 @@ from quantpy.midterm_portfolio_advisor import (
 )
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import (
+    fetch_board_list,
     get_instrument_index,
     get_realtime_quotes,
     get_stock_recent_bars,
@@ -50,6 +51,7 @@ from quantpy.stock_data import (
     lookup_instrument_by_name,
     price_step_for_code,
 )
+from quantpy.sector_recommender import load_latest_sector, run_sector_recommendations
 from quantpy.real_portfolio_reviewer import (
     load_latest_real_review,
     run_real_portfolio_review,
@@ -426,6 +428,7 @@ def get_dashboard_data(
         },
         "level_alerts": level_alerts,
         "report": load_latest_report_meta(),
+        "sector": load_latest_sector(),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -525,6 +528,18 @@ def api_stock_industries():
     from quantpy.stock_data import list_industries_from_map
 
     return jsonify({"ok": True, "items": list_industries_from_map()})
+
+
+@app.route("/api/sector/boards")
+def api_sector_boards():
+    board_type = str(request.args.get("type") or "concept").strip().lower()
+    if board_type not in ("concept", "industry"):
+        board_type = "concept"
+    try:
+        items = fetch_board_list(board_type)
+        return jsonify({"ok": True, "board_type": board_type, "items": items})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc), "items": []}), 500
 
 
 @app.route("/api/instruments/index")
@@ -1136,6 +1151,35 @@ def api_action(action: str):
             count = len(df) if df is not None and not df.empty else 0
             message = f"超短扫描完成，命中 {count} 只"
             extra["ultra_short"] = _ultra_short_records(df) if count else []
+        elif action == "sector":
+            board_type = str(request.args.get("type") or "concept").strip().lower()
+            if board_type not in ("concept", "industry"):
+                board_type = "concept"
+            board_code = str(request.args.get("board") or "").strip().upper() or None
+            result, log = _run_quiet(
+                run_sector_recommendations,
+                board_type=board_type,
+                board_code=board_code,
+                top_boards=8,
+                stocks_per_board=5,
+                show_progress=True,
+                action="sector",
+            )
+            if not isinstance(result, dict) or not result.get("ok"):
+                msg = (result or {}).get("message") if isinstance(result, dict) else "板块推荐失败"
+                return jsonify({
+                    "ok": False,
+                    "message": msg or "板块推荐失败，请查看运行日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
+            stats = result.get("stats") or {}
+            label = result.get("board_type_label") or "板块"
+            message = (
+                f"{label}推荐完成：{stats.get('board_count', 0)} 个板块 · "
+                f"{stats.get('stock_count', 0)} 只标的"
+            )
+            extra["sector"] = result
         else:
             return jsonify({"ok": False, "message": f"未知操作: {action}"}), 400
 
@@ -1148,6 +1192,8 @@ def api_action(action: str):
         }
         if extra.get("ultra_short") is not None:
             payload["data"]["ultra_short"] = extra["ultra_short"]
+        if extra.get("sector") is not None:
+            payload["data"]["sector"] = extra["sector"]
         return jsonify(payload)
     except Exception as exc:
         return jsonify({
