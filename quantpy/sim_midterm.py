@@ -59,7 +59,8 @@ def default_midterm_state() -> dict:
         "positions": [],
         "closed_trades": [],
         "pick_log": [],
-        "last_pick_date": "",
+        "last_record_date": "",
+        "last_buy_date": "",
         "last_reviews": [],
         "updated_at": "",
     }
@@ -77,6 +78,9 @@ def ensure_midterm_state(state: dict) -> dict:
             mt[key] = val
     if "config" not in mt:
         mt["config"] = defaults["config"]
+    # 旧版 last_pick_date 仅表示记录选股，迁移为 last_record_date，不再阻断买入
+    if mt.get("last_pick_date") and not mt.get("last_record_date"):
+        mt["last_record_date"] = mt["last_pick_date"]
     return mt
 
 
@@ -160,7 +164,7 @@ def record_midterm_picks(
         mt.setdefault("pick_log", [])
         mt["pick_log"].extend(logged)
         mt["pick_log"] = mt["pick_log"][-200:]
-        mt["last_pick_date"] = today
+        mt["last_record_date"] = today
         mt["updated_at"] = datetime.now().isoformat()
         engine._save_state()
         _progress(f"  [模拟中线] 记录选股 {len(logged)} 只", show_progress)
@@ -180,13 +184,14 @@ def run_midterm_sim_buy(
     cfg = MidtermSimConfig(**{**asdict(MidtermSimConfig()), **mt.get("config", {})})
     today = _today()
 
-    if mt.get("last_pick_date") == today and not force:
-        positions = mt.get("positions", [])
+    last_buy = mt.get("last_buy_date") or ""
+    positions = list(mt.get("positions", []))
+    if last_buy == today and not force:
         _progress(
-            f"  [模拟中线] 今日已建仓，持仓 {len(positions)} 只（--force 可重复）",
+            f"  [模拟中线] 今日已执行建仓，持仓 {len(positions)} 只（强制重选可加 force）",
             show_progress,
         )
-        return {"bought": [], "skipped": [], "message": "今日已处理"}
+        return {"bought": [], "skipped": [], "message": "今日已建仓"}
 
     positions = list(mt.get("positions", []))
     held = {str(p["code"]).zfill(6) for p in positions}
@@ -263,10 +268,13 @@ def run_midterm_sim_buy(
 
     mt["positions"] = positions
     mt["cash"] = round(cash, 2)
-    mt["last_pick_date"] = today
+    mt["last_buy_date"] = today
+    mt.pop("last_pick_date", None)
     mt["updated_at"] = datetime.now().isoformat()
     engine._save_state()
 
+    if not bought:
+        _progress("  [模拟中线] 本次未买入（见 skipped 原因）", show_progress)
     return {
         "bought": bought,
         "skipped": skipped,
@@ -413,6 +421,7 @@ def run_sim_midterm_select(
     industry: Optional[str] = None,
     performance: Optional[str] = None,
     use_cache: bool = False,
+    prefilter: int = 60,
 ) -> dict:
     """
     模拟盘中线选股：全市场扫描（或读缓存）→ 记录 → 15万账户建仓 → 复盘。
@@ -423,57 +432,75 @@ def run_sim_midterm_select(
         load_latest_midterm_advice,
     )
 
-    _progress("=" * 50, show_progress)
-    _progress("模拟中线选股（15万账户）", show_progress)
-    ensure_midterm_state(engine.state)
-    held = _sim_held_codes(engine)
+    try:
+        _progress("=" * 50, show_progress)
+        _progress("模拟中线选股（15万账户）", show_progress)
+        ensure_midterm_state(engine.state)
+        held = _sim_held_codes(engine)
 
-    recommendations: List[dict] = []
-    select_stats: dict = {}
+        recommendations: List[dict] = []
+        select_stats: dict = {}
 
-    if use_cache:
-        cached = load_latest_midterm_advice()
-        recommendations = list(cached.get("recommendations") or [])
-        select_stats = dict(cached.get("select_stats") or {})
-        if recommendations:
-            _progress(f"  使用最近中线报告推荐 {len(recommendations)} 只", show_progress)
+        if use_cache:
+            cached = load_latest_midterm_advice()
+            recommendations = list(cached.get("recommendations") or [])
+            select_stats = dict(cached.get("select_stats") or {})
+            if recommendations:
+                _progress(f"  使用最近中线报告推荐 {len(recommendations)} 只", show_progress)
+            else:
+                _progress("  缓存无推荐，改为全市场扫描…", show_progress)
 
-    if not recommendations:
-        _progress("  全市场中线扫描…", show_progress)
-        advisor = MidtermPortfolioAdvisor()
-        df, select_stats = advisor.recommend_stocks(
-            exclude_codes=sorted(held),
-            top_n=20,
+        if not recommendations:
+            _progress(f"  全市场中线扫描（初筛 {prefilter} 只）…", show_progress)
+            advisor = MidtermPortfolioAdvisor()
+            df, select_stats = advisor.recommend_stocks(
+                exclude_codes=sorted(held),
+                top_n=20,
+                prefilter=prefilter,
+                show_progress=show_progress,
+                industry=industry,
+                performance=performance,
+                early_stop_pass=25,
+            )
+            recommendations = df.to_dict("records") if not df.empty else []
+
+        if not recommendations:
+            _progress("  无符合条件的推荐标的", show_progress)
+            return {
+                "ok": False,
+                "message": "无推荐标的",
+                "recommendations": [],
+                "select_stats": select_stats,
+                "summary": enrich_midterm_sim(engine.state),
+            }
+
+        result = apply_midterm_recommendations_to_sim(
+            engine,
+            recommendations,
             show_progress=show_progress,
-            industry=industry,
-            performance=performance,
+            force=force,
         )
-        recommendations = df.to_dict("records") if not df.empty else []
+        result["ok"] = True
+        result["recommendations"] = recommendations[:20]
+        result["select_stats"] = select_stats
+        result["message"] = (
+            f"推荐 {len(recommendations)} 只，记录 {result.get('pick_logged', 0)}，"
+            f"买入 {len(result.get('bought', []))} 只"
+        )
+        _progress(f"  完成：{result['message']}", show_progress)
+        return result
+    except Exception as exc:
+        import traceback
 
-    if not recommendations:
-        _progress("  无符合条件的推荐标的", show_progress)
+        err = traceback.format_exc()
+        _progress(f"  [失败] {exc}", show_progress)
+        _progress(err, show_progress)
         return {
             "ok": False,
-            "message": "无推荐标的",
-            "recommendations": [],
-            "select_stats": select_stats,
+            "message": f"选股失败: {exc}",
+            "error": err,
             "summary": enrich_midterm_sim(engine.state),
         }
-
-    result = apply_midterm_recommendations_to_sim(
-        engine,
-        recommendations,
-        show_progress=show_progress,
-        force=force,
-    )
-    result["ok"] = True
-    result["recommendations"] = recommendations[:20]
-    result["select_stats"] = select_stats
-    result["message"] = (
-        f"推荐 {len(recommendations)} 只，记录 {result.get('pick_logged', 0)}，"
-        f"买入 {len(result.get('bought', []))} 只"
-    )
-    return result
 
 
 def apply_midterm_recommendations_to_sim(
@@ -567,7 +594,8 @@ def enrich_midterm_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) ->
         "closed_trades": closed[:10],
         "pick_log": pick_log[:20],
         "last_reviews": mt.get("last_reviews", []),
-        "last_pick_date": mt.get("last_pick_date", ""),
+        "last_record_date": mt.get("last_record_date", ""),
+        "last_buy_date": mt.get("last_buy_date", ""),
         "config": asdict(cfg),
         "updated_at": mt.get("updated_at", ""),
     }

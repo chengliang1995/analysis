@@ -1,7 +1,7 @@
 {
   "ultra_short_capital": 22850,
-  "midterm_capital": 146378.9,
-  "total_capital": 169228.9,
+  "midterm_capital": 149994.9,
+  "total_capital": 172844.9,
   "initial_ultra_short_capital": 20000.0,
   "initial_midterm_capital": 150000.0,
   "journal_closed_synced": true,
@@ -9,7 +9,7 @@
     {
       "code": "002472",
       "name": "双环传动",
-      "quantity": 900,
+      "quantity": 300,
       "cost_price": 37.52,
       "buy_date": "2026-06-26",
       "strategy": "手动",
@@ -18,8 +18,26 @@
     {
       "code": "603379",
       "name": "三美股份",
-      "quantity": 200,
+      "quantity": 100,
       "cost_price": 55.5,
+      "buy_date": "2026-06-22",
+      "strategy": "手动",
+      "note": ""
+    },
+    {
+      "code": "002326",
+      "name": "永太科技",
+      "quantity": 1000,
+      "cost_price": 23.61,
+      "buy_date": "2026-06-30",
+      "strategy": "手动",
+      "note": ""
+    },
+    {
+      "code": "600884",
+      "name": "杉杉股份",
+      "quantity": 6000,
+      "cost_price": 13.46,
       "buy_date": "2026-06-22",
       "strategy": "手动",
       "note": ""
@@ -265,6 +283,38 @@
       "note": "",
       "id": "074eaf3d0227",
       "closed_at": "2026-06-29T11:10:57.514909"
+    },
+    {
+      "code": "002472",
+      "name": "双环传动",
+      "quantity": 600,
+      "cost_price": 37.52,
+      "sell_price": 40.33,
+      "buy_date": "2026-06-26",
+      "sell_date": "2026-06-30",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": 1686.0,
+      "profit_pct": 7.49,
+      "note": "",
+      "id": "d0c915b3c3d4",
+      "closed_at": "2026-06-30T14:57:36.855493"
+    },
+    {
+      "code": "603379",
+      "name": "三美股份",
+      "quantity": 100,
+      "cost_price": 55.5,
+      "sell_price": 74.8,
+      "buy_date": "2026-06-22",
+      "sell_date": "2026-06-30",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": 1930.0,
+      "profit_pct": 34.77,
+      "note": "",
+      "id": "7e3eca322581",
+      "closed_at": "2026-06-30T14:59:03.235047"
     }
   ]
 }

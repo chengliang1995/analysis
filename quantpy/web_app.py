@@ -34,6 +34,8 @@ from quantpy.sim_midterm import (
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import (
     MidtermPortfolioAdvisor,
+    build_daily_midterm_operations,
+    ensure_daily_midterm_operations,
     format_midterm_report_markdown,
     load_latest_midterm_advice,
     run_midterm_advice,
@@ -154,7 +156,12 @@ def _enrich_portfolio_with_midterm(
             p["level_alert_label"] = alert.get("alert_label", "")
             p["level_alert_signal"] = alert.get("signal_label", "")
     stats["positions"] = positions
+    daily_ops = ensure_daily_midterm_operations(midterm, stats, level_alerts)
+    if daily_ops:
+        midterm = dict(midterm)
+        midterm["daily_operations"] = daily_ops
     stats["midterm"] = midterm
+    stats["midterm_daily_operations"] = daily_ops
     return stats
 
 
@@ -191,6 +198,7 @@ def get_suggestions(
 
     midterm_review = [r.get("summary", "") for r in midterm.get("reviews", []) if r.get("ok")][:6]
     midterm_optimize = list(midterm.get("optimize_suggestions", []))[:5]
+    midterm_daily = list((midterm.get("daily_operations") or {}).get("lines", []))[:8]
     midterm_recommend = [
         f"【推荐】{r['name']}({r['code']}) 评分{r['midterm_score']} · {r.get('reason', '')}"
         for r in midterm.get("recommendations", [])[:5]
@@ -209,7 +217,8 @@ def get_suggestions(
     all_suggestions: list[str] = []
     seen: set[str] = set()
     for s in (
-        level_alert_msgs + portfolio_actions + portfolio_summary + midterm_review
+        level_alert_msgs + portfolio_actions + portfolio_summary
+        + midterm_daily + midterm_review
         + midterm_optimize + midterm_recommend + real_review_suggestions + learn + ai_learn
     ):
         if s and s not in seen:
@@ -220,6 +229,7 @@ def get_suggestions(
         "portfolio_actions": portfolio_actions,
         "portfolio_summary": portfolio_summary,
         "midterm_review": midterm_review,
+        "midterm_daily": midterm_daily,
         "midterm_optimize": midterm_optimize,
         "midterm_recommend": midterm_recommend,
         "real_review": real_review_suggestions,
@@ -620,6 +630,59 @@ def api_stock_history(code: str):
     )
 
 
+@app.route("/api/stock/<code>/midterm")
+def api_stock_midterm(code: str):
+    """个股中线技术面分析（结合持仓成本/仓位）。"""
+    code = str(code).zfill(6)
+    name = str(request.args.get("name") or "").strip()
+    cost = request.args.get("cost", type=float)
+    weight = request.args.get("weight", type=float)
+
+    pm = PortfolioManager()
+    stats = pm.analyze()
+    pos = next(
+        (p for p in stats.get("positions", []) if str(p.get("code")).zfill(6) == code),
+        None,
+    )
+    if pos:
+        name = name or pos.get("name", "")
+        cost = float(pos.get("cost_price", 0)) if cost is None else cost
+        weight = float(pos.get("weight_pct", 0)) if weight is None else weight
+    else:
+        cost = cost or 0.0
+        weight = weight or 0.0
+
+    advisor = MidtermPortfolioAdvisor()
+    analysis = advisor.analyze_stock(
+        code=code,
+        name=name,
+        cost_price=cost or 0,
+        weight_pct=weight or 0,
+    )
+
+    rec_match = None
+    midterm = _resolve_midterm(stats)
+    for r in midterm.get("recommendations") or []:
+        if str(r.get("code")).zfill(6) == code:
+            rec_match = r
+            break
+
+    held = pos is not None and (
+        pos.get("bucket") == "midterm"
+        or pos.get("bucket_label") == "中线"
+    )
+
+    return jsonify({
+        "ok": analysis.get("ok", False),
+        "code": code,
+        "name": analysis.get("name") or name or code,
+        "held": held,
+        "analysis": analysis,
+        "recommendation": rec_match,
+        "message": analysis.get("message", ""),
+    })
+
+
 @app.route("/api/portfolio/level-alerts")
 def api_portfolio_level_alerts():
     refresh = request.args.get("refresh", "false").lower() == "true"
@@ -913,6 +976,16 @@ def api_action(action: str):
             alerts = scan_midterm_level_alerts(
                 pm_stats, result.get("reviews"), save=True,
             )
+            if isinstance(result, dict):
+                result = dict(result)
+                result["daily_operations"] = build_daily_midterm_operations(
+                    pm_stats,
+                    result.get("reviews", []),
+                    optimization=result.get("optimization"),
+                    recommendations=result.get("recommendations"),
+                    level_alerts=alerts,
+                )
+                result["markdown"] = format_midterm_report_markdown(result)
             alert_n = alerts.get("alert_count", 0)
             rec_n = len(result.get("recommendations", []))
             select_stats = result.get("select_stats") or {}
@@ -994,6 +1067,13 @@ def api_action(action: str):
                 use_cache=use_cache,
                 action="sim-midterm-select",
             )
+            if result is None:
+                return jsonify({
+                    "ok": False,
+                    "message": "模拟中线选股失败，请查看运行日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
             if isinstance(result, dict) and result.get("ok"):
                 message = result.get("message") or "模拟中线选股完成"
             elif isinstance(result, dict):
@@ -1001,6 +1081,15 @@ def api_action(action: str):
             else:
                 message = "模拟中线选股失败"
             extra["sim_midterm"] = result
+            if isinstance(result, dict) and not result.get("ok"):
+                payload = {
+                    "ok": False,
+                    "message": message,
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                    **extra,
+                }
+                return jsonify(payload), 200
         elif action == "sim-midterm":
             from quantpy.sim_midterm import (
                 check_midterm_exits,

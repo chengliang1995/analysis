@@ -131,6 +131,17 @@
       border: 1px solid var(--border);
     }
     .rec-filter-summary.warn { color: #fbbf24; border-color: rgba(251, 191, 36, 0.25); }
+    .midterm-analysis-box {
+      margin: 12px 0; padding: 12px; border-radius: 8px;
+      background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2);
+      font-size: 0.85rem; line-height: 1.6;
+    }
+    .midterm-analysis-box .action-tag {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      background: rgba(34, 197, 94, 0.15); color: #86efac; font-weight: 600; margin-right: 6px;
+    }
+    .midterm-analysis-box .action-tag.warn { background: rgba(251, 191, 36, 0.15); color: #fcd34d; }
+    .midterm-analysis-box .action-tag.danger { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
     .rec-conditions {
       display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 8px;
     }
@@ -337,6 +348,15 @@
         <h3>支撑 / 压力提醒 <span class="badge" id="level-alert-badge">0</span></h3>
         <ul id="level-alert-list"></ul>
       </div>
+
+      <section class="panel" style="margin-bottom:20px" id="midterm-daily-ops-panel">
+        <div class="panel-head">
+          <h2>实盘中线 · 今日操作建议</h2>
+          <span class="badge" id="midterm-daily-ops-badge">点击「中线分析」</span>
+        </div>
+        <div class="rec-filter-summary" id="midterm-daily-overview" style="display:none"></div>
+        <div class="table-wrap" id="midterm-daily-ops-table"></div>
+      </section>
 
       <div class="grid">
         <section class="panel">
@@ -603,7 +623,7 @@
       review: 300000,
       scan: 300000,
       "sim-backtest": 300000,
-      "sim-midterm-select": 600000,
+      "sim-midterm-select": 900000,
       default: 180000,
     };
     const LONG_RUNNING_ACTIONS = new Set([
@@ -1254,6 +1274,89 @@
       return parts.join("");
     }
 
+    function actionTagClass(action) {
+      if (!action) return "";
+      if (/减仓|止损/.test(action)) return "danger";
+      if (/止盈|观望/.test(action)) return "warn";
+      return "";
+    }
+
+    function renderMidtermDailyOps(p) {
+      const ops = p?.midterm_daily_operations || p?.midterm?.daily_operations || {};
+      const badge = document.getElementById("midterm-daily-ops-badge");
+      const overviewEl = document.getElementById("midterm-daily-overview");
+      const tableEl = document.getElementById("midterm-daily-ops-table");
+      if (!tableEl) return;
+
+      const stockOps = ops.stock_operations || [];
+      const overview = ops.overview || [];
+      if (!stockOps.length && !overview.length) {
+        if (badge) badge.textContent = "点击「中线分析」";
+        if (overviewEl) overviewEl.style.display = "none";
+        tableEl.innerHTML = `<div class="empty">暂无中线操作建议。请先录入中线持仓并运行「中线分析」或「刷新行情」</div>`;
+        return;
+      }
+
+      if (badge) {
+        badge.textContent = ops.date
+          ? `${ops.date} · ${stockOps.length} 只`
+          : `${stockOps.length} 只`;
+      }
+      if (overviewEl && overview.length) {
+        overviewEl.style.display = "block";
+        overviewEl.textContent = overview.join("\n");
+      } else if (overviewEl) {
+        overviewEl.style.display = "none";
+      }
+
+      renderTable(
+        tableEl,
+        ["优先级", "代码", "名称", "操作", "趋势", "评分", "浮盈%", "支撑", "压力", "说明"],
+        stockOps.map((s) => [
+          s.priority <= 2 ? "高" : (s.priority <= 4 ? "中" : "低"),
+          `<span class="link-btn" data-drill-code="${escapeHtml(s.code)}" data-drill-name="${escapeHtml(s.name || "")}">${s.code}</span>`,
+          s.name,
+          `<span class="action-tag ${actionTagClass(s.action)}">${escapeHtml(s.action || "—")}</span>`,
+          s.trend || "—",
+          s.midterm_score ?? "—",
+          s.profit_pct != null ? fmtPct(s.profit_pct) : "—",
+          s.support ?? "—",
+          s.resistance ?? "—",
+          `<span title="${escapeHtml(s.detail || "")}">${escapeHtml((s.detail || "—").slice(0, 48))}</span>`,
+        ]),
+        "暂无逐股操作建议"
+      );
+      tableEl.querySelectorAll("[data-drill-code]").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          openStockDrilldown(el.dataset.drillCode, el.dataset.drillName);
+        });
+      });
+    }
+
+    function renderMidtermAnalysisBox(data) {
+      const a = data?.analysis;
+      if (!a || !a.ok) {
+        return `<div class="midterm-analysis-box"><strong>中线分析</strong>：${escapeHtml(data?.message || "数据不足")}</div>`;
+      }
+      const reasons = (a.action_reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+      const rec = data.recommendation;
+      const recHtml = rec
+        ? `<p style="margin-top:8px;color:var(--muted)">全市场推荐命中：评分 ${rec.midterm_score} · ${escapeHtml((rec.reason || "").slice(0, 80))}</p>`
+        : "";
+      return `<div class="midterm-analysis-box">` +
+        `<div><span class="action-tag ${actionTagClass(a.action)}">${escapeHtml(a.action)}</span>` +
+        `<strong>${escapeHtml(a.trend)}</strong> · 评分 ${a.midterm_score} · RSI ${a.rsi}` +
+        (a.profit_pct != null ? ` · 浮盈 ${a.profit_pct > 0 ? "+" : ""}${Number(a.profit_pct).toFixed(1)}%` : "") +
+        `</div>` +
+        `<div style="margin-top:6px">现价 ${a.price} · MA20 ${a.ma20} · 支撑 ${a.support} · 压力 ${a.resistance}` +
+        (a.stop_suggest ? ` · 止损参考 ${a.stop_suggest}` : "") +
+        `</div>` +
+        (reasons ? `<ul style="margin:8px 0 0 16px;padding:0">${reasons}</ul>` : "") +
+        recHtml +
+        `</div>`;
+    }
+
     function renderStockDrilldown(data) {
       const body = document.getElementById("stock-body");
       const title = data.name
@@ -1294,7 +1397,8 @@
         `</tr>`
       ).join("");
 
-      body.innerHTML = renderStockPnlHistory(data.pnl_history) + summaryHtml + chartHtml +
+      body.innerHTML = (data.midterm ? renderMidtermAnalysisBox(data.midterm) : "") +
+        renderStockPnlHistory(data.pnl_history) + summaryHtml + chartHtml +
         `<table class="stock-table"><thead><tr>` +
         `<th>日期</th><th>开盘</th><th>收盘</th><th>最高</th><th>最低</th><th>涨跌幅</th>` +
         `</tr></thead><tbody>${rows}</tbody></table>`;
@@ -1304,16 +1408,24 @@
       const modal = document.getElementById("stock-modal");
       modal.classList.add("open");
       document.getElementById("stock-title").textContent = name
-        ? `${name} (${code}) · 近10日`
-        : `${code} · 近10日`;
+        ? `${name} (${code}) · 行情 & 中线`
+        : `${code} · 行情 & 中线`;
       document.getElementById("stock-body").innerHTML = "加载中…";
       try {
         const q = new URLSearchParams({ days: "10", name: name || "" });
-        const res = await fetch(`/api/stock/${encodeURIComponent(code)}/history?${q}`);
-        const data = await res.json();
-        if (!res.ok || !data.ok) {
-          throw new Error(data.message || `HTTP ${res.status}`);
+        const [histRes, midRes] = await Promise.all([
+          fetch(`/api/stock/${encodeURIComponent(code)}/history?${q}`),
+          fetch(`/api/stock/${encodeURIComponent(code)}/midterm?${q}`),
+        ]);
+        const data = await parseJsonResponse(histRes);
+        let midterm = null;
+        try {
+          midterm = await parseJsonResponse(midRes);
+        } catch (_) { /* optional */ }
+        if (!data.ok) {
+          throw new Error(data.message || `HTTP ${histRes.status}`);
         }
+        data.midterm = midterm;
         renderStockDrilldown(data);
       } catch (e) {
         document.getElementById("stock-body").innerHTML =
@@ -1336,6 +1448,7 @@
         ["清盘胜率", has && p.closed_count ? `${p.closed_win_rate}% · ${p.closed_count}笔` : "—"],
       ]);
       renderPortfolioTable(p.positions || []);
+      renderMidtermDailyOps(p);
       renderRealClosed(p);
       const rec = (p.midterm && p.midterm.recommendations) || [];
       lastMidtermRecsAll = rec;
@@ -1658,6 +1771,7 @@
       const groups = data.suggestion_groups || {};
       const el = document.getElementById("suggest-groups");
       el.innerHTML =
+        renderSuggestionGroup("今日中线操作", groups.midterm_daily, "点击「中线分析」或「刷新行情」") +
         renderSuggestionGroup("支撑压力提醒", groups.level_alerts, "暂无价位触发，点击「价位提醒」检查") +
         renderSuggestionGroup("个股复盘", groups.midterm_review, "点击「中线分析」") +
         renderSuggestionGroup("持仓优化", groups.midterm_optimize, "—") +
@@ -2290,10 +2404,16 @@
         showToast(body.message || (body.ok ? "完成" : "失败"), !body.ok);
       } catch (e) {
         const msg = e.name === "TimeoutError"
-          ? `操作超时（>${Math.round(timeoutMs / 1000)}秒），请查看 logs/web_*.log`
+          ? `操作超时（>${Math.round(timeoutMs / 1000)}秒）。任务可能仍在后台运行，请查看底部运行日志或 logs/web_*.log`
           : e.message;
         appendLog("失败: " + msg);
         showToast("请求失败: " + msg, true);
+        if (e.name === "TimeoutError") {
+          fetch("/api/logs/today")
+            .then((r) => r.json())
+            .then((d) => { if (d.content) showActionLog(d.content); })
+            .catch(() => {});
+        }
       } finally {
         stopLogPoll();
         setLoading(false);

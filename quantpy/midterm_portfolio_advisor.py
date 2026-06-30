@@ -704,6 +704,7 @@ class MidtermPortfolioAdvisor:
         show_progress: bool = False,
         industry: Optional[str] = None,
         performance: Optional[str] = None,
+        early_stop_pass: int = 0,
     ) -> Tuple[pd.DataFrame, dict]:
         """中线个股推荐（排除已持仓，支持行业/业绩筛选）。返回 (DataFrame, 筛选统计)。"""
         select_stats: dict = {
@@ -711,6 +712,8 @@ class MidtermPortfolioAdvisor:
             "prefilter_count": 0,
             "scored_pass": 0,
             "scored_fail": 0,
+            "scored_errors": 0,
+            "scored_stopped_early": False,
             "excluded_held": 0,
             "filter": {},
             "fallback_used": False,
@@ -809,11 +812,16 @@ class MidtermPortfolioAdvisor:
         _progress(f"  初筛 {len(candidates)} 只，技术面评分中…", show_progress)
 
         results: List[dict] = []
-        excluded_held = scored_fail = 0
+        excluded_held = scored_fail = scored_errors = 0
         total = len(candidates)
         for idx, (_, row) in enumerate(candidates.iterrows(), 1):
-            if show_progress and (idx == 1 or idx % 15 == 0 or idx == total):
-                _progress(f"  评分进度 {idx}/{total}", True)
+            if show_progress and (idx == 1 or idx % 10 == 0 or idx == total):
+                _progress(
+                    f"  评分进度 {idx}/{total}（已命中 {len(results)}，未过线 {scored_fail}"
+                    + (f"，异常 {scored_errors}" if scored_errors else "")
+                    + "）",
+                    True,
+                )
             code = str(row[code_col]).zfill(6)
             if code in exclude:
                 excluded_held += 1
@@ -828,14 +836,32 @@ class MidtermPortfolioAdvisor:
                 "pe": fund.get("pe"),
                 "profit_yoy": fund.get("profit_yoy"),
             }
-            item = self._score_candidate(code, name, spot)
+            try:
+                item = self._score_candidate(code, name, spot)
+            except Exception as exc:
+                scored_errors += 1
+                if scored_errors <= 3:
+                    _progress(f"  评分异常 {code}: {exc}", show_progress)
+                continue
             if item:
                 results.append(item)
             else:
                 scored_fail += 1
+            if (
+                early_stop_pass > 0
+                and len(results) >= early_stop_pass
+                and idx >= min(30, max(total // 3, 20))
+            ):
+                select_stats["scored_stopped_early"] = True
+                _progress(
+                    f"  已命中 {len(results)} 只，提前结束评分（{idx}/{total}）",
+                    show_progress,
+                )
+                break
 
         select_stats["scored_pass"] = len(results)
         select_stats["scored_fail"] = scored_fail
+        select_stats["scored_errors"] = scored_errors
         select_stats["excluded_held"] = excluded_held
         _progress(
             f"  [评分] 技术面命中 {len(results)}/{total - excluded_held} 只"
@@ -892,6 +918,9 @@ class MidtermPortfolioAdvisor:
         optimization = self.optimize_positions(portfolio_stats, reviews)
         review_summaries = [r["summary"] for r in reviews if r.get("ok")]
         opt_suggestions = optimization.get("suggestions", [])
+        daily_operations = build_daily_midterm_operations(
+            portfolio_stats, reviews, optimization=optimization,
+        )
 
         return {
             "generated_at": datetime.now().isoformat(),
@@ -900,7 +929,8 @@ class MidtermPortfolioAdvisor:
             "reviews": reviews,
             "optimization": optimization,
             "recommendations": [],
-            "suggestions": review_summaries + opt_suggestions,
+            "daily_operations": daily_operations,
+            "suggestions": review_summaries + opt_suggestions + daily_operations.get("lines", []),
             "review_summaries": review_summaries,
             "optimize_suggestions": opt_suggestions,
         }
@@ -937,6 +967,7 @@ class MidtermPortfolioAdvisor:
             show_progress=show_progress,
             industry=industry,
             performance=performance,
+            early_stop_pass=30,
         )
 
         _progress("[4/4] 生成报告", show_progress)
@@ -951,6 +982,13 @@ class MidtermPortfolioAdvisor:
                 f"{r['reason']} 标签:{r.get('tags', '')}"
             )
 
+        daily_operations = build_daily_midterm_operations(
+            portfolio_stats,
+            reviews,
+            optimization=optimization,
+            recommendations=rec_records,
+        )
+
         result = {
             "generated_at": datetime.now().isoformat(),
             "style": "中线",
@@ -963,7 +1001,8 @@ class MidtermPortfolioAdvisor:
             "reviews": reviews,
             "optimization": optimization,
             "recommendations": rec_records,
-            "suggestions": all_text,
+            "daily_operations": daily_operations,
+            "suggestions": all_text + daily_operations.get("lines", []),
             "review_summaries": review_summaries,
             "optimize_suggestions": opt_suggestions,
         }
@@ -989,6 +1028,181 @@ class MidtermPortfolioAdvisor:
         result["report_path"] = str(md_path)
         _progress(f"分析完成：推荐 {len(rec_records)} 只，报告已保存", show_progress)
         return result
+
+
+def build_daily_midterm_operations(
+    portfolio_stats: dict,
+    reviews: List[dict],
+    optimization: Optional[dict] = None,
+    recommendations: Optional[List[dict]] = None,
+    level_alerts: Optional[List[dict]] = None,
+) -> dict:
+    """生成实盘中线每日操作建议（账户 + 逐股 + 优先级）。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    optimization = optimization or {}
+    recommendations = recommendations or []
+    alert_list = level_alerts or []
+    if isinstance(level_alerts, dict):
+        alert_list = level_alerts.get("alerts", [])
+
+    midterm_positions = [
+        p for p in portfolio_stats.get("positions", [])
+        if p.get("bucket", _classify_bucket(p.get("strategy", ""))) == "midterm"
+    ]
+    mid_bucket = portfolio_stats.get("buckets", {}).get("midterm", {})
+    bucket_capital = float(mid_bucket.get("capital", portfolio_stats.get("midterm_capital", 150000)))
+    invested_pct = float(mid_bucket.get("invested_pct", 0))
+
+    review_map = {str(r["code"]).zfill(6): r for r in reviews if r.get("ok")}
+    alert_map = {str(a["code"]).zfill(6): a for a in alert_list}
+    held_codes = {str(p["code"]).zfill(6) for p in midterm_positions}
+
+    opt_action_map: Dict[str, List[dict]] = {}
+    for act in optimization.get("actions", []):
+        code = str(act.get("code", "")).zfill(6)
+        opt_action_map.setdefault(code, []).append(act)
+
+    def _priority(action: str, alert: Optional[dict], profit_pct: float) -> int:
+        if alert and alert.get("signal") == "sell":
+            return 1
+        if action in ("减仓/止损", "减仓观望"):
+            return 2
+        if alert and alert.get("signal") == "buy":
+            return 3
+        if action == "分批止盈":
+            return 4
+        return 6
+
+    stock_operations: List[dict] = []
+    for p in midterm_positions:
+        code = str(p["code"]).zfill(6)
+        r = review_map.get(code, {})
+        alert = alert_map.get(code)
+        action = r.get("action", "观望")
+        profit_pct = float(p.get("profit_pct", r.get("profit_pct", 0)))
+        weight_pct = float(p.get("weight_pct", r.get("weight_pct", 0)))
+        reasons: List[str] = list(r.get("action_reasons") or [])
+
+        for act in opt_action_map.get(code, []):
+            t = act.get("type", "")
+            if t == "reduce":
+                reasons.append(f"仓位优化：建议减至约 {act.get('target_weight_pct')}%（{act.get('reason')}）")
+            elif t == "add":
+                reasons.append(f"仓位优化：可加仓至约 {act.get('target_weight_pct')}%（{act.get('reason')}）")
+
+        if alert:
+            reasons.insert(0, alert.get("message", alert.get("alert_label", "")))
+
+        if not reasons and r.get("summary"):
+            reasons.append(r["summary"])
+
+        priority = _priority(action, alert, profit_pct)
+        if any(a.get("type") == "reduce" for a in opt_action_map.get(code, [])):
+            priority = min(priority, 2)
+        if any(a.get("type") == "add" for a in opt_action_map.get(code, [])):
+            priority = min(priority, 5)
+
+        stock_operations.append({
+            "code": code,
+            "name": p.get("name", code),
+            "action": action,
+            "priority": priority,
+            "trend": r.get("trend", "—"),
+            "midterm_score": r.get("midterm_score"),
+            "profit_pct": round(profit_pct, 2),
+            "weight_pct": round(weight_pct, 2),
+            "rsi": r.get("rsi"),
+            "support": r.get("support"),
+            "resistance": r.get("resistance"),
+            "stop_suggest": r.get("stop_suggest"),
+            "price": r.get("price"),
+            "cost_price": p.get("cost_price"),
+            "reasons": reasons,
+            "detail": "；".join(reasons) if reasons else r.get("summary", ""),
+            "level_alert": alert,
+            "tags": r.get("tags", ""),
+        })
+
+    stock_operations.sort(key=lambda x: (x["priority"], -float(x.get("midterm_score") or 0)))
+
+    overview: List[str] = []
+    if not midterm_positions:
+        overview.append("中线账户暂无持仓，可在 15 万额度内布局 3-6 只。")
+    else:
+        overview.append(
+            f"中线账户 {bucket_capital/10000:.1f} 万 · 持仓 {len(midterm_positions)} 只 · "
+            f"仓位 {invested_pct:.0f}%"
+        )
+        for s in optimization.get("suggestions", [])[:4]:
+            if s not in overview:
+                overview.append(s)
+
+    urgent = [s for s in stock_operations if s["priority"] <= 2]
+    if urgent:
+        overview.append(f"今日优先处理 {len(urgent)} 只：{', '.join(s['name'] for s in urgent[:4])}")
+
+    new_buy_hints = [
+        {
+            "code": str(r["code"]).zfill(6),
+            "name": r.get("name", ""),
+            "midterm_score": r.get("midterm_score"),
+            "reason": r.get("reason", ""),
+            "price": r.get("price"),
+        }
+        for r in recommendations
+        if str(r.get("code", "")).zfill(6) not in held_codes
+    ][:5]
+
+    if new_buy_hints and invested_pct < 85:
+        overview.append(
+            f"可关注新开仓候选 {len(new_buy_hints)} 只（见下方推荐表）"
+        )
+
+    lines: List[str] = []
+    for s in stock_operations:
+        pnl = f"浮盈{s['profit_pct']:+.1f}%" if s.get("profit_pct") is not None else ""
+        lines.append(
+            f"【{s['action']}】{s['name']}({s['code']}) {s.get('trend', '')} {pnl} · {s.get('detail', '')[:80]}"
+        )
+    for h in new_buy_hints[:3]:
+        lines.append(
+            f"【可关注】{h['name']}({h['code']}) 评分{h.get('midterm_score')} · "
+            f"{(h.get('reason') or '')[:60]}"
+        )
+
+    return {
+        "date": today,
+        "overview": overview,
+        "account": {
+            "capital": bucket_capital,
+            "invested_pct": invested_pct,
+            "position_count": len(midterm_positions),
+            "market_value": float(mid_bucket.get("market_value", 0)),
+        },
+        "stock_operations": stock_operations,
+        "new_buy_hints": new_buy_hints,
+        "lines": lines,
+    }
+
+
+def ensure_daily_midterm_operations(
+    midterm: dict,
+    portfolio_stats: dict,
+    level_alerts: Optional[dict] = None,
+) -> dict:
+    """缓存报告缺 daily_operations 时按复盘数据补全。"""
+    if midterm.get("daily_operations"):
+        return midterm["daily_operations"]
+    reviews = midterm.get("reviews") or []
+    if not reviews:
+        return {}
+    return build_daily_midterm_operations(
+        portfolio_stats,
+        reviews,
+        optimization=midterm.get("optimization"),
+        recommendations=midterm.get("recommendations"),
+        level_alerts=level_alerts,
+    )
 
 
 def format_midterm_report_markdown(result: dict) -> str:
@@ -1027,15 +1241,44 @@ def format_midterm_report_markdown(result: dict) -> str:
     else:
         parts.append("暂无中线持仓复盘数据。\n\n")
 
+    daily = result.get("daily_operations") or {}
+    if daily.get("stock_operations") or daily.get("overview"):
+        parts.append("## 二、今日操作建议\n\n")
+        for i, line in enumerate(daily.get("overview", []), 1):
+            parts.append(f"{i}. {line}\n")
+        parts.append("\n")
+        op_rows = []
+        for s in daily.get("stock_operations", []):
+            op_rows.append([
+                s["code"],
+                s["name"],
+                s.get("action", ""),
+                s.get("trend", ""),
+                f"{s.get('profit_pct', 0):+.1f}",
+                s.get("rsi", ""),
+                s.get("support", ""),
+                s.get("resistance", ""),
+                truncate_display(s.get("detail", ""), 36),
+            ])
+        if op_rows:
+            parts.append(
+                format_markdown_table(
+                    ["代码", "名称", "操作", "趋势", "浮盈%", "RSI", "支撑", "压力", "说明"],
+                    op_rows,
+                    aligns=["left", "left", "left", "left", "right", "right", "right", "right", "left"],
+                )
+            )
+            parts.append("\n")
+
     if result.get("optimize_suggestions"):
-        parts.append("## 二、持仓优化\n\n")
+        parts.append("## 三、持仓优化\n\n")
         for i, s in enumerate(result["optimize_suggestions"], 1):
             parts.append(f"{i}. {s}\n")
         parts.append("\n")
 
     recs = result.get("recommendations", [])
     if recs:
-        parts.append("## 三、个股推荐（市值150-1000亿 · 均线多头 · 放量上涨）\n\n")
+        parts.append("## 四、个股推荐（市值150-1000亿 · 均线多头 · 放量上涨）\n\n")
         parts.append(
             "选股条件：" + " · ".join(c["label"] for c in MIDTERM_SELECT_CONDITIONS) + "\n\n"
         )
