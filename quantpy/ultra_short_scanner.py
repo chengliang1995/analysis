@@ -17,6 +17,8 @@ from quantpy.stock_data import (
     get_stock_code_column,
     get_stock_hist,
     get_stock_name_column,
+    is_bse_code,
+    exclude_bse_from_df,
 )
 
 
@@ -178,6 +180,9 @@ class UltraShortScanner:
     lookback_days: int = 10,
     tuning: Optional[object] = None,
   ) -> Optional[Dict]:
+    if is_bse_code(code):
+      return None
+
     hist = get_stock_hist(code, days=lookback_days + 25)
     if hist.empty or len(hist) < 5:
       return None
@@ -312,9 +317,18 @@ class UltraShortScanner:
     else:
       df["_turnover"] = 0
 
-    # 强势 OR 高换手
-    mask = (df["_pct"] >= min_pct) | (df["_turnover"] >= min_turnover)
-    filtered = df[mask].copy()
+    # 强势 OR 高换手；候选过少时自动放宽初筛
+    thresholds = (
+      (min_pct, min_turnover),
+      (max(min_pct - 1.0, 2.0), max(min_turnover - 0.5, 1.5)),
+      (max(min_pct - 2.0, 1.0), max(min_turnover - 1.0, 1.0)),
+    )
+    filtered = pd.DataFrame()
+    for pct_th, turn_th in thresholds:
+      mask = (df["_pct"] >= pct_th) | (df["_turnover"] >= turn_th)
+      filtered = df[mask].copy()
+      if len(filtered) >= 30:
+        break
     filtered["_sort"] = filtered["_pct"] * 0.6 + filtered["_turnover"] * 0.4
     return filtered.sort_values("_sort", ascending=False)
 
@@ -346,6 +360,12 @@ class UltraShortScanner:
         print("加载股票列表并刷新最新价...")
       stock_list = get_market_spot(verbose=show_progress, force_refresh=False)
 
+    if stock_list.empty:
+      return pd.DataFrame()
+
+    code_col = get_stock_code_column(stock_list)
+    if code_col:
+      stock_list = exclude_bse_from_df(stock_list, code_col)
     if stock_list.empty:
       return pd.DataFrame()
 

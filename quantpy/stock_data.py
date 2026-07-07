@@ -9,7 +9,7 @@ import json
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, List, Optional, TypeVar
+from typing import Callable, List, Optional, Tuple, TypeVar
 
 import pandas as pd
 import requests
@@ -112,6 +112,63 @@ def is_etf_code(code: str) -> bool:
     return code[:2] in ("16", "18")
 
 
+def is_bse_code(code: str) -> bool:
+    """判断是否为北交所股票（推荐池剔除）。"""
+    code = str(code).zfill(6)
+    if not code.isdigit():
+        return False
+    # 与 code_to_symbol 一致：4/8 开头及 920 新代码段
+    return code.startswith(("4", "8", "92"))
+
+
+def exclude_bse_from_df(df: pd.DataFrame, code_col: Optional[str] = None) -> pd.DataFrame:
+    """从 DataFrame 中剔除北交所个股。"""
+    if df.empty or "code" not in df.columns and code_col is None:
+        return df
+    col = code_col or "code"
+    if col not in df.columns:
+        return df
+    mask = ~df[col].astype(str).str.zfill(6).map(is_bse_code)
+    return df.loc[mask].copy()
+
+
+# 全市场快照最低要求（剔除北交所后仍应有足够沪深 A 股）
+MIN_SNAPSHOT_NON_BSE = 2500
+MIN_SNAPSHOT_TOTAL = 800
+
+
+def snapshot_universe_stats(df: pd.DataFrame, code_col: Optional[str] = None) -> dict:
+    """统计行情/股票池快照规模（含北交所占比）。"""
+    if df.empty:
+        return {"total": 0, "bse": 0, "non_bse": 0}
+    col = code_col or get_stock_code_column(df) or "code"
+    if col not in df.columns:
+        return {"total": len(df), "bse": 0, "non_bse": len(df)}
+    codes = df[col].astype(str).str.zfill(6)
+    bse = int(codes.map(is_bse_code).sum())
+    total = len(codes)
+    return {"total": total, "bse": bse, "non_bse": total - bse}
+
+
+def is_usable_market_universe(
+    df: pd.DataFrame,
+    code_col: Optional[str] = None,
+    min_non_bse: int = MIN_SNAPSHOT_NON_BSE,
+) -> Tuple[bool, str]:
+    """
+    判断股票池/行情快照是否可用于选股（非残缺、非仅北交所）。
+    北交所个股本身允许出现在原始快照中，但剔除后仍需有足够沪深标的。
+    """
+    stats = snapshot_universe_stats(df, code_col)
+    total = stats["total"]
+    non_bse = stats["non_bse"]
+    if total < MIN_SNAPSHOT_TOTAL:
+        return False, f"快照过小({total}只)"
+    if non_bse < min_non_bse:
+        return False, f"沪深A股不足({non_bse}只，北交所{stats['bse']}只)"
+    return True, ""
+
+
 def price_step_for_code(code: str) -> float:
     """行情价格最小变动单位：ETF 0.001，股票 0.01。"""
     return 0.001 if is_etf_code(code) else 0.01
@@ -191,7 +248,11 @@ def _load_stock_list_cache(max_age_hours: Optional[int] = CACHE_MAX_AGE_HOURS) -
                 return pd.DataFrame()
 
         df = pd.read_csv(STOCK_LIST_CACHE, dtype={"code": str})
-        return normalize_stock_list(df)
+        df = normalize_stock_list(df)
+        ok, _ = is_usable_market_universe(df)
+        if not ok:
+            return pd.DataFrame()
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -201,7 +262,11 @@ def _load_stale_cache() -> pd.DataFrame:
         return pd.DataFrame()
     try:
         df = pd.read_csv(STOCK_LIST_CACHE, dtype={"code": str})
-        return normalize_stock_list(df)
+        df = normalize_stock_list(df)
+        ok, _ = is_usable_market_universe(df)
+        if not ok:
+            return pd.DataFrame()
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -540,6 +605,14 @@ def refresh_stock_list_quotes(
     return result
 
 
+def _remove_daily_close_snapshot(trade_date: str) -> None:
+    """删除指定交易日的收盘快照（残缺数据时清理）。"""
+    for suffix in (".csv", ".json"):
+        path = DAILY_CLOSE_DIR / f"{trade_date}{suffix}"
+        if path.exists():
+            path.unlink(missing_ok=True)
+
+
 def save_daily_close_snapshot(quotes: pd.DataFrame, trade_date: Optional[str] = None) -> Path:
     """保存每日收盘/最新价快照。"""
     DAILY_CLOSE_DIR.mkdir(parents=True, exist_ok=True)
@@ -547,6 +620,10 @@ def save_daily_close_snapshot(quotes: pd.DataFrame, trade_date: Optional[str] = 
         trade_date = datetime.now().strftime("%Y-%m-%d")
     if quotes.empty:
         raise ValueError("行情数据为空，无法保存")
+
+    ok, reason = is_usable_market_universe(quotes)
+    if not ok:
+        raise ValueError(f"行情快照不完整，拒绝保存: {reason}")
 
     if "trade_date" in quotes.columns and quotes["trade_date"].notna().any():
         trade_date = str(quotes["trade_date"].dropna().iloc[0])[:10]
@@ -574,7 +651,11 @@ def save_daily_close_snapshot(quotes: pd.DataFrame, trade_date: Optional[str] = 
     return path
 
 
-def load_daily_close_snapshot(trade_date: Optional[str] = None) -> pd.DataFrame:
+def load_daily_close_snapshot(
+    trade_date: Optional[str] = None,
+    *,
+    allow_partial: bool = False,
+) -> pd.DataFrame:
     if trade_date is None:
         trade_date = datetime.now().strftime("%Y-%m-%d")
     path = DAILY_CLOSE_DIR / f"{trade_date}.csv"
@@ -582,7 +663,23 @@ def load_daily_close_snapshot(trade_date: Optional[str] = None) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.read_csv(path, dtype={"code": str})
     df["code"] = df["code"].str.zfill(6)
+    if not allow_partial:
+        ok, reason = is_usable_market_universe(df)
+        if not ok:
+            _remove_daily_close_snapshot(trade_date)
+            return pd.DataFrame()
     return df
+
+
+def _ensure_full_stock_list(verbose: bool = True) -> pd.DataFrame:
+    """确保股票列表为完整沪深池；缓存残缺时强制在线刷新。"""
+    stock_list = get_all_stocks(verbose=verbose, use_cache=True, refresh_prices=False)
+    ok, reason = is_usable_market_universe(stock_list)
+    if ok:
+        return stock_list
+    if verbose:
+        print(f"股票列表缓存异常({reason})，重新拉取全市场...")
+    return get_all_stocks(verbose=verbose, use_cache=False, refresh_prices=False)
 
 
 def collect_daily_market_close(
@@ -594,9 +691,15 @@ def collect_daily_market_close(
     超短扫描与仓位估值应优先使用此数据。
     """
     if stock_list is None:
-        stock_list = get_all_stocks(verbose=verbose, use_cache=True, refresh_prices=False)
+        stock_list = _ensure_full_stock_list(verbose=verbose)
 
     if stock_list.empty:
+        return pd.DataFrame()
+
+    ok, reason = is_usable_market_universe(stock_list)
+    if not ok:
+        if verbose:
+            print(f"股票列表仍不可用({reason})，跳过采集")
         return pd.DataFrame()
 
     codes = stock_list["code"].astype(str).str.zfill(6).tolist()
@@ -606,7 +709,12 @@ def collect_daily_market_close(
     if quotes.empty:
         return pd.DataFrame()
 
-    path = save_daily_close_snapshot(quotes)
+    try:
+        path = save_daily_close_snapshot(quotes)
+    except ValueError as exc:
+        if verbose:
+            print(str(exc))
+        return pd.DataFrame()
     refreshed = refresh_stock_list_quotes(stock_list, codes=codes, verbose=False)
     _save_stock_list_cache(refreshed, "tencent_qt_daily")
     if verbose:
@@ -626,9 +734,13 @@ def get_market_spot(
     if not force_refresh:
         snap = load_daily_close_snapshot(today)
         if not snap.empty:
+            stats = snapshot_universe_stats(snap)
             if verbose:
-                print(f"使用今日收盘快照: {today} ({len(snap)} 只)")
-            base = get_all_stocks(verbose=False, use_cache=True, refresh_prices=False)
+                print(
+                    f"使用今日收盘快照: {today} ({stats['total']} 只，"
+                    f"沪深 {stats['non_bse']} / 北交所 {stats['bse']})"
+                )
+            base = _ensure_full_stock_list(verbose=False)
             if base.empty:
                 return normalize_stock_list(snap)
             merged = base.copy()
@@ -651,9 +763,9 @@ def get_market_spot(
 
     quotes = collect_daily_market_close(verbose=verbose)
     if quotes.empty:
-        base = get_all_stocks(verbose=verbose, use_cache=True, refresh_prices=False)
+        base = _ensure_full_stock_list(verbose=verbose)
         return refresh_stock_list_quotes(base, verbose=verbose)
-    base = get_all_stocks(verbose=False, use_cache=True, refresh_prices=False)
+    base = _ensure_full_stock_list(verbose=False)
     return refresh_stock_list_quotes(base, codes=quotes["code"].tolist(), verbose=False)
 
 
@@ -1410,6 +1522,7 @@ def _fetch_board_list_from_spot_industry(verbose: bool = False) -> List[dict]:
 
     df["_industry"] = df["_code"].map(industry_map).fillna("").astype(str).str.strip()
     df = df[df["_industry"] != ""]
+    df = df[~df["_code"].map(is_bse_code)]
     if df.empty:
         return []
 
@@ -1460,6 +1573,8 @@ def _fetch_board_constituents_from_spot_industry(industry_name: str) -> List[dic
     items: List[dict] = []
     for _, row in market.iterrows():
         code = str(row[code_col]).zfill(6)
+        if is_bse_code(code):
+            continue
         if industry_map.get(code, "").strip() != industry_name:
             continue
         name = str(row[name_col]) if name_col else code
@@ -1570,6 +1685,8 @@ def _fetch_board_constituents_akshare(board_code: str) -> List[dict]:
         items: List[dict] = []
         for _, row in df.iterrows():
             code = str(row.get("代码") or "").strip().zfill(6)
+            if is_bse_code(code):
+                continue
             name = str(row.get("名称") or "").strip()
             if not code or not name:
                 continue
@@ -1737,6 +1854,8 @@ def fetch_board_constituents(
     items: List[dict] = []
     for row in rows:
         code = str(row.get("f12") or "").strip().zfill(6)
+        if is_bse_code(code):
+            continue
         name = str(row.get("f14") or "").strip()
         if not code or not name:
             continue

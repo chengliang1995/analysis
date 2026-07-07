@@ -20,11 +20,13 @@ from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.selection_tuning import SelectionTuning, build_selection_tuning, format_tuning_summary
 from quantpy.stock_data import (
     ensure_industry_map,
+    exclude_bse_from_df,
     get_fundamental_map,
     get_market_spot,
     get_stock_hist,
     get_stock_code_column,
     get_stock_name_column,
+    is_bse_code,
 )
 
 ULTRA_SHORT_STRATEGIES = frozenset({"超短", "涨停"})
@@ -52,6 +54,7 @@ MIDTERM_SELECT_CONDITIONS = [
     {"id": "volume_surge", "label": "放量上涨", "category": "技术面"},
     {"id": "daily_gain", "label": "近3日1日涨幅>2%", "category": "技术面"},
     {"id": "rsi_band", "label": "RSI 40-70", "category": "技术面"},
+    {"id": "bottom_divergence", "label": "MACD底背离", "category": "技术面"},
     {"id": "trend_20d", "label": "20日涨幅≥0", "category": "技术面"},
 ]
 
@@ -95,6 +98,7 @@ def _evaluate_midterm_technicals(
     rsi = _rsi(close)
     ret_20d = _safe_pct(price, float(close.iloc[-21])) if len(close) >= 21 else 0
     pct = _hist_pct_series(hist)
+    bottom_div = _detect_bottom_divergence(close)
 
     if spot_pct >= 9.5 or spot_pct <= -9.5:
         return None
@@ -130,8 +134,21 @@ def _evaluate_midterm_technicals(
         tags.append("短期转强")
         trend_ok = True
 
+    if not trend_ok and bottom_div and bottom_div["bars_ago"] <= 20:
+        ma5_prev = float(close.rolling(5).mean().iloc[-2]) if len(close) >= 6 else ma5
+        if price >= ma10 * 0.97 and ma5 >= ma5_prev:
+            score += 10
+            tags.append("底背离转强")
+            trend_ok = True
+
     if not trend_ok:
         return None
+
+    if bottom_div:
+        div_bonus = 12 if bottom_div["bars_ago"] <= 10 else 8
+        score += div_bonus
+        tags.append("MACD底背离")
+        conditions.append("bottom_divergence")
 
     if len(close) >= 25:
         ma10_prev = float(close.rolling(10).mean().iloc[-6])
@@ -199,7 +216,9 @@ def _evaluate_midterm_technicals(
         "ma20": round(ma20, 2),
         "rsi": round(rsi, 1),
         "ret_20d": round(ret_20d, 2),
-        "trend": "多头" if ma5 > ma10 > ma20 else "反弹",
+        "trend": "多头" if ma5 > ma10 > ma20 else ("底背离" if bottom_div else "反弹"),
+        "bottom_divergence": bottom_div is not None,
+        "bottom_divergence_detail": bottom_div,
     }
 
 
@@ -323,6 +342,92 @@ def _rsi(close: pd.Series, period: int = 14) -> float:
     return float(100 - 100 / (1 + rs))
 
 
+def _macd_series(
+    close: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """返回 MACD 的 DIF、DEA、BAR 序列。"""
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    dif = ema_fast - ema_slow
+    dea = dif.ewm(span=signal, adjust=False).mean()
+    bar = (dif - dea) * 2
+    return dif, dea, bar
+
+
+def _pivot_low_indices(series: pd.Series, order: int = 3) -> List[int]:
+    """局部低点索引（左右各 order 根 K 线）。"""
+    vals = pd.to_numeric(series, errors="coerce")
+    n = len(vals)
+    lows: List[int] = []
+    for i in range(order, n - order):
+        window = vals.iloc[i - order : i + order + 1]
+        if window.isna().any():
+            continue
+        center = float(vals.iloc[i])
+        left_min = float(vals.iloc[i - order : i].min())
+        right_min = float(vals.iloc[i + 1 : i + order + 1].min())
+        if center <= left_min and center <= right_min:
+            lows.append(i)
+    return lows
+
+
+def _detect_bottom_divergence(
+    close: pd.Series,
+    lookback: int = 60,
+    min_sep: int = 5,
+    max_sep: int = 40,
+) -> Optional[dict]:
+    """
+    MACD 底背离：价格创新低，DIF 低点抬高（通常在零轴下方）。
+    返回最近一组有效背离，含距当前 K 线的 bars_ago。
+    """
+    close = pd.to_numeric(close, errors="coerce")
+    if len(close) < lookback + 26:
+        return None
+
+    segment = close.iloc[-lookback:].reset_index(drop=True)
+    dif, _, _ = _macd_series(close)
+    dif_seg = dif.iloc[-lookback:].reset_index(drop=True)
+
+    price_lows = _pivot_low_indices(segment, order=3)
+    if len(price_lows) < 2:
+        return None
+
+    for i in range(len(price_lows) - 1, 0, -1):
+        idx2 = price_lows[i]
+        for j in range(i - 1, -1, -1):
+            idx1 = price_lows[j]
+            sep = idx2 - idx1
+            if sep < min_sep:
+                continue
+            if sep > max_sep:
+                break
+            p1 = float(segment.iloc[idx1])
+            p2 = float(segment.iloc[idx2])
+            d1 = float(dif_seg.iloc[idx1])
+            d2 = float(dif_seg.iloc[idx2])
+            if p1 <= 0 or p2 <= 0:
+                continue
+            if p2 >= p1 * 0.998:
+                continue
+            if d2 <= d1 * 1.02:
+                continue
+            if d1 > 0 and d2 > 0:
+                continue
+            bars_ago = lookback - 1 - idx2
+            return {
+                "bars_ago": bars_ago,
+                "price_low1": round(p1, 2),
+                "price_low2": round(p2, 2),
+                "dif_low1": round(d1, 4),
+                "dif_low2": round(d2, 4),
+            }
+    return None
+
+
 def _safe_pct(a: float, b: float) -> float:
     if b == 0:
         return 0.0
@@ -395,6 +500,7 @@ class MidtermPortfolioAdvisor:
 
         ret_20d = _safe_pct(price, float(close.iloc[-21])) if len(close) >= 21 else 0
         ret_60d = _safe_pct(price, float(close.iloc[-61])) if len(close) >= 61 else 0
+        bottom_div = _detect_bottom_divergence(close)
 
         vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else 0
         vol_ratio = float(volume.iloc[-1] / vol_avg20) if vol_avg20 > 0 else 1.0
@@ -449,6 +555,14 @@ class MidtermPortfolioAdvisor:
         if 0.8 <= vol_ratio <= 2.0:
             score += 4
 
+        if bottom_div:
+            div_bonus = 12 if bottom_div["bars_ago"] <= 10 else 8
+            score += div_bonus
+            tags.append("MACD底背离")
+            if trend != "多头" and price >= ma10 * 0.97:
+                score += 4
+                tags.append("底背离企稳")
+
         profit_pct = _safe_pct(price, cost_price) if cost_price > 0 else 0
         action = "持有观望"
         action_reasons: List[str] = []
@@ -471,6 +585,13 @@ class MidtermPortfolioAdvisor:
         elif trend == "震荡":
             action = "区间操作"
             action_reasons.append(f"震荡市，关注支撑 {support} / 阻力 {resistance}")
+
+        if bottom_div and bottom_div["bars_ago"] <= 15 and trend != "空头":
+            if action in ("持有观望", "区间操作", "持有观察"):
+                action = "关注反弹"
+            action_reasons.append(
+                f"MACD底背离（{bottom_div['bars_ago']}日前低点），价格低点抬高可关注企稳"
+            )
 
         if weight_pct > self.max_single_weight:
             action_reasons.append(
@@ -502,6 +623,7 @@ class MidtermPortfolioAdvisor:
             "action": action,
             "action_reasons": action_reasons,
             "tags": ",".join(tags),
+            "bottom_divergence": bottom_div is not None,
             "summary": self._format_review_summary(
                 name or code, code, trend, profit_pct, action, rsi, support, resistance
             ),
@@ -687,9 +809,10 @@ class MidtermPortfolioAdvisor:
             yoy_part = f"，净利同比{float(profit_yoy):+.1f}%"
 
         cap_part = f"市值{cap:.0f}亿" if cap is not None else "市值—"
+        div_part = " · MACD底背离" if tech.get("bottom_divergence") else ""
         reason = (
             f"{' · '.join(tech['tags'][:4])}；20日{tech['ret_20d']:+.1f}% RSI{tech['rsi']:.0f}；"
-            f"{cap_part}{yoy_part}"
+            f"{cap_part}{yoy_part}{div_part}"
         )
 
         return {
@@ -706,6 +829,7 @@ class MidtermPortfolioAdvisor:
             "ma5": tech["ma5"],
             "ma10": tech["ma10"],
             "ma20": tech["ma20"],
+            "bottom_divergence": tech.get("bottom_divergence", False),
             "pe": round(float(pe), 2) if pe is not None and pd.notna(pe) else None,
             "profit_yoy": round(float(profit_yoy), 2) if profit_yoy is not None and pd.notna(profit_yoy) else None,
             "industry": industry or "",
@@ -765,7 +889,10 @@ class MidtermPortfolioAdvisor:
 
         code_col = get_stock_code_column(market)
         name_col = get_stock_name_column(market)
-        df = market.copy()
+        df = exclude_bse_from_df(market.copy(), code_col)
+        if df.empty:
+            _progress("  剔除北交所后无可用标的", show_progress)
+            return pd.DataFrame(), select_stats
         pct_col = next((c for c in ("pct_chg", "changepercent", "涨跌幅") if c in df.columns), None)
         turnover_col = next((c for c in ("turnover", "turnoverratio", "换手率") if c in df.columns), None)
 
@@ -848,6 +975,8 @@ class MidtermPortfolioAdvisor:
                     True,
                 )
             code = str(row[code_col]).zfill(6)
+            if is_bse_code(code):
+                continue
             if code in exclude:
                 excluded_held += 1
                 continue
@@ -1305,7 +1434,7 @@ def format_midterm_report_markdown(result: dict) -> str:
 
     recs = result.get("recommendations", [])
     if recs:
-        parts.append("## 四、个股推荐（市值150-1000亿 · 均线多头 · 放量上涨）\n\n")
+        parts.append("## 四、个股推荐（市值150-1000亿 · 均线多头 · MACD底背离 · 放量上涨）\n\n")
         parts.append(
             "选股条件：" + " · ".join(c["label"] for c in MIDTERM_SELECT_CONDITIONS) + "\n\n"
         )

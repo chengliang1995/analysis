@@ -154,9 +154,65 @@ class MorningSelector:
             meta["morning_tags"] = tags
         return True, "", round(current, 2), meta
 
-    def _morning_filters(self, item: dict, quote: Optional[pd.Series]) -> Tuple[bool, str, float]:
+    def _evaluate_relaxed_buy(
+        self,
+        item: dict,
+        quote: Optional[pd.Series],
+    ) -> Tuple[bool, str, float, dict]:
+        """
+        非早盘窗口或实时行情缺失时，用快照价模拟成交（略放宽）。
+        用于缓存选股 / 收盘后补跑模拟。
+        """
+        price = 0.0
+        pre_close = 0.0
+        open_px = 0.0
+
+        if quote is not None and not (isinstance(quote, pd.Series) and quote.empty):
+            open_px = float(quote.get("open", 0) or 0)
+            pre_close = float(quote.get("pre_close", 0) or 0)
+            price = float(quote.get("close", quote.get("price", 0)) or 0)
+
+        if price <= 0:
+            price = float(item.get("price", item.get("live_price", 0)) or 0)
+        if pre_close <= 0:
+            pre_close = float(item.get("pre_close", 0) or 0)
+        if open_px <= 0:
+            open_px = float(item.get("open_price", price) or price)
+
+        if price <= 0:
+            return False, "无可用价格", 0.0, {}
+
+        pct = float(item.get("pct_chg", 0) or 0)
+        if pct <= -9.5:
+            return False, "大跌/跌停", 0.0, {}
+        if pct >= 9.8:
+            return False, "涨停难成交", 0.0, {}
+
+        gap_pct = (open_px - pre_close) / pre_close * 100 if pre_close > 0 else pct
+        meta = {
+            "open_price": round(open_px, 2),
+            "live_price": round(price, 2),
+            "pre_close": round(pre_close, 2),
+            "gap_pct": round(gap_pct, 2),
+            "intraday_pct": 0.0,
+            "buy_zone": "快照价",
+            "buy_price_suggest": round(price, 2),
+            "morning_bonus": 0,
+            "morning_tags": ["快照成交"],
+        }
+        return True, "", round(price, 2), meta
+
+    def _morning_filters(
+        self,
+        item: dict,
+        quote: Optional[pd.Series],
+        *,
+        relaxed: bool = False,
+    ) -> Tuple[bool, str, float]:
         """兼容旧接口，内部走实时买点评估。"""
         ok, reason, buy_price, meta = self._evaluate_live_buy(item, quote)
+        if not ok and relaxed:
+            ok, reason, buy_price, meta = self._evaluate_relaxed_buy(item, quote)
         if ok:
             item.update(meta)
             if meta.get("morning_tags"):
@@ -167,9 +223,13 @@ class MorningSelector:
         self,
         trade_date: Optional[str] = None,
         show_progress: bool = True,
+        *,
+        relaxed: bool = False,
     ) -> pd.DataFrame:
         if show_progress:
             print(f"早盘选股窗口 {self.config.select_start}-{self.config.select_end}")
+            if relaxed:
+                print("  放宽模式：非早盘窗口或允许快照价成交")
 
         market = get_market_spot(verbose=show_progress, force_refresh=False)
         if market.empty:
@@ -177,8 +237,8 @@ class MorningSelector:
 
         from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
 
-        tuning = build_selection_tuning()
-        effective_min = max(self.config.min_score, tuning.ultra_min_score)
+        tuning = build_selection_tuning(for_sim=True)
+        effective_min = max(self.config.min_score - (3 if relaxed else 0), tuning.ultra_min_score)
         if show_progress and tuning.notes:
             print(format_tuning_summary(tuning))
 
@@ -203,7 +263,7 @@ class MorningSelector:
             code = str(row["code"]).zfill(6)
             item = row.to_dict()
             q = quote_map.loc[code] if code in quote_map.index else None
-            ok, reason, bonus = self._morning_filters(item, q)
+            ok, reason, bonus = self._morning_filters(item, q, relaxed=relaxed)
             if ok:
                 item["final_score"] = item["ultra_short_score"] + bonus
                 filtered.append(item)
@@ -324,11 +384,26 @@ class SimReplayEngine:
             self._save_state()
             return pd.DataFrame()
 
-        picks = self.selector.select(trade_date=today, show_progress=show_progress)
+        relaxed = force or not self._is_select_window()
+        picks = self.selector.select(trade_date=today, show_progress=show_progress, relaxed=relaxed)
+        if picks.empty:
+            from quantpy.daily_advisor import load_ultra_short_scan_cache
+
+            cached = load_ultra_short_scan_cache()
+            if not cached.empty:
+                pool_n = max(self.config.max_positions * 3, 8)
+                picks = cached.head(pool_n).copy()
+                if "rank" not in picks.columns:
+                    picks["rank"] = range(1, len(picks) + 1)
+                if show_progress:
+                    print(f"扫描无结果，回退今日超短缓存 {len(picks)} 只")
+            elif not relaxed:
+                if show_progress:
+                    print("尝试放宽买点条件重新扫描...")
+                picks = self.selector.select(trade_date=today, show_progress=show_progress, relaxed=True)
         if picks.empty:
             if show_progress:
                 print("早盘无符合条件标的")
-            self.state["last_select_date"] = today
             self._save_state()
             return picks
 
@@ -349,6 +424,8 @@ class SimReplayEngine:
             item = row.to_dict()
             q = live_map.loc[code] if code in live_map.index else None
             ok, reason, buy_price, meta = self.selector._evaluate_live_buy(item, q)
+            if not ok and relaxed:
+                ok, reason, buy_price, meta = self.selector._evaluate_relaxed_buy(item, q)
             if not ok:
                 skipped_buy.append(f"{name}({code}): {reason}")
                 continue
@@ -385,8 +462,11 @@ class SimReplayEngine:
             self.state["positions"].append(asdict(pos))
             bought.append({**item, **meta, "buy_price": buy_price})
 
-        self.state["last_select_date"] = today
-        self.state["trading_day_count"] = int(self.state.get("trading_day_count", 0)) + 1
+        if bought:
+            self.state["last_select_date"] = today
+            self.state["trading_day_count"] = int(self.state.get("trading_day_count", 0)) + 1
+        elif not self._is_select_window():
+            self.state["last_select_date"] = today
         self._save_state()
 
         if show_progress and skipped_buy:

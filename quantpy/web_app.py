@@ -88,14 +88,12 @@ def _ultra_short_records(df: pd.DataFrame, top_n: int = 10) -> list[dict]:
 
 
 def load_cached_ultra_short(top_n: int = 10) -> list[dict]:
-    files = sorted(OUTPUT_DIR.glob("ultra_short_*.csv"), reverse=True)
-    if not files:
+    from quantpy.daily_advisor import load_ultra_short_scan_cache
+
+    df = load_ultra_short_scan_cache()
+    if df.empty:
         return []
-    try:
-        df = pd.read_csv(files[0], dtype={"code": str})
-        return _ultra_short_records(df, top_n=top_n)
-    except (OSError, pd.errors.ParserError, ValueError):
-        return []
+    return _ultra_short_records(df, top_n=top_n)
 
 
 def load_latest_report_meta() -> dict:

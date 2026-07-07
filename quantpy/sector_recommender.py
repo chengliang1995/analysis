@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from quantpy.paths import OUTPUT_DIR
 from quantpy.report_format import format_markdown_table, truncate_display
-from quantpy.stock_data import fetch_board_constituents, fetch_board_list
+from quantpy.stock_data import fetch_board_constituents, fetch_board_list, is_bse_code
 
 BOARD_TYPE_LABELS = {
     "concept": "概念板块",
@@ -29,6 +29,8 @@ def _score_member(member: dict, leader_code: str) -> Optional[dict]:
     if "ST" in name.upper() or "退" in name:
         return None
     code = str(member.get("code") or "").zfill(6)
+    if is_bse_code(code):
+        return None
     pct = float(member.get("pct_chg") or 0)
     turnover = float(member.get("turnover") or 0)
     if pct <= -9.5:

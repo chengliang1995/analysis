@@ -163,11 +163,45 @@ def show_portfolio(init: bool = False) -> dict:
     return stats
 
 
+def load_ultra_short_scan_cache(
+    max_age_hours: int = 36,
+    min_rows: int = 1,
+) -> pd.DataFrame:
+    """读取今日/最近一次超短扫描缓存（用于模拟选股回退）。"""
+    today_tag = datetime.now().strftime("%Y%m%d")
+    today_path = OUTPUT_DIR / f"ultra_short_{today_tag}.csv"
+    candidates = [today_path] if today_path.exists() else []
+    candidates.extend(sorted(OUTPUT_DIR.glob("ultra_short_*.csv"), reverse=True))
+    seen: set = set()
+    for path in candidates:
+        key = path.name
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.exists():
+            continue
+        try:
+            age_h = (datetime.now().timestamp() - path.stat().st_mtime) / 3600
+            if age_h > max_age_hours:
+                continue
+            df = pd.read_csv(path, dtype={"code": str})
+            if len(df) < min_rows:
+                continue
+            if "code" in df.columns:
+                df["code"] = df["code"].astype(str).str.zfill(6)
+            return df.sort_values(
+                "ultra_short_score", ascending=False,
+            ).reset_index(drop=True) if "ultra_short_score" in df.columns else df
+        except (OSError, pd.errors.ParserError, ValueError):
+            continue
+    return pd.DataFrame()
+
+
 def run_ultra_short_scan(top_prefilter: int = 300, min_score: int = 35) -> pd.DataFrame:
     print("=" * 60)
     print("超短个股捕捉")
     print("=" * 60)
-    tuning = build_selection_tuning()
+    tuning = build_selection_tuning(for_sim=False)
     if tuning.notes:
         print(format_tuning_summary(tuning))
     print("刷新全市场最新价...")

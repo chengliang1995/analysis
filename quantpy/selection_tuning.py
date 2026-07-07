@@ -13,6 +13,15 @@ from quantpy.paths import SIM_REVIEW_DIR, SIM_STATE_FILE
 
 ULTRA_SHORT_STRATEGIES = frozenset({"超短", "涨停", "短线"})
 
+# 强势标签别名：复盘偏好「封板」时，连板/高换手等同类信号一并认可
+ULTRA_STRONG_TAG_GROUPS: Dict[str, List[str]] = {
+    "封板": ["封板", "强势封板", "涨停不破开", "连板"],
+    "强势封板": ["强势封板", "封板", "涨停不破开", "连板"],
+    "涨停不破开": ["涨停不破开", "强势封板", "封板", "连板"],
+    "连板": ["连板", "封板", "强势封板"],
+    "高换手": ["高换手", "放量"],
+}
+
 
 @dataclass
 class SelectionTuning:
@@ -25,7 +34,9 @@ class SelectionTuning:
     ultra_penalize_3d_gain_above: Optional[float] = None
     ultra_penalize_pct_above: Optional[float] = None
     ultra_penalize_unsealed_above_pct: Optional[float] = None
+    ultra_preferred_tags: Optional[List[str]] = None
     require_ultra_tag_any: Optional[List[str]] = None
+    strict_tag_filter: bool = False
     midterm_ma20_chase_penalty: int = 0
     midterm_ma20_chase_ratio: float = 1.08
     midterm_penalize_ret_20d_below: Optional[float] = None
@@ -96,22 +107,23 @@ def _apply_sim_trade_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None
     tuning.sources.append(f"sim_trades(n={len(df)})")
 
     if win_rate < 45:
-        tuning.ultra_min_score = max(tuning.ultra_min_score, 42)
+        tuning.ultra_min_score = max(tuning.ultra_min_score, 40)
         tuning.ultra_penalize_unsealed_above_pct = 7.0
         tuning.ultra_tag_bonus.setdefault("涨停不破开", 8)
         tuning.ultra_tag_bonus.setdefault("强势封板", 6)
-        tuning.notes.append(f"模拟复盘胜率 {win_rate:.0f}% 偏低，提高评分门槛并偏好封板/不破开")
+        tuning.ultra_preferred_tags = ["涨停不破开", "强势封板", "封板", "连板"]
+        tuning.notes.append(f"模拟复盘胜率 {win_rate:.0f}% 偏低，偏好封板/不破开（软筛选）")
 
     if avg_profit < 0:
-        tuning.ultra_min_score = max(tuning.ultra_min_score, 44)
+        tuning.ultra_min_score = max(tuning.ultra_min_score, 42)
         tuning.ultra_penalize_3d_gain_above = 22.0
         tuning.notes.append(f"模拟均收益 {avg_profit:+.2f}% 为负，抑制 3 日大涨追高")
 
     by_score = _bucket_score_stats(df, "score")
     for row in by_score:
         if row["bucket"] == "<60" and row["count"] >= 2 and row["win_rate"] < 40:
-            tuning.ultra_min_score = max(tuning.ultra_min_score, 45)
-            tuning.notes.append("低评分(<60)标的胜率差，抬高入选门槛")
+            tuning.ultra_min_score = max(tuning.ultra_min_score, 43)
+            tuning.notes.append("低评分(<60)标的胜率差，适度抬高入选门槛")
         if row["bucket"] in ("75-90", "90+") and row["win_rate"] >= 55 and row["avg_profit"] > 1:
             tuning.ultra_tag_bonus.setdefault("涨停不破开", 5)
             tuning.notes.append(f"评分 {row['bucket']} 区间表现较好，强化同类信号权重")
@@ -174,9 +186,19 @@ def _apply_real_review(tuning: SelectionTuning, review: dict) -> None:
     for strat in review.get("by_strategy") or []:
         name = str(strat.get("strategy") or "")
         if name in ULTRA_SHORT_STRATEGIES and strat.get("win_rate", 100) < 50:
-            tuning.require_ultra_tag_any = ["涨停不破开", "强势封板", "封板"]
-            tuning.ultra_min_score = max(tuning.ultra_min_score, 40)
-            tuning.notes.append(f"实盘「{name}」胜率 {strat.get('win_rate')}% 偏低，仅保留封板类强势信号")
+            tuning.ultra_preferred_tags = ["涨停不破开", "强势封板", "封板", "连板", "高换手"]
+            tuning.ultra_tag_bonus.setdefault("强势封板", 6)
+            tuning.ultra_tag_bonus.setdefault("涨停不破开", 5)
+            tuning.ultra_min_score = max(tuning.ultra_min_score, 38)
+            trade_n = int(strat.get("count") or strat.get("trade_count") or 0)
+            win_rate = float(strat.get("win_rate", 100))
+            tuning.notes.append(
+                f"实盘「{name}」胜率 {win_rate}% 偏低，偏好封板类强势信号（软筛选）"
+            )
+            if win_rate < 25 and trade_n >= 8:
+                tuning.require_ultra_tag_any = ["涨停不破开", "强势封板", "封板", "连板"]
+                tuning.strict_tag_filter = True
+                tuning.notes.append("样本充足且胜率极低，启用封板类硬筛")
 
     for strat in review.get("by_strategy") or []:
         name = str(strat.get("strategy") or "")
@@ -196,7 +218,7 @@ def _apply_real_review(tuning: SelectionTuning, review: dict) -> None:
         tuning.ultra_tag_bonus.setdefault("涨停不破开", 3)
 
 
-def build_selection_tuning() -> SelectionTuning:
+def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
     """汇总模拟复盘、AI 学习、实盘复盘，生成选股调优参数。"""
     tuning = SelectionTuning()
 
@@ -204,8 +226,11 @@ def build_selection_tuning() -> SelectionTuning:
         from quantpy.sim_replay import SimReplayEngine
 
         engine = SimReplayEngine()
-        tuning.ultra_min_score = max(tuning.ultra_min_score, int(engine.config.min_score))
+        base_min = int(engine.config.min_score)
+        tuning.ultra_min_score = max(tuning.ultra_min_score, base_min)
         tuning.sources.append("sim_config")
+        if for_sim:
+            tuning.ultra_min_score = min(tuning.ultra_min_score, max(35, base_min - 3))
     except Exception:
         pass
 
@@ -214,7 +239,7 @@ def build_selection_tuning() -> SelectionTuning:
 
     review_stats = _load_latest_sim_review_stats()
     if review_stats.get("win_rate", 100) < 45:
-        tuning.ultra_min_score = max(tuning.ultra_min_score, 42)
+        tuning.ultra_min_score = max(tuning.ultra_min_score, 40)
 
     from quantpy.ai_learning_optimizer import load_latest_ai_learning
     from quantpy.real_portfolio_reviewer import load_latest_real_review
@@ -222,9 +247,25 @@ def build_selection_tuning() -> SelectionTuning:
     _apply_ai_learning(tuning, load_latest_ai_learning())
     _apply_real_review(tuning, load_latest_real_review())
 
+    if for_sim:
+        tuning.strict_tag_filter = False
+        tuning.require_ultra_tag_any = None
+
     tuning.ultra_min_score = int(max(35, min(65, tuning.ultra_min_score)))
     tuning.midterm_min_score = int(max(50, min(70, tuning.midterm_min_score)))
     return tuning
+
+
+def _tags_match_preferred(tags: str, preferred: Sequence[str]) -> bool:
+    if not preferred:
+        return False
+    for tag in preferred:
+        if tag in tags:
+            return True
+        for alias in ULTRA_STRONG_TAG_GROUPS.get(tag, []):
+            if alias in tags:
+                return True
+    return False
 
 
 def apply_ultra_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Optional[dict]:
@@ -255,8 +296,15 @@ def apply_ultra_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Optiona
     if chase_pct is not None and pct > chase_pct and not sealed:
         score -= 8
 
-    if tuning.require_ultra_tag_any:
-        if not any(t in tags for t in tuning.require_ultra_tag_any):
+    preferred = tuning.ultra_preferred_tags or []
+    if preferred:
+        if _tags_match_preferred(tags, preferred):
+            score += 6
+        else:
+            score -= 3
+
+    if tuning.require_ultra_tag_any and tuning.strict_tag_filter:
+        if not _tags_match_preferred(tags, tuning.require_ultra_tag_any):
             return None
 
     item = dict(item)
