@@ -175,12 +175,20 @@ class MorningSelector:
         if market.empty:
             return pd.DataFrame()
 
+        from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
+
+        tuning = build_selection_tuning()
+        effective_min = max(self.config.min_score, tuning.ultra_min_score)
+        if show_progress and tuning.notes:
+            print(format_tuning_summary(tuning))
+
         picks = self.scanner.scan_market(
             stock_list=market,
             top_prefilter=self.config.top_prefilter,
-            min_score=self.config.min_score,
+            min_score=effective_min,
             max_workers=8,
             show_progress=show_progress,
+            tuning=tuning,
         )
         if picks.empty:
             return pd.DataFrame()

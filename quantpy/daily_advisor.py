@@ -41,6 +41,7 @@ from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learni
 from quantpy.midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.real_portfolio_reviewer import load_latest_real_review, run_real_portfolio_review
+from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
 from quantpy.ultra_short_scanner import UltraShortScanner
 
 
@@ -166,6 +167,9 @@ def run_ultra_short_scan(top_prefilter: int = 300, min_score: int = 35) -> pd.Da
     print("=" * 60)
     print("超短个股捕捉")
     print("=" * 60)
+    tuning = build_selection_tuning()
+    if tuning.notes:
+        print(format_tuning_summary(tuning))
     print("刷新全市场最新价...")
     get_market_spot(verbose=True, force_refresh=False)
     scanner = UltraShortScanner()
@@ -174,6 +178,7 @@ def run_ultra_short_scan(top_prefilter: int = 300, min_score: int = 35) -> pd.Da
         min_score=min_score,
         max_workers=8,
         show_progress=True,
+        tuning=tuning,
     )
     print(f"\n捕捉完成: {len(df)} 只超短标的")
     if not df.empty:

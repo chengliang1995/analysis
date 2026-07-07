@@ -176,6 +176,7 @@ class UltraShortScanner:
     name: str,
     spot: Optional[dict] = None,
     lookback_days: int = 10,
+    tuning: Optional[object] = None,
   ) -> Optional[Dict]:
     hist = get_stock_hist(code, days=lookback_days + 25)
     if hist.empty or len(hist) < 5:
@@ -268,7 +269,7 @@ class UltraShortScanner:
     if score < 25:
       return None
 
-    return {
+    item = {
       "code": str(code).zfill(6),
       "name": name,
       "price": round(price, 2),
@@ -287,6 +288,13 @@ class UltraShortScanner:
       "limit_date": str(limit_signal["limit_date"]) if limit_signal else "",
       "days_after_limit": limit_signal.get("days_after_limit", "") if limit_signal else "",
     }
+    return self._apply_tuning_to_item(item, tuning)
+
+  def _apply_tuning_to_item(self, item: dict, tuning: Optional[object]) -> Optional[Dict]:
+    if not tuning:
+      return item
+    from quantpy.selection_tuning import apply_ultra_tuning
+    return apply_ultra_tuning(item, tuning)
 
   def prefilter_spot(self, stock_list: pd.DataFrame, min_pct: float = 3.0, min_turnover: float = 2.0) -> pd.DataFrame:
     """从行情快照初筛，减少深度分析数量。"""
@@ -318,6 +326,7 @@ class UltraShortScanner:
     lookback_days: int = 10,
     min_score: int = 35,
     show_progress: bool = True,
+    tuning: Optional[object] = None,
   ) -> pd.DataFrame:
     """
     全市场超短扫描。
@@ -325,6 +334,13 @@ class UltraShortScanner:
     1. 行情快照初筛（涨幅/换手）
     2. 对候选股做 K 线深度评分
     """
+    if tuning is None:
+      from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
+      tuning = build_selection_tuning()
+    min_score = max(min_score, tuning.ultra_min_score)
+    if show_progress and tuning.notes:
+      print(format_tuning_summary(tuning))
+
     if stock_list is None:
       if show_progress:
         print("加载股票列表并刷新最新价...")
@@ -360,7 +376,7 @@ class UltraShortScanner:
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
       futures = {
-        executor.submit(self._analyze_single, code, name, spot, lookback_days): code
+        executor.submit(self._analyze_single, code, name, spot, lookback_days, tuning): code
         for code, name, spot in tasks
       }
       for future in as_completed(futures):

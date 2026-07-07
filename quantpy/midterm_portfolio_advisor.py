@@ -17,6 +17,7 @@ import pandas as pd
 
 from quantpy.paths import MIDTERM_OUTPUT_DIR
 from quantpy.report_format import format_markdown_table, truncate_display
+from quantpy.selection_tuning import SelectionTuning, build_selection_tuning, format_tuning_summary
 from quantpy.stock_data import (
     ensure_industry_map,
     get_fundamental_map,
@@ -76,6 +77,7 @@ def _evaluate_midterm_technicals(
     spot_pct: float,
     turnover: float,
     min_daily_gain_pct: float = 2.0,
+    tuning: Optional[SelectionTuning] = None,
 ) -> Optional[dict]:
     """
     中线技术面评估（放宽版）：保留趋势主线，其余为加分项。
@@ -173,7 +175,18 @@ def _evaluate_midterm_technicals(
     if ma60 > 0 and price <= ma60 * 1.15:
         score += 3
 
-    if score < MIDTERM_MIN_SCORE:
+    if tuning and tuning.midterm_ma20_chase_penalty > 0 and ma20 > 0:
+        if price > ma20 * tuning.midterm_ma20_chase_ratio:
+            score -= tuning.midterm_ma20_chase_penalty
+            tags.append("偏离MA20")
+
+    if tuning and tuning.midterm_penalize_ret_20d_below is not None:
+        if ret_20d < tuning.midterm_penalize_ret_20d_below:
+            score -= 8
+            tags.append("20日偏弱")
+
+    min_score = tuning.midterm_min_score if tuning else MIDTERM_MIN_SCORE
+    if score < min_score:
         return None
 
     return {
@@ -630,7 +643,13 @@ class MidtermPortfolioAdvisor:
             "actions": actions,
         }
 
-    def _score_candidate(self, code: str, name: str, spot: Optional[dict] = None) -> Optional[dict]:
+    def _score_candidate(
+        self,
+        code: str,
+        name: str,
+        spot: Optional[dict] = None,
+        tuning: Optional[SelectionTuning] = None,
+    ) -> Optional[dict]:
         hist = get_stock_hist(code, days=90)
         if hist.empty or len(hist) < 20:
             return None
@@ -645,7 +664,7 @@ class MidtermPortfolioAdvisor:
             if pd.notna(last_pct):
                 spot_pct = float(last_pct)
 
-        tech = _evaluate_midterm_technicals(hist, spot_pct, turnover)
+        tech = _evaluate_midterm_technicals(hist, spot_pct, turnover, tuning=tuning)
         if tech is None:
             return None
 
@@ -705,8 +724,13 @@ class MidtermPortfolioAdvisor:
         industry: Optional[str] = None,
         performance: Optional[str] = None,
         early_stop_pass: int = 0,
+        tuning: Optional[SelectionTuning] = None,
     ) -> Tuple[pd.DataFrame, dict]:
         """中线个股推荐（排除已持仓，支持行业/业绩筛选）。返回 (DataFrame, 筛选统计)。"""
+        if tuning is None:
+            tuning = build_selection_tuning()
+        if show_progress and tuning.notes:
+            _progress(format_tuning_summary(tuning), show_progress)
         select_stats: dict = {
             "market_total": 0,
             "prefilter_count": 0,
@@ -717,6 +741,7 @@ class MidtermPortfolioAdvisor:
             "excluded_held": 0,
             "filter": {},
             "fallback_used": False,
+            "tuning": tuning.to_dict(),
         }
         exclude = {str(c).zfill(6) for c in (exclude_codes or [])}
         industry = (industry or "").strip() or None
@@ -837,7 +862,7 @@ class MidtermPortfolioAdvisor:
                 "profit_yoy": fund.get("profit_yoy"),
             }
             try:
-                item = self._score_candidate(code, name, spot)
+                item = self._score_candidate(code, name, spot, tuning=tuning)
             except Exception as exc:
                 scored_errors += 1
                 if scored_errors <= 3:
@@ -960,6 +985,7 @@ class MidtermPortfolioAdvisor:
         _progress(f"  优化建议 {len(optimization.get('suggestions', []))} 条", show_progress)
 
         held_codes = [p["code"] for p in all_positions]
+        tuning = build_selection_tuning()
         _progress("[3/4] 全市场推荐扫描", show_progress)
         recommendations, select_stats = self.recommend_stocks(
             exclude_codes=held_codes,
@@ -968,6 +994,7 @@ class MidtermPortfolioAdvisor:
             industry=industry,
             performance=performance,
             early_stop_pass=30,
+            tuning=tuning,
         )
 
         _progress("[4/4] 生成报告", show_progress)

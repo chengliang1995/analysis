@@ -67,11 +67,16 @@ def run_sector_recommendations(
 
     _progress(f"板块推荐 · {label}", show_progress)
     _progress("  拉取板块列表…", show_progress)
-    boards = fetch_board_list(board_type)
+    boards = fetch_board_list(board_type, force_refresh=False, verbose=show_progress)
+    if not boards:
+        boards = fetch_board_list(board_type, force_refresh=True, verbose=show_progress)
+    data_source = (boards[0].get("source") if boards else "") or ""
+    if data_source == "spot_industry" and board_type == "concept":
+        _progress("  概念板块接口暂不可用，已切换为行情行业聚合", show_progress)
     if not boards:
         return {
             "ok": False,
-            "message": "板块列表为空，请稍后重试",
+            "message": "板块列表为空（东财接口暂不可用，且行情行业数据不足），请稍后重试",
             "board_type": board_type,
             "board_type_label": label,
             "hot_boards": [],
@@ -106,7 +111,7 @@ def run_sector_recommendations(
         bcode = board.get("code") or ""
         bname = board.get("name") or bcode
         _progress(f"  [{i}/{len(target_boards)}] {bname} ({bcode})", show_progress)
-        members = fetch_board_constituents(bcode)
+        members = fetch_board_constituents(bcode, verbose=show_progress)
         scored: List[dict] = []
         for m in members:
             item = _score_member(m, str(board.get("leader_code") or ""))
@@ -144,6 +149,7 @@ def run_sector_recommendations(
             "board_count": len(target_boards),
             "stock_count": len(recommendations),
             "total_boards": len(boards),
+            "data_source": data_source or "eastmoney",
         },
         "markdown": format_sector_report_markdown({
             "board_type_label": label,

@@ -1,7 +1,7 @@
 {
   "ultra_short_capital": 22850,
-  "midterm_capital": 149994.9,
-  "total_capital": 172844.9,
+  "midterm_capital": 152399.9,
+  "total_capital": 175249.9,
   "initial_ultra_short_capital": 20000.0,
   "initial_midterm_capital": 150000.0,
   "journal_closed_synced": true,
@@ -9,27 +9,9 @@
     {
       "code": "002472",
       "name": "双环传动",
-      "quantity": 300,
-      "cost_price": 37.52,
-      "buy_date": "2026-06-26",
-      "strategy": "手动",
-      "note": ""
-    },
-    {
-      "code": "603379",
-      "name": "三美股份",
-      "quantity": 100,
-      "cost_price": 55.5,
-      "buy_date": "2026-06-22",
-      "strategy": "手动",
-      "note": ""
-    },
-    {
-      "code": "002326",
-      "name": "永太科技",
-      "quantity": 1000,
-      "cost_price": 23.61,
-      "buy_date": "2026-06-30",
+      "quantity": 700,
+      "cost_price": 40.88,
+      "buy_date": "2026-07-02",
       "strategy": "手动",
       "note": ""
     },
@@ -39,6 +21,15 @@
       "quantity": 6000,
       "cost_price": 13.46,
       "buy_date": "2026-06-22",
+      "strategy": "手动",
+      "note": ""
+    },
+    {
+      "code": "001367",
+      "name": "海森药业",
+      "quantity": 1200,
+      "cost_price": 20.5,
+      "buy_date": "2026-07-06",
       "strategy": "手动",
       "note": ""
     }
@@ -315,6 +306,70 @@
       "note": "",
       "id": "7e3eca322581",
       "closed_at": "2026-06-30T14:59:03.235047"
+    },
+    {
+      "code": "002326",
+      "name": "永太科技",
+      "quantity": 1000,
+      "cost_price": 23.61,
+      "sell_price": 25.33,
+      "buy_date": "2026-06-30",
+      "sell_date": "2026-07-01",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": 1720.0,
+      "profit_pct": 7.29,
+      "note": "",
+      "id": "394e0a706714",
+      "closed_at": "2026-07-01T11:36:16.868078"
+    },
+    {
+      "code": "603379",
+      "name": "三美股份",
+      "quantity": 100,
+      "cost_price": 55.5,
+      "sell_price": 83.1,
+      "buy_date": "2026-06-22",
+      "sell_date": "2026-07-01",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": 2760.0,
+      "profit_pct": 49.73,
+      "note": "",
+      "id": "a2f9c1d79d93",
+      "closed_at": "2026-07-01T11:36:46.082612"
+    },
+    {
+      "code": "002565",
+      "name": "顺灏股份",
+      "quantity": 1000,
+      "cost_price": 12.61,
+      "sell_price": 12.2,
+      "buy_date": "2026-07-03",
+      "sell_date": "2026-07-06",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": -410.0,
+      "profit_pct": -3.25,
+      "note": "",
+      "id": "ba777e37e95f",
+      "closed_at": "2026-07-06T11:12:25.470273"
+    },
+    {
+      "code": "600410",
+      "name": "华胜天成",
+      "quantity": 1500,
+      "cost_price": 16.25,
+      "sell_price": 15.14,
+      "buy_date": "2026-07-01",
+      "sell_date": "2026-07-06",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": -1665.0,
+      "profit_pct": -6.83,
+      "note": "",
+      "id": "a4ef0944620b",
+      "closed_at": "2026-07-06T11:12:44.618620"
     }
   ]
 }

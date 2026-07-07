@@ -1221,7 +1221,9 @@
       const stats = sector.stats || {};
       badge.textContent = `${label} · ${stats.stock_count || 0} 只`;
       if (sector.generated_at) {
-        summaryEl.textContent = `更新：${sector.generated_at} · ${stats.board_count || 0} 个板块 · ${stats.stock_count || 0} 只推荐`;
+        const src = (sector.stats && sector.stats.data_source === "spot_industry")
+          ? "（行情行业聚合，东财板块接口暂不可用）" : "";
+        summaryEl.textContent = `更新：${sector.generated_at} · ${stats.board_count || 0} 个板块 · ${stats.stock_count || 0} 只推荐${src}`;
         summaryEl.style.display = "block";
       }
       if (sector.board_type) {

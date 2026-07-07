@@ -1262,6 +1262,30 @@ BOARD_LIST_FS = {
 
 BOARD_LIST_FIELDS = "f3,f8,f12,f14,f104,f105,f128,f136,f140"
 
+BOARD_LIST_EM_CONFIG = {
+    "concept": {
+        "hosts": ["https://79.push2.eastmoney.com", "https://17.push2.eastmoney.com"],
+        "fs": "m:90 t:3 f:!50",
+        "fid": "f12",
+        "fields": (
+            "f2,f3,f4,f8,f12,f14,f15,f16,f17,f18,f20,f21,f24,f25,f22,"
+            "f33,f11,f62,f128,f124,f107,f104,f105,f136"
+        ),
+    },
+    "industry": {
+        "hosts": ["https://17.push2.eastmoney.com", "https://79.push2.eastmoney.com"],
+        "fs": "m:90 t:2 f:!50",
+        "fid": "f12",
+        "fields": (
+            "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,"
+            "f23,f24,f25,f26,f22,f33,f11,f62,f128,f136,f115,f152,f124,f107,f104,f105,"
+            "f140,f141"
+        ),
+    },
+}
+
+INDUSTRY_BOARD_PREFIX = "IND:"
+
 
 def _board_cache_fresh(path: Path, max_age_minutes: int = BOARD_CACHE_MAX_AGE_MINUTES) -> bool:
     if not path.exists():
@@ -1283,41 +1307,183 @@ def _fetch_em_clist(
     fid: str = "f3",
     page_size: int = 100,
     max_pages: int = 20,
+    hosts: Optional[List[str]] = None,
 ) -> List[dict]:
-    headers = {**DEFAULT_HEADERS, "Referer": "https://quote.eastmoney.com/"}
-    for host in EM_BOARD_HOSTS:
+    headers = {
+        **DEFAULT_HEADERS,
+        "Referer": "https://quote.eastmoney.com/center/boardlist.html",
+    }
+    host_list = hosts or EM_BOARD_HOSTS
+    for host in host_list:
         rows: List[dict] = []
         url = f"{host}/api/qt/clist/get"
-        try:
-            for page in range(1, max_pages + 1):
-                params = {
-                    "pn": str(page),
-                    "pz": str(page_size),
-                    "po": "1",
-                    "np": "1",
-                    "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                    "fltt": "2",
-                    "invt": "2",
-                    "fid": fid,
-                    "fs": fs,
-                    "fields": fields,
-                }
-                time.sleep(0.12)
-                response = requests.get(url, headers=headers, params=params, timeout=20)
-                response.raise_for_status()
-                data = response.json().get("data") or {}
-                batch = data.get("diff") or []
-                if not batch:
-                    break
-                rows.extend(batch)
-                total = int(data.get("total") or 0)
-                if total and len(rows) >= total:
-                    break
-            if rows:
-                return rows
-        except Exception:
-            continue
+        for attempt in range(3):
+            try:
+                rows = []
+                for page in range(1, max_pages + 1):
+                    params = {
+                        "pn": str(page),
+                        "pz": str(page_size),
+                        "po": "1",
+                        "np": "1",
+                        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                        "fltt": "2",
+                        "invt": "2",
+                        "fid": fid,
+                        "fs": fs,
+                        "fields": fields,
+                    }
+                    time.sleep(0.15 * (attempt + 1))
+                    response = requests.get(url, headers=headers, params=params, timeout=25)
+                    response.raise_for_status()
+                    data = response.json().get("data") or {}
+                    batch = data.get("diff") or []
+                    if not batch:
+                        break
+                    rows.extend(batch)
+                    total = int(data.get("total") or 0)
+                    if total and len(rows) >= total:
+                        break
+                if rows:
+                    return rows
+            except Exception:
+                time.sleep(0.4 * (attempt + 1))
+                continue
     return []
+
+
+def _fetch_em_board_list(board_type: str) -> List[dict]:
+    cfg = BOARD_LIST_EM_CONFIG.get(board_type) or BOARD_LIST_EM_CONFIG["concept"]
+    rows = _fetch_em_clist(
+        cfg["fs"],
+        cfg["fields"],
+        fid=cfg["fid"],
+        page_size=100,
+        max_pages=10,
+        hosts=cfg.get("hosts"),
+    )
+    if not rows:
+        rows = _fetch_em_clist(
+            BOARD_LIST_FS[board_type],
+            BOARD_LIST_FIELDS,
+            fid="f3",
+            page_size=100,
+            max_pages=10,
+        )
+    return [_parse_board_row(r) for r in rows if r.get("f12")]
+
+
+def _fetch_board_list_from_spot_industry(verbose: bool = False) -> List[dict]:
+    """东财板块接口不可用时：用全市场行情 + 行业缓存聚合行业板块。"""
+    market = get_market_spot(verbose=verbose, force_refresh=False)
+    if market.empty:
+        return []
+
+    code_col = get_stock_code_column(market)
+    name_col = get_stock_name_column(market)
+    pct_col = next((c for c in ("pct_chg", "changepercent", "涨跌幅") if c in market.columns), None)
+    if not code_col or not pct_col:
+        return []
+
+    df = market.copy()
+    df["_code"] = df[code_col].astype(str).str.zfill(6)
+    df["_pct"] = pd.to_numeric(df[pct_col], errors="coerce").fillna(0)
+    if name_col:
+        df["_name"] = df[name_col].astype(str)
+    else:
+        df["_name"] = df["_code"]
+
+    industry_map = _load_industry_cache()
+    if len(industry_map) < 40:
+        seed = (
+            df.sort_values("_pct", ascending=False)
+            .head(50)["_code"]
+            .tolist()
+        )
+        need = [c for c in seed if c not in industry_map][:35]
+        if need:
+            industry_map = ensure_industry_map(need, verbose=verbose)
+        else:
+            industry_map = _load_industry_cache()
+    else:
+        industry_map = {**industry_map}
+
+    df["_industry"] = df["_code"].map(industry_map).fillna("").astype(str).str.strip()
+    df = df[df["_industry"] != ""]
+    if df.empty:
+        return []
+
+    items: List[dict] = []
+    for industry, grp in df.groupby("_industry"):
+        pct_vals = grp["_pct"]
+        up_count = int((pct_vals > 0.05).sum())
+        down_count = int((pct_vals < -0.05).sum())
+        avg_pct = float(pct_vals.mean())
+        leader_idx = pct_vals.idxmax()
+        leader = grp.loc[leader_idx]
+        board_score = round(avg_pct * 2 + up_count * 0.35 - down_count * 0.15, 2)
+        items.append({
+            "code": f"{INDUSTRY_BOARD_PREFIX}{industry}",
+            "name": industry,
+            "pct_chg": round(avg_pct, 2),
+            "turnover": 0.0,
+            "up_count": up_count,
+            "down_count": down_count,
+            "leader_name": str(leader["_name"]),
+            "leader_code": str(leader["_code"]),
+            "leader_pct": round(float(leader["_pct"]), 2),
+            "board_score": board_score,
+            "source": "spot_industry",
+        })
+    items.sort(key=lambda x: x.get("board_score", 0), reverse=True)
+    return items
+
+
+def _fetch_board_constituents_from_spot_industry(industry_name: str) -> List[dict]:
+    industry_name = str(industry_name or "").strip()
+    if not industry_name:
+        return []
+
+    market = get_market_spot(verbose=False, force_refresh=False)
+    if market.empty:
+        return []
+
+    code_col = get_stock_code_column(market)
+    name_col = get_stock_name_column(market)
+    pct_col = next((c for c in ("pct_chg", "changepercent", "涨跌幅") if c in market.columns), None)
+    turnover_col = next((c for c in ("turnover", "turnoverratio", "换手率") if c in market.columns), None)
+    price_col = next((c for c in ("price", "close", "最新价") if c in market.columns), None)
+    if not code_col or not pct_col:
+        return []
+
+    industry_map = _load_industry_cache()
+    items: List[dict] = []
+    for _, row in market.iterrows():
+        code = str(row[code_col]).zfill(6)
+        if industry_map.get(code, "").strip() != industry_name:
+            continue
+        name = str(row[name_col]) if name_col else code
+        try:
+            pct_chg = float(row[pct_col])
+        except (TypeError, ValueError):
+            pct_chg = 0.0
+        try:
+            turnover = float(row[turnover_col]) if turnover_col else 0.0
+        except (TypeError, ValueError):
+            turnover = 0.0
+        try:
+            price = float(row[price_col]) if price_col else 0.0
+        except (TypeError, ValueError):
+            price = 0.0
+        items.append({
+            "code": code,
+            "name": name,
+            "price": round(price, 2),
+            "pct_chg": round(pct_chg, 2),
+            "turnover": round(turnover, 2),
+        })
+    items.sort(key=lambda x: x.get("pct_chg", 0), reverse=True)
+    return items
 
 
 def _fetch_board_list_akshare(board_type: str) -> List[dict]:
@@ -1485,29 +1651,36 @@ def _parse_board_row(row: dict) -> dict:
 def fetch_board_list(
     board_type: str = "concept",
     force_refresh: bool = False,
+    verbose: bool = False,
 ) -> List[dict]:
-    """拉取概念/行业板块列表（东财，带缓存）。"""
+    """拉取概念/行业板块列表（东财 → akshare → 行情行业聚合 → 过期缓存）。"""
     board_type = board_type if board_type in BOARD_LIST_FS else "concept"
     cache_path = BOARD_LIST_CACHE[board_type]
     if not force_refresh and _board_cache_fresh(cache_path):
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
-            return payload.get("items") or []
+            cached = payload.get("items") or []
+            if cached:
+                return cached
         except Exception:
             pass
 
-    rows = _fetch_em_clist(
-        BOARD_LIST_FS[board_type],
-        BOARD_LIST_FIELDS,
-        fid="f3",
-        page_size=100,
-        max_pages=10,
-    )
-    items = [_parse_board_row(r) for r in rows if r.get("f12")]
+    items = _fetch_em_board_list(board_type)
+    if items:
+        for item in items:
+            item.setdefault("source", "eastmoney")
     if not items:
         items = _fetch_board_list_akshare(board_type)
+        for item in items:
+            item.setdefault("source", "akshare")
+    if not items:
+        if verbose:
+            print("  东财板块接口不可用，改用行情+行业聚合…", flush=True)
+        items = _fetch_board_list_from_spot_industry(verbose=verbose)
     if not items and cache_path.exists():
         items = _load_stale_board_cache(cache_path)
+        for item in items:
+            item.setdefault("source", "cache")
     items.sort(key=lambda x: x.get("board_score", 0), reverse=True)
 
     if items:
@@ -1530,18 +1703,25 @@ def fetch_board_list(
 def fetch_board_constituents(
     board_code: str,
     force_refresh: bool = False,
+    verbose: bool = False,
 ) -> List[dict]:
-    """拉取板块成份股（东财，带缓存）。"""
+    """拉取板块成份股（东财 → akshare → 行情行业聚合）。"""
     board_code = str(board_code or "").strip().upper()
     if not board_code:
         return []
+
+    if board_code.startswith(INDUSTRY_BOARD_PREFIX.upper()):
+        industry_name = board_code[len(INDUSTRY_BOARD_PREFIX):]
+        return _fetch_board_constituents_from_spot_industry(industry_name)
 
     BOARD_CONS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = BOARD_CONS_CACHE_DIR / f"{board_code}.json"
     if not force_refresh and _board_cache_fresh(cache_path, max_age_minutes=20):
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
-            return payload.get("items") or []
+            cached = payload.get("items") or []
+            if cached:
+                return cached
         except Exception:
             pass
 
@@ -1552,6 +1732,7 @@ def fetch_board_constituents(
         fid="f3",
         page_size=100,
         max_pages=15,
+        hosts=["https://29.push2.eastmoney.com", "https://79.push2.eastmoney.com"],
     )
     items: List[dict] = []
     for row in rows:

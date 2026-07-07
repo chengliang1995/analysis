@@ -536,7 +536,7 @@ def api_sector_boards():
     if board_type not in ("concept", "industry"):
         board_type = "concept"
     try:
-        items = fetch_board_list(board_type)
+        items = fetch_board_list(board_type, force_refresh=False)
         return jsonify({"ok": True, "board_type": board_type, "items": items})
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc), "items": []}), 500
