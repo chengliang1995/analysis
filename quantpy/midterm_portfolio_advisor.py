@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from quantpy.json_util import df_to_records_safe, json_safe_float, sanitize_for_json
 from quantpy.paths import MIDTERM_OUTPUT_DIR
 from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.selection_tuning import SelectionTuning, build_selection_tuning, format_tuning_summary
@@ -45,25 +46,53 @@ PERFORMANCE_FILTER_OPTIONS = {
     "value_growth": "低PE+正增长",
 }
 
-# 中线选股条件（技术面多为加分项，非全部硬性）
+# 中线选股：MACD+OBV 底背离（通达信公式，日线 N=25）
+DIVERGENCE_N_DAILY = 25
+DIVERGENCE_N_60M = 15
+MIN_DAILY_AMOUNT_WAN = 5000  # 5000 万元（行情 amount 列通常为万元）
+MIDTERM_PREFILTER_DEFAULT = 500
+MIDTERM_PREFILTER_MAX = 1200
+
+# 中线选股条件展示
 MIDTERM_SELECT_CONDITIONS = [
     {"id": "cap_range", "label": "市值150-1000亿", "category": "基本面"},
     {"id": "price_cap", "label": "股价<100元", "category": "基本面"},
-    {"id": "ma_bull", "label": "站上MA20/均线多头", "category": "技术面"},
-    {"id": "ma_rise", "label": "均线上移", "category": "技术面"},
-    {"id": "volume_surge", "label": "放量上涨", "category": "技术面"},
-    {"id": "daily_gain", "label": "近3日1日涨幅>2%", "category": "技术面"},
-    {"id": "rsi_band", "label": "RSI 40-70", "category": "技术面"},
-    {"id": "bottom_divergence", "label": "MACD底背离", "category": "技术面"},
-    {"id": "trend_20d", "label": "20日涨幅≥0", "category": "技术面"},
+    {"id": "liquidity", "label": "成交额≥5000万", "category": "基本面"},
+    {"id": "price_new_low", "label": "股价创阶段新低", "category": "技术面"},
+    {"id": "diff_div", "label": "DIFF底背离", "category": "技术面"},
+    {"id": "obv_div", "label": "OBV资金底背离", "category": "技术面"},
+    {"id": "diff_below_zero", "label": "DIFF零轴下", "category": "技术面"},
+    {"id": "vol_shrink", "label": "缩量地量", "category": "技术面"},
+    {"id": "ma60_hold", "label": "MA60走平/向上", "category": "技术面"},
+    {"id": "entry_confirm", "label": "MACD金叉确认", "category": "技术面"},
+    {"id": "rsi_div", "label": "RSI底背离", "category": "技术面"},
 ]
 
 _CONDITION_LABELS = {c["id"]: c["label"] for c in MIDTERM_SELECT_CONDITIONS}
-MIDTERM_MIN_SCORE = 55
+MIDTERM_MIN_SCORE = 60
 
 
 def get_midterm_select_conditions() -> List[dict]:
     return list(MIDTERM_SELECT_CONDITIONS)
+
+
+def _amount_to_wan(value) -> float:
+    """成交额统一为万元（腾讯/新浪行情 amount 多为万元）。"""
+    if value is None or value == "":
+        return 0.0
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if v >= 1e7:
+        return v / 10000.0
+    return v
+
+
+def _passes_liquidity(amount_wan: Optional[float]) -> bool:
+    if amount_wan is None or amount_wan <= 0:
+        return True
+    return amount_wan >= MIN_DAILY_AMOUNT_WAN
 
 
 def _hist_pct_series(hist: pd.DataFrame) -> pd.Series:
@@ -81,126 +110,84 @@ def _evaluate_midterm_technicals(
     turnover: float,
     min_daily_gain_pct: float = 2.0,
     tuning: Optional[SelectionTuning] = None,
+    *,
+    name: str = "",
+    daily_amount: Optional[float] = None,
+    code: str = "",
 ) -> Optional[dict]:
     """
-    中线技术面评估（放宽版）：保留趋势主线，其余为加分项。
-    硬筛：非极端涨跌、非深度跌势、具备基本多头结构。
+    中线选股：MACD+OBV 底背离（日线 N=25）。
+    硬筛：阶段新低 + DIFF/OBV 背离 + DIFF<0 + 缩量；规避 ST/冷门/连续跌停。
     """
+    del min_daily_gain_pct, turnover
+
+    if _is_st_or_delist_name(name):
+        return None
+
+    pick = _evaluate_tdx_bottom_divergence(
+        hist, n=DIVERGENCE_N_DAILY, code=code, check_60m=True,
+    )
+    if pick is None or not pick.get("signal"):
+        return None
+
+    if daily_amount is not None and daily_amount > 0:
+        amount_wan = _amount_to_wan(daily_amount)
+        if not _passes_liquidity(amount_wan):
+            return None
+    if spot_pct <= -9.5:
+        return None
+
     close = pd.to_numeric(hist["close"], errors="coerce")
-    if len(close) < 20:
-        return None
-
     price = float(close.iloc[-1])
-    ma5 = float(close.rolling(5).mean().iloc[-1])
-    ma10 = float(close.rolling(10).mean().iloc[-1])
-    ma20 = float(close.rolling(20).mean().iloc[-1])
-    ma60 = float(close.rolling(60).mean().iloc[-1]) if len(close) >= 60 else ma20
-    rsi = _rsi(close)
+    ma20 = float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else price
+    rsi = pick.get("rsi", _rsi(close))
     ret_20d = _safe_pct(price, float(close.iloc[-21])) if len(close) >= 21 else 0
-    pct = _hist_pct_series(hist)
-    bottom_div = _detect_bottom_divergence(close)
 
-    if spot_pct >= 9.5 or spot_pct <= -9.5:
-        return None
-    if turnover > 20:
-        return None
-    if ret_20d < -12:
-        return None
-    if rsi > 82:
-        return None
+    tags: List[str] = list(pick.get("tags", []))
+    conditions: List[str] = [
+        "cap_range", "price_cap", "liquidity",
+        "price_new_low", "diff_div", "obv_div", "diff_below_zero", "vol_shrink",
+    ]
+    score = 60
 
-    tags: List[str] = []
-    conditions: List[str] = ["cap_range", "price_cap"]
-    score = 20
+    ma60_trend = pick.get("ma60_trend", "unknown")
+    if ma60_trend in ("flat", "up"):
+        score += 15
+        tags.append("MA60走平/向上")
+        conditions.append("ma60_hold")
+        trend = "中线底背离"
+        hold_style = "趋势回调底背离，可中线持有"
+    else:
+        score += 5
+        tags.append("MA60向下")
+        trend = "短线反弹"
+        hold_style = "MA60向下，轻仓快进快出"
 
-    trend_ok = False
-    if ma5 > ma10 > ma20:
-        score += 22
-        tags.append("均线多头")
-        conditions.append("ma_bull")
-        trend_ok = True
-    elif price >= ma20 and ma5 >= ma10:
-        score += 14
-        tags.append("趋势向上")
-        conditions.append("ma_bull")
-        trend_ok = True
-    elif price >= ma20 * 0.97:
+    if pick.get("rsi_divergence"):
         score += 10
-        tags.append("站上MA20")
-        conditions.append("ma_bull")
-        trend_ok = True
-    elif price >= ma10 and ma5 >= float(close.rolling(5).mean().iloc[-2]):
+        tags.append("RSI底背离")
+        conditions.append("rsi_div")
+
+    if pick.get("macd_golden_cross"):
+        score += 15
+        tags.append("MACD金叉")
+        conditions.append("entry_confirm")
+        entry_hint = "DIFF上穿DEA，可考虑介入"
+    elif pick.get("macd_bar_shrink"):
         score += 8
-        tags.append("短期转强")
-        trend_ok = True
+        tags.append("绿柱缩短")
+        entry_hint = "绿柱缩短，关注金叉确认"
+    else:
+        tags.append("等金叉确认")
+        entry_hint = "公式预警，等MACD金叉再介入，不抄最低"
 
-    if not trend_ok and bottom_div and bottom_div["bars_ago"] <= 20:
-        ma5_prev = float(close.rolling(5).mean().iloc[-2]) if len(close) >= 6 else ma5
-        if price >= ma10 * 0.97 and ma5 >= ma5_prev:
-            score += 10
-            tags.append("底背离转强")
-            trend_ok = True
-
-    if not trend_ok:
-        return None
-
-    if bottom_div:
-        div_bonus = 12 if bottom_div["bars_ago"] <= 10 else 8
-        score += div_bonus
-        tags.append("MACD底背离")
-        conditions.append("bottom_divergence")
-
-    if len(close) >= 25:
-        ma10_prev = float(close.rolling(10).mean().iloc[-6])
-        ma20_prev = float(close.rolling(20).mean().iloc[-6])
-        if ma10 > ma10_prev and ma20 > ma20_prev:
-            score += 10
-            tags.append("均线上移")
-            conditions.append("ma_rise")
-
-    if "volume" in hist.columns:
-        vol = pd.to_numeric(hist["volume"], errors="coerce").fillna(0)
-        if len(vol) >= 13 and vol.iloc[-10:].sum() > 0:
-            vol_3 = float(vol.iloc[-3:].mean())
-            vol_prev = float(vol.iloc[-10:-3].mean())
-            rising_price = price > float(close.iloc[-4])
-            if vol_prev > 0 and vol_3 >= vol_prev * 1.05 and rising_price:
-                score += 12
-                tags.append("放量上涨")
-                conditions.append("volume_surge")
-
-    if len(pct) >= 3:
-        recent = pct.iloc[-3:]
-        if int((recent > min_daily_gain_pct).sum()) >= 1:
-            score += 10
-            tags.append("近期强势")
-            conditions.append("daily_gain")
-
-    if 40 <= rsi <= 70:
-        score += 8
-        tags.append("RSI适中")
-        conditions.append("rsi_band")
-
-    if ret_20d >= 0:
-        score += 8
-        tags.append("20日非跌")
-        conditions.append("trend_20d")
-        if 5 <= ret_20d <= 30:
-            score += 5
-            tags.append("20日强势")
-
-    if ma60 > 0 and price <= ma60 * 1.15:
-        score += 3
+    if pick.get("confirm_60m"):
+        score += 10
+        tags.append("60分底背离")
 
     if tuning and tuning.midterm_ma20_chase_penalty > 0 and ma20 > 0:
         if price > ma20 * tuning.midterm_ma20_chase_ratio:
             score -= tuning.midterm_ma20_chase_penalty
-            tags.append("偏离MA20")
-
-    if tuning and tuning.midterm_penalize_ret_20d_below is not None:
-        if ret_20d < tuning.midterm_penalize_ret_20d_below:
-            score -= 8
-            tags.append("20日偏弱")
 
     min_score = tuning.midterm_min_score if tuning else MIDTERM_MIN_SCORE
     if score < min_score:
@@ -211,14 +198,17 @@ def _evaluate_midterm_technicals(
         "tags": tags,
         "conditions": conditions,
         "price": price,
-        "ma5": round(ma5, 2),
-        "ma10": round(ma10, 2),
+        "ma5": round(float(close.rolling(5).mean().iloc[-1]), 2) if len(close) >= 5 else price,
+        "ma10": round(float(close.rolling(10).mean().iloc[-1]), 2) if len(close) >= 10 else price,
         "ma20": round(ma20, 2),
-        "rsi": round(rsi, 1),
+        "rsi": round(float(rsi), 1),
         "ret_20d": round(ret_20d, 2),
-        "trend": "多头" if ma5 > ma10 > ma20 else ("底背离" if bottom_div else "反弹"),
-        "bottom_divergence": bottom_div is not None,
-        "bottom_divergence_detail": bottom_div,
+        "trend": trend,
+        "hold_style": hold_style,
+        "entry_hint": entry_hint,
+        "ma60_trend": ma60_trend,
+        "bottom_divergence": True,
+        "bottom_divergence_detail": pick,
     }
 
 
@@ -428,6 +418,141 @@ def _detect_bottom_divergence(
     return None
 
 
+def _is_st_or_delist_name(name: str) -> bool:
+    text = str(name or "").upper()
+    return "ST" in text or "退" in str(name or "")
+
+
+def _calc_obv(hist: pd.DataFrame) -> pd.Series:
+    close = pd.to_numeric(hist["close"], errors="coerce")
+    if "open" in hist.columns:
+        open_px = pd.to_numeric(hist["open"], errors="coerce")
+    else:
+        open_px = close
+    vol = pd.to_numeric(hist.get("volume", 0), errors="coerce").fillna(0)
+    signed = vol.where(close > open_px, vol.where(close < open_px, 0) * -1)
+    return signed.cumsum()
+
+
+def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
+    """通达信 SMA 风格 RSI 序列。"""
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    return 100 - 100 / (1 + rs)
+
+
+def _ma60_trend_label(close: pd.Series) -> str:
+    if len(close) < 65:
+        return "unknown"
+    ma60 = close.rolling(60).mean()
+    now = float(ma60.iloc[-1])
+    prev = float(ma60.iloc[-6])
+    if prev <= 0:
+        return "unknown"
+    slope_pct = (now - prev) / prev * 100
+    if slope_pct < -0.5:
+        return "down"
+    if slope_pct > 0.5:
+        return "up"
+    return "flat"
+
+
+def _has_continuous_limit_down(hist: pd.DataFrame, days: int = 3) -> bool:
+    pct = _hist_pct_series(hist)
+    if len(pct) < days:
+        return False
+    recent = pd.to_numeric(pct.iloc[-days:], errors="coerce")
+    return bool((recent <= -9.5).all())
+
+
+def _tdx_divergence_on_hist(hist: pd.DataFrame, n: int) -> Optional[dict]:
+    """在 K 线序列上判定通达信底背离五要素（最后一根）。"""
+    if hist is None or len(hist) < n + 2:
+        return None
+    hist = hist.sort_values("date").reset_index(drop=True) if "date" in hist.columns else hist.reset_index(drop=True)
+    low = pd.to_numeric(hist["low"], errors="coerce")
+    close = pd.to_numeric(hist["close"], errors="coerce")
+    vol = pd.to_numeric(hist.get("volume", 0), errors="coerce").fillna(0)
+    if low.isna().iloc[-1] or close.isna().iloc[-1]:
+        return None
+
+    dif, dea, bar = _macd_series(close)
+    obv = _calc_obv(hist)
+    rsi_s = _rsi_series(close)
+
+    ll = low.rolling(n).min()
+    ll_diff = dif.rolling(n).min()
+    ll_obv = obv.rolling(n).min()
+    ll_rsi = rsi_s.rolling(n).min()
+
+    ll_prev = ll.shift(1)
+    ll_diff_prev = ll_diff.shift(1)
+    ll_obv_prev = ll_obv.shift(1)
+    ll_rsi_prev = ll_rsi.shift(1)
+
+    i = -1
+    price_new_low = float(low.iloc[i]) <= float(ll_prev.iloc[i])
+    diff_div = float(dif.iloc[i]) > float(ll_diff_prev.iloc[i])
+    obv_div = float(obv.iloc[i]) > float(ll_obv_prev.iloc[i])
+    below_zero = float(dif.iloc[i]) < 0
+    vol_ma5 = float(vol.rolling(5).mean().iloc[i])
+    vol_ma10 = float(vol.rolling(10).mean().iloc[i])
+    vol_shrink = vol_ma10 > 0 and vol_ma5 < vol_ma10 * 0.85
+
+    signal = price_new_low and diff_div and obv_div and below_zero and vol_shrink
+    if not signal:
+        return None
+
+    rsi_val = float(rsi_s.iloc[i])
+    rsi_div = rsi_val > float(ll_rsi_prev.iloc[i]) and rsi_val < 30
+    golden = float(dif.iloc[i]) > float(dea.iloc[i]) and float(dif.iloc[i - 1]) <= float(dea.iloc[i - 1])
+    bar_shrink = float(bar.iloc[i]) > float(bar.iloc[i - 1]) and float(bar.iloc[i]) < 0
+
+    return {
+        "signal": True,
+        "price_new_low": price_new_low,
+        "diff_div": diff_div,
+        "obv_div": obv_div,
+        "below_zero": below_zero,
+        "vol_shrink": vol_shrink,
+        "rsi": rsi_val,
+        "rsi_divergence": rsi_div,
+        "macd_golden_cross": golden,
+        "macd_bar_shrink": bar_shrink,
+        "dif": round(float(dif.iloc[i]), 4),
+        "dea": round(float(dea.iloc[i]), 4),
+        "ma60_trend": _ma60_trend_label(close),
+    }
+
+
+def _evaluate_tdx_bottom_divergence(
+    hist: pd.DataFrame,
+    n: int = DIVERGENCE_N_DAILY,
+    code: str = "",
+    check_60m: bool = True,
+) -> Optional[dict]:
+    if _has_continuous_limit_down(hist):
+        return None
+    daily = _tdx_divergence_on_hist(hist, n)
+    if daily is None:
+        return None
+
+    tags = ["DIFF底背离", "OBV底背离", "阶段新低", "缩量地量"]
+    confirm_60m = False
+    if check_60m and code:
+        try:
+            hist60 = get_stock_hist(code, days=40, freq="60", patch_live=False)
+            confirm_60m = _tdx_divergence_on_hist(hist60, DIVERGENCE_N_60M) is not None
+        except Exception:
+            confirm_60m = False
+
+    daily["tags"] = tags
+    daily["confirm_60m"] = confirm_60m
+    return daily
+
+
 def _safe_pct(a: float, b: float) -> float:
     if b == 0:
         return 0.0
@@ -494,6 +619,7 @@ class MidtermPortfolioAdvisor:
 
         price = float(close.iloc[-1])
         ma5 = float(close.rolling(5).mean().iloc[-1])
+        ma10 = float(close.rolling(10).mean().iloc[-1])
         ma20 = float(close.rolling(20).mean().iloc[-1])
         ma60 = float(close.rolling(60).mean().iloc[-1]) if len(close) >= 60 else ma20
         rsi = round(_rsi(close), 1)
@@ -772,21 +898,29 @@ class MidtermPortfolioAdvisor:
         spot: Optional[dict] = None,
         tuning: Optional[SelectionTuning] = None,
     ) -> Optional[dict]:
-        hist = get_stock_hist(code, days=90)
-        if hist.empty or len(hist) < 20:
+        hist = get_stock_hist(code, days=120)
+        if hist.empty or len(hist) < DIVERGENCE_N_DAILY + 5:
             return None
 
         hist = hist.sort_values("date").reset_index(drop=True)
         spot_pct = float(spot.get("pct", 0)) if spot else 0.0
         turnover = float(spot.get("turnover", 0)) if spot else 0.0
         market_cap_yi = spot.get("market_cap_yi") if spot else None
+        daily_amount = spot.get("amount") if spot else None
+        if daily_amount is None and "amount" in hist.columns:
+            amt = pd.to_numeric(hist["amount"], errors="coerce")
+            if amt.notna().any():
+                daily_amount = float(amt.iloc[-1])
 
         if spot_pct == 0 and "pct_chg" in hist.columns:
             last_pct = hist["pct_chg"].iloc[-1]
             if pd.notna(last_pct):
                 spot_pct = float(last_pct)
 
-        tech = _evaluate_midterm_technicals(hist, spot_pct, turnover, tuning=tuning)
+        tech = _evaluate_midterm_technicals(
+            hist, spot_pct, turnover, tuning=tuning,
+            name=name, daily_amount=daily_amount, code=code,
+        )
         if tech is None:
             return None
 
@@ -809,19 +943,19 @@ class MidtermPortfolioAdvisor:
             yoy_part = f"，净利同比{float(profit_yoy):+.1f}%"
 
         cap_part = f"市值{cap:.0f}亿" if cap is not None else "市值—"
-        div_part = " · MACD底背离" if tech.get("bottom_divergence") else ""
         reason = (
-            f"{' · '.join(tech['tags'][:4])}；20日{tech['ret_20d']:+.1f}% RSI{tech['rsi']:.0f}；"
-            f"{cap_part}{yoy_part}{div_part}"
+            f"{' · '.join(tech['tags'][:5])}；{tech.get('hold_style', '')}；"
+            f"{tech.get('entry_hint', '')}；20日{tech['ret_20d']:+.1f}% RSI{tech['rsi']:.0f}；"
+            f"{cap_part}{yoy_part}"
         )
 
         return {
             "code": code,
             "name": name,
             "price": round(tech["price"], 2),
-            "market_cap_yi": round(cap, 1) if cap is not None else None,
-            "pct_chg": round(spot_pct, 2),
-            "turnover": round(turnover, 2),
+            "market_cap_yi": json_safe_float(cap, digits=1),
+            "pct_chg": json_safe_float(spot_pct, digits=2),
+            "turnover": json_safe_float(turnover, digits=2),
             "midterm_score": tech["score"],
             "trend": tech["trend"],
             "rsi": tech["rsi"],
@@ -830,8 +964,11 @@ class MidtermPortfolioAdvisor:
             "ma10": tech["ma10"],
             "ma20": tech["ma20"],
             "bottom_divergence": tech.get("bottom_divergence", False),
-            "pe": round(float(pe), 2) if pe is not None and pd.notna(pe) else None,
-            "profit_yoy": round(float(profit_yoy), 2) if profit_yoy is not None and pd.notna(profit_yoy) else None,
+            "hold_style": tech.get("hold_style", ""),
+            "entry_hint": tech.get("entry_hint", ""),
+            "ma60_trend": tech.get("ma60_trend", ""),
+            "pe": json_safe_float(pe, digits=2),
+            "profit_yoy": json_safe_float(profit_yoy, digits=2),
             "industry": industry or "",
             "tags": ",".join(tech["tags"]),
             "conditions": tech["conditions"],
@@ -843,7 +980,7 @@ class MidtermPortfolioAdvisor:
         self,
         exclude_codes: Optional[List[str]] = None,
         top_n: int = 20,
-        prefilter: int = 220,
+        prefilter: int = MIDTERM_PREFILTER_DEFAULT,
         show_progress: bool = False,
         industry: Optional[str] = None,
         performance: Optional[str] = None,
@@ -904,6 +1041,13 @@ class MidtermPortfolioAdvisor:
             df["_turnover"] = pd.to_numeric(df[turnover_col], errors="coerce").fillna(0)
         else:
             df["_turnover"] = 0
+        amount_col = next((c for c in ("amount", "成交额") if c in df.columns), None)
+        if amount_col:
+            df["_amount"] = pd.to_numeric(df[amount_col], errors="coerce").fillna(0)
+            df["_amount_wan"] = df["_amount"].map(_amount_to_wan)
+        else:
+            df["_amount"] = 0.0
+            df["_amount_wan"] = 0.0
 
         df["_price"] = _spot_price_series(df)
         price_ok = (df["_price"] > 0) & (df["_price"] < self.max_recommend_price)
@@ -921,104 +1065,124 @@ class MidtermPortfolioAdvisor:
 
         n_price = int(price_ok.sum())
         n_cap = int(cap_ok.sum()) if has_cap else len(df)
+        n_liq = int((df.loc[price_ok & cap_ok, "_amount_wan"] >= MIN_DAILY_AMOUNT_WAN).sum()) if has_cap else 0
         _progress(
             f"  [初筛] 全市场 {len(df)} 只；股价<{self.max_recommend_price}元: {n_price}；"
-            f"市值{self.min_recommend_market_cap:.0f}-{self.max_recommend_market_cap:.0f}亿: {n_cap}",
+            f"市值{self.min_recommend_market_cap:.0f}-{self.max_recommend_market_cap:.0f}亿: {n_cap}；"
+            f"成交额≥{MIN_DAILY_AMOUNT_WAN}万: {n_liq}",
             show_progress,
         )
 
-        def _build_candidates(pct_min: float, pct_max: float, turnover_min: float) -> pd.DataFrame:
-            turn_ok = (df["_turnover"] >= turnover_min) | (df["_turnover"] <= 0)
-            mask = (
-                (df["_pct"] >= pct_min)
-                & (df["_pct"] <= pct_max)
-                & turn_ok
-                & price_ok
-                & cap_ok
-            )
+        def _build_candidates(limit: int) -> pd.DataFrame:
+            mask = price_ok & cap_ok
             pool = df[mask].copy()
+            if name_col and name_col in pool.columns:
+                pool = pool[~pool[name_col].astype(str).map(_is_st_or_delist_name)]
             if pool.empty:
                 return pool
-            cap_rank = pool["_cap_yi"].fillna(self.min_recommend_market_cap)
+            # 底背离候选：优先回调、缩量、低波动
             pool["_rank"] = (
-                pool["_pct"].clip(-5, 8) * 0.3
-                + pool["_turnover"].clip(0, 15) * 0.4
-                + cap_rank.clip(self.min_recommend_market_cap, self.max_recommend_market_cap)
-                / self.max_recommend_market_cap * 0.3
+                (-pool["_pct"].clip(-12, 8)) * 0.4
+                + (12 - pool["_turnover"].clip(0, 15)) * 0.3
+                + pool["_amount_wan"].clip(0, 100000) / 100000 * 0.3
             )
-            return pool.sort_values("_rank", ascending=False).head(prefilter)
+            return pool.sort_values("_rank", ascending=False).head(limit)
 
-        candidates = _build_candidates(-3, 8, 0.3)
-        if candidates.empty:
-            _progress("  初筛偏严，放宽至涨跌幅-5%~9%…", show_progress)
-            candidates = _build_candidates(-5, 9, 0.2)
+        scan_limit = max(prefilter, MIDTERM_PREFILTER_DEFAULT)
+        candidates = _build_candidates(scan_limit)
         if candidates.empty and has_cap:
-            _progress("  仍无候选，放宽市值至120亿起…", show_progress)
+            _progress("  初筛为空，放宽市值下限…", show_progress)
             cap_ok = (
                 (df["_cap_yi"] >= max(self.min_recommend_market_cap - 30, 80))
                 & (df["_cap_yi"] < self.max_recommend_market_cap)
             )
-            candidates = _build_candidates(-5, 9, 0.2)
+            candidates = _build_candidates(scan_limit)
 
         select_stats["prefilter_count"] = len(candidates)
-        _progress(f"  初筛 {len(candidates)} 只，技术面评分中…", show_progress)
+        select_stats["prefilter_limit"] = scan_limit
+        _progress(f"  初筛 {len(candidates)} 只（上限 {scan_limit}），技术面评分中…", show_progress)
 
-        results: List[dict] = []
-        excluded_held = scored_fail = scored_errors = 0
-        total = len(candidates)
-        for idx, (_, row) in enumerate(candidates.iterrows(), 1):
-            if show_progress and (idx == 1 or idx % 10 == 0 or idx == total):
+        def _scan_rows(rows: pd.DataFrame) -> Tuple[List[dict], int, int, int]:
+            local_results: List[dict] = []
+            excluded = fail = errors = 0
+            total_local = len(rows)
+            for idx, (_, row) in enumerate(rows.iterrows(), 1):
+                if show_progress and (idx == 1 or idx % 25 == 0 or idx == total_local):
+                    _progress(
+                        f"  评分进度 {idx}/{total_local}（已命中 {len(local_results)}，未过线 {fail}"
+                        + (f"，异常 {errors}" if errors else "")
+                        + "）",
+                        True,
+                    )
+                code = str(row[code_col]).zfill(6)
+                if is_bse_code(code):
+                    continue
+                if code in exclude:
+                    excluded += 1
+                    continue
+                name = str(row[name_col]) if name_col else code
+                cap_yi = row["_cap_yi"]
+                fund = fundamental_map.get(code, {})
+                spot = {
+                    "pct": row["_pct"],
+                    "turnover": row["_turnover"],
+                    "amount": float(row["_amount"]) if pd.notna(row.get("_amount")) else None,
+                    "market_cap_yi": float(cap_yi) if pd.notna(cap_yi) else None,
+                    "pe": fund.get("pe"),
+                    "profit_yoy": fund.get("profit_yoy"),
+                }
+                try:
+                    item = self._score_candidate(code, name, spot, tuning=tuning)
+                except Exception as exc:
+                    errors += 1
+                    if errors <= 3:
+                        _progress(f"  评分异常 {code}: {exc}", show_progress)
+                    continue
+                if item:
+                    local_results.append(item)
+                else:
+                    fail += 1
+                if (
+                    early_stop_pass > 0
+                    and len(local_results) >= early_stop_pass
+                    and idx >= min(50, max(total_local // 3, 30))
+                ):
+                    select_stats["scored_stopped_early"] = True
+                    _progress(
+                        f"  已命中 {len(local_results)} 只，提前结束评分（{idx}/{total_local}）",
+                        show_progress,
+                    )
+                    break
+            return local_results, excluded, fail, errors
+
+        results, excluded_held, scored_fail, scored_errors = _scan_rows(candidates)
+
+        if not results:
+            full_limit = min(int((price_ok & cap_ok).sum()), MIDTERM_PREFILTER_MAX)
+            if full_limit > len(candidates):
                 _progress(
-                    f"  评分进度 {idx}/{total}（已命中 {len(results)}，未过线 {scored_fail}"
-                    + (f"，异常 {scored_errors}" if scored_errors else "")
-                    + "）",
-                    True,
-                )
-            code = str(row[code_col]).zfill(6)
-            if is_bse_code(code):
-                continue
-            if code in exclude:
-                excluded_held += 1
-                continue
-            name = str(row[name_col]) if name_col else code
-            cap_yi = row["_cap_yi"]
-            fund = fundamental_map.get(code, {})
-            spot = {
-                "pct": row["_pct"],
-                "turnover": row["_turnover"],
-                "market_cap_yi": float(cap_yi) if pd.notna(cap_yi) else None,
-                "pe": fund.get("pe"),
-                "profit_yoy": fund.get("profit_yoy"),
-            }
-            try:
-                item = self._score_candidate(code, name, spot, tuning=tuning)
-            except Exception as exc:
-                scored_errors += 1
-                if scored_errors <= 3:
-                    _progress(f"  评分异常 {code}: {exc}", show_progress)
-                continue
-            if item:
-                results.append(item)
-            else:
-                scored_fail += 1
-            if (
-                early_stop_pass > 0
-                and len(results) >= early_stop_pass
-                and idx >= min(30, max(total // 3, 20))
-            ):
-                select_stats["scored_stopped_early"] = True
-                _progress(
-                    f"  已命中 {len(results)} 只，提前结束评分（{idx}/{total}）",
+                    f"  初筛未命中，扩大扫描至 {full_limit} 只…",
                     show_progress,
                 )
-                break
+                expanded = _build_candidates(full_limit)
+                seen_idx = set(candidates.index)
+                extra = expanded[~expanded.index.isin(seen_idx)]
+                if extra.empty:
+                    extra = expanded
+                more_results, ex2, fail2, err2 = _scan_rows(extra)
+                results.extend(more_results)
+                excluded_held += ex2
+                scored_fail += fail2
+                scored_errors += err2
+                select_stats["expanded_scan"] = True
+                select_stats["prefilter_count"] = full_limit
 
         select_stats["scored_pass"] = len(results)
         select_stats["scored_fail"] = scored_fail
         select_stats["scored_errors"] = scored_errors
         select_stats["excluded_held"] = excluded_held
         _progress(
-            f"  [评分] 技术面命中 {len(results)}/{total - excluded_held} 只"
+            f"  [评分] 技术面命中 {len(results)}/{select_stats['prefilter_count'] - excluded_held} 只"
             f"（未过线 {scored_fail}，已持仓排除 {excluded_held}）",
             show_progress,
         )
@@ -1122,14 +1286,14 @@ class MidtermPortfolioAdvisor:
             show_progress=show_progress,
             industry=industry,
             performance=performance,
-            early_stop_pass=30,
+            early_stop_pass=0,
             tuning=tuning,
         )
 
         _progress("[4/4] 生成报告", show_progress)
         review_summaries = [r["summary"] for r in reviews if r.get("ok")]
         opt_suggestions = optimization.get("suggestions", [])
-        rec_records = recommendations.to_dict("records") if not recommendations.empty else []
+        rec_records = df_to_records_safe(recommendations)
 
         all_text = review_summaries + opt_suggestions
         for r in rec_records[:5]:
@@ -1166,14 +1330,13 @@ class MidtermPortfolioAdvisor:
         path = OUTPUT_DIR / f"midterm_{datetime.now().strftime('%Y%m%d')}.json"
         path.write_text(
             json.dumps(
-                {
+                sanitize_for_json({
                     **result,
                     "reviews": reviews,
                     "recommendations": rec_records,
-                },
+                }),
                 ensure_ascii=False,
                 indent=2,
-                default=str,
             ),
             encoding="utf-8",
         )
@@ -1434,7 +1597,7 @@ def format_midterm_report_markdown(result: dict) -> str:
 
     recs = result.get("recommendations", [])
     if recs:
-        parts.append("## 四、个股推荐（市值150-1000亿 · 均线多头 · MACD底背离 · 放量上涨）\n\n")
+        parts.append("## 四、个股推荐（MACD+OBV底背离 · 日线N=25 · 成交额≥5000万）\n\n")
         parts.append(
             "选股条件：" + " · ".join(c["label"] for c in MIDTERM_SELECT_CONDITIONS) + "\n\n"
         )
@@ -1472,7 +1635,7 @@ def load_latest_midterm_advice() -> dict:
     if not files:
         return {}
     try:
-        return json.loads(files[0].read_text(encoding="utf-8"))
+        return sanitize_for_json(json.loads(files[0].read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
         return {}
 

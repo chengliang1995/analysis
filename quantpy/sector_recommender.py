@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from quantpy.json_util import sanitize_for_json
 from quantpy.paths import OUTPUT_DIR
 from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.stock_data import fetch_board_constituents, fetch_board_list, is_bse_code
@@ -230,7 +231,7 @@ def _save_sector_result(result: dict) -> Path:
     SECTOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = SECTOR_OUTPUT_DIR / f"sector_{stamp}.json"
-    slim = {k: v for k, v in result.items() if k != "markdown"}
+    slim = sanitize_for_json({k: v for k, v in result.items() if k != "markdown"})
     path.write_text(json.dumps(slim, ensure_ascii=False, indent=2), encoding="utf-8")
     latest = SECTOR_OUTPUT_DIR / "sector_latest.json"
     latest.write_text(json.dumps(slim, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -242,7 +243,7 @@ def load_latest_sector() -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return sanitize_for_json(json.loads(path.read_text(encoding="utf-8")))
     except Exception:
         return {}
 

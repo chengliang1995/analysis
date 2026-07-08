@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from quantpy.qstock_strategy_optimizer import StrategyOptimizer
+from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
 from quantpy.stock_data import (
     get_market_spot,
     get_stock_code_column,
@@ -349,7 +350,6 @@ class UltraShortScanner:
     2. 对候选股做 K 线深度评分
     """
     if tuning is None:
-      from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
       tuning = build_selection_tuning()
     min_score = max(min_score, tuning.ultra_min_score)
     if show_progress and tuning.notes:

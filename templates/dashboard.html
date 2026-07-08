@@ -371,7 +371,7 @@
           <div class="stats stats-3" id="portfolio-stats"></div>
           <div class="table-wrap" id="portfolio-table"></div>
           <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-            <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">放宽趋势筛选 · 市值150-1000亿</span></h2>
+            <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">MACD+OBV底背离 · 市值150-1000亿</span></h2>
             <span class="badge" id="midterm-rec-badge">未持仓</span>
           </div>
           <div class="rec-conditions" id="midterm-select-conditions"></div>
@@ -1036,13 +1036,15 @@
     const DEFAULT_MIDTERM_CONDITIONS = [
       { id: "cap_range", label: "市值150-1000亿", category: "基本面" },
       { id: "price_cap", label: "股价<100元", category: "基本面" },
-      { id: "ma_bull", label: "站上MA20/均线多头", category: "技术面" },
-      { id: "ma_rise", label: "均线上移", category: "技术面" },
-      { id: "volume_surge", label: "放量上涨", category: "技术面" },
-      { id: "daily_gain", label: "近3日1日涨幅>2%", category: "技术面" },
-      { id: "rsi_band", label: "RSI 40-70", category: "技术面" },
-      { id: "bottom_divergence", label: "MACD底背离", category: "技术面" },
-      { id: "trend_20d", label: "20日涨幅≥0", category: "技术面" },
+      { id: "liquidity", label: "成交额≥5000万", category: "基本面" },
+      { id: "price_new_low", label: "股价创阶段新低", category: "技术面" },
+      { id: "diff_div", label: "DIFF底背离", category: "技术面" },
+      { id: "obv_div", label: "OBV资金底背离", category: "技术面" },
+      { id: "diff_below_zero", label: "DIFF零轴下", category: "技术面" },
+      { id: "vol_shrink", label: "缩量地量", category: "技术面" },
+      { id: "ma60_hold", label: "MA60走平/向上", category: "技术面" },
+      { id: "entry_confirm", label: "MACD金叉确认", category: "技术面" },
+      { id: "rsi_div", label: "RSI底背离", category: "技术面" },
     ];
 
     function renderMidtermSelectConditions(conditions) {

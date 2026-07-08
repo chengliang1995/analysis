@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import traceback
 from contextlib import redirect_stdout
 from datetime import datetime
@@ -20,6 +21,9 @@ from typing import Any, Optional
 
 import pandas as pd
 from flask import Flask, jsonify, render_template, request
+from flask.json.provider import DefaultJSONProvider
+
+from quantpy.json_util import df_to_records_safe, sanitize_for_json
 
 from quantpy import __version__ as APP_VERSION
 from quantpy.paths import OUTPUT_DIR, LOG_DIR, PROJECT_ROOT, REPORT_DIR, RETENTION_DAYS, TEMPLATES_DIR
@@ -60,7 +64,18 @@ from quantpy.stock_pnl_history import get_stock_pnl_history
 from quantpy.trade_journal import TradeJournal
 
 BASE_DIR = PROJECT_ROOT
+
+
+class SafeJSONProvider(DefaultJSONProvider):
+    """API 响应中禁止 NaN/Inf（浏览器 JSON.parse 无法解析）。"""
+
+    def dumps(self, obj, **kwargs):
+        kwargs.setdefault("default", self.default)
+        return json.dumps(sanitize_for_json(obj), **kwargs)
+
+
 app = Flask(__name__, template_folder=str(TEMPLATES_DIR))
+app.json = SafeJSONProvider(app)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
@@ -84,7 +99,7 @@ def _ultra_short_records(df: pd.DataFrame, top_n: int = 10) -> list[dict]:
     rows = df.head(top_n)[available].copy()
     if "code" in rows.columns:
         rows["code"] = rows["code"].astype(str).str.zfill(6)
-    return rows.to_dict("records")
+    return df_to_records_safe(rows)
 
 
 def load_cached_ultra_short(top_n: int = 10) -> list[dict]:
@@ -245,7 +260,7 @@ def get_trades_data(days: int = 30) -> dict:
     df = journal.list_trades(days=days)
     stats = journal.analyze(days=days)
     return {
-        "trades": df.to_dict("records") if not df.empty else [],
+        "trades": df_to_records_safe(df),
         "stats": stats,
     }
 

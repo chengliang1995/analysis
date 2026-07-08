@@ -1,7 +1,7 @@
 {
   "ultra_short_capital": 22850,
-  "midterm_capital": 152399.9,
-  "total_capital": 175249.9,
+  "midterm_capital": 149549.9,
+  "total_capital": 172399.9,
   "initial_ultra_short_capital": 20000.0,
   "initial_midterm_capital": 150000.0,
   "journal_closed_synced": true,
@@ -9,8 +9,8 @@
     {
       "code": "002472",
       "name": "双环传动",
-      "quantity": 700,
-      "cost_price": 40.88,
+      "quantity": 1500,
+      "cost_price": 41.632,
       "buy_date": "2026-07-02",
       "strategy": "手动",
       "note": ""
@@ -18,7 +18,7 @@
     {
       "code": "600884",
       "name": "杉杉股份",
-      "quantity": 6000,
+      "quantity": 3000,
       "cost_price": 13.46,
       "buy_date": "2026-06-22",
       "strategy": "手动",
@@ -370,6 +370,22 @@
       "note": "",
       "id": "a4ef0944620b",
       "closed_at": "2026-07-06T11:12:44.618620"
+    },
+    {
+      "code": "600884",
+      "name": "杉杉股份",
+      "quantity": 3000,
+      "cost_price": 13.46,
+      "sell_price": 12.51,
+      "buy_date": "2026-06-22",
+      "sell_date": "2026-07-08",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": -2850.0,
+      "profit_pct": -7.06,
+      "note": "",
+      "id": "d81203d1a794",
+      "closed_at": "2026-07-08T15:59:14.485324"
     }
   ]
 }

@@ -421,7 +421,7 @@ def run_sim_midterm_select(
     industry: Optional[str] = None,
     performance: Optional[str] = None,
     use_cache: bool = False,
-    prefilter: int = 60,
+    prefilter: int = 500,
 ) -> dict:
     """
     模拟盘中线选股：全市场扫描（或读缓存）→ 记录 → 15万账户建仓 → 复盘。
@@ -460,7 +460,7 @@ def run_sim_midterm_select(
                 show_progress=show_progress,
                 industry=industry,
                 performance=performance,
-                early_stop_pass=25,
+                early_stop_pass=0,
             )
             recommendations = df.to_dict("records") if not df.empty else []
 
