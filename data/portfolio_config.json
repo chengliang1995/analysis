@@ -1,7 +1,7 @@
 {
   "ultra_short_capital": 22850,
-  "midterm_capital": 149549.9,
-  "total_capital": 172399.9,
+  "midterm_capital": 142637.9,
+  "total_capital": 165487.9,
   "initial_ultra_short_capital": 20000.0,
   "initial_midterm_capital": 150000.0,
   "journal_closed_synced": true,
@@ -12,24 +12,6 @@
       "quantity": 1500,
       "cost_price": 41.632,
       "buy_date": "2026-07-02",
-      "strategy": "手动",
-      "note": ""
-    },
-    {
-      "code": "600884",
-      "name": "杉杉股份",
-      "quantity": 3000,
-      "cost_price": 13.46,
-      "buy_date": "2026-06-22",
-      "strategy": "手动",
-      "note": ""
-    },
-    {
-      "code": "001367",
-      "name": "海森药业",
-      "quantity": 1200,
-      "cost_price": 20.5,
-      "buy_date": "2026-07-06",
       "strategy": "手动",
       "note": ""
     }
@@ -386,6 +368,38 @@
       "note": "",
       "id": "d81203d1a794",
       "closed_at": "2026-07-08T15:59:14.485324"
+    },
+    {
+      "code": "600884",
+      "name": "杉杉股份",
+      "quantity": 3000,
+      "cost_price": 13.46,
+      "sell_price": 11.8,
+      "buy_date": "2026-06-22",
+      "sell_date": "2026-07-09",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": -4980.0,
+      "profit_pct": -12.33,
+      "note": "",
+      "id": "1bdbb192d2c1",
+      "closed_at": "2026-07-10T15:19:12.574981"
+    },
+    {
+      "code": "001367",
+      "name": "海森药业",
+      "quantity": 1200,
+      "cost_price": 20.5,
+      "sell_price": 18.89,
+      "buy_date": "2026-07-06",
+      "sell_date": "2026-07-10",
+      "strategy": "手动",
+      "bucket": "midterm",
+      "profit_amount": -1932.0,
+      "profit_pct": -7.85,
+      "note": "",
+      "id": "154038c94e16",
+      "closed_at": "2026-07-10T15:19:38.758554"
     }
   ]
 }

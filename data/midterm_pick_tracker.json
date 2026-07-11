@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "follow_trading_days": 22,
+  "win_threshold_pct": 3.0,
+  "top_n": 10,
+  "records": [
+    {
+      "pick_date": "2026-07-11",
+      "rank": 1,
+      "code": "000537",
+      "name": "绿发电力",
+      "pick_price": 6.97,
+      "midterm_score": 75.0,
+      "conditions": [
+        "diff_div",
+        "obv_div",
+        "ma60_hold"
+      ],
+      "condition_labels": [
+        "DIFF底背离",
+        "OBV底背离",
+        "MA60走平/向上"
+      ],
+      "tags": "DIFF底背离,OBV底背离,MA60走平/向上",
+      "tag_list": [
+        "DIFF底背离",
+        "OBV底背离",
+        "MA60走平/向上"
+      ],
+      "trend": "中线底背离",
+      "hold_style": "",
+      "rsi": 24.4,
+      "ret_20d": -3.5,
+      "ma60_trend": "flat",
+      "bottom_divergence": true,
+      "pe": null,
+      "profit_yoy": null,
+      "industry": "",
+      "status": "tracking",
+      "mature_date": "",
+      "mature_price": null,
+      "return_pct": null,
+      "max_return_pct": null,
+      "is_win": null,
+      "evaluated_at": ""
+    },
+    {
+      "pick_date": "2026-07-11",
+      "rank": 2,
+      "code": "603799",
+      "name": "华友钴业",
+      "pick_price": 42.68,
+      "midterm_score": 75.0,
+      "conditions": [
+        "diff_div",
+        "obv_div"
+      ],
+      "condition_labels": [],
+      "tags": "DIFF底背离,OBV底背离",
+      "tag_list": [
+        "DIFF底背离",
+        "OBV底背离"
+      ],
+      "trend": "",
+      "hold_style": "",
+      "rsi": null,
+      "ret_20d": null,
+      "ma60_trend": "up",
+      "bottom_divergence": true,
+      "pe": null,
+      "profit_yoy": null,
+      "industry": "",
+      "status": "tracking",
+      "mature_date": "",
+      "mature_price": null,
+      "return_pct": null,
+      "max_return_pct": null,
+      "is_win": null,
+      "evaluated_at": ""
+    }
+  ],
+  "daily_batches": [
+    {
+      "date": "2026-07-11",
+      "count": 2,
+      "codes": [
+        "000537",
+        "603799"
+      ]
+    }
+  ],
+  "last_record_date": "2026-07-11",
+  "last_evaluated": "2026-07-11",
+  "summary": {
+    "total_records": 2,
+    "tracking_count": 2,
+    "matured_count": 0,
+    "win_rate": 0.0,
+    "positive_rate": 0.0,
+    "avg_return": 0.0,
+    "avg_max_return": 0.0,
+    "win_threshold_pct": 3.0,
+    "follow_trading_days": 22,
+    "by_condition": [],
+    "by_tag": [],
+    "by_score_bucket": [],
+    "by_ma60_trend": [],
+    "factor_insights": []
+  }
+}

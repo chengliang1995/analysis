@@ -1,6 +1,6 @@
 """
 模拟复盘系统
-- 每个交易日 9:30-9:45 超短选股（最多 3 只），按实时价在买点区间内成交
+- 每个交易日 9:30-9:45 超短选股（最多 3 只），按扫描时价格成交
 - 模拟资金 20 万，自动买卖与持仓管理
 - A 股 T+1：当日买入次日方可卖出
 - 每 5 个交易日自动复盘，优化选票与买卖点参数
@@ -22,6 +22,7 @@ from quantpy.sim_midterm import ensure_midterm_state
 from quantpy.qstock_strategy_optimizer import StrategyOptimizer
 from quantpy.stock_data import get_market_spot, get_realtime_quotes, get_stock_hist
 from quantpy.ultra_short_scanner import UltraShortScanner
+from quantpy.ultra_trade_refs import compute_ultra_trade_refs
 
 OUTPUT_DIR = SIM_REVIEW_DIR
 
@@ -83,6 +84,56 @@ class MorningSelector:
         self.config = config
         self.scanner = UltraShortScanner()
         self.optimizer = StrategyOptimizer()
+
+    def _evaluate_scan_price_buy(
+        self,
+        item: dict,
+    ) -> Tuple[bool, str, float, dict]:
+        """以扫描时价格作为买入价与参数参考（优先于实时追价）。"""
+        price = float(item.get("scan_price") or item.get("buy_price_ref") or item.get("price") or 0)
+        if price <= 0:
+            return False, "无扫描价", 0.0, {}
+
+        pct = float(item.get("pct_chg", 0) or 0)
+        if pct <= -9.5:
+            return False, "大跌/跌停", 0.0, {}
+        if pct >= 9.8 and not item.get("is_sealed_board"):
+            return False, "涨停难成交", 0.0, {}
+
+        open_px = float(item.get("open_price") or item.get("open_price_ref") or price)
+        pre_close = float(item.get("pre_close") or 0)
+        refs_ok = bool(item.get("buy_price_ref")) and bool(item.get("stop_loss_ref"))
+        if not refs_ok:
+            refs = compute_ultra_trade_refs(
+                price,
+                config=self.config,
+                open_price=open_px,
+                pre_close=pre_close,
+            )
+        else:
+            refs = {
+                "scan_price": float(item.get("scan_price") or price),
+                "buy_price_ref": float(item.get("buy_price_ref") or price),
+                "sell_price_ref": float(item.get("sell_price_ref") or price),
+                "buy_zone": item.get("buy_zone", ""),
+                "buy_zone_low": item.get("buy_zone_low"),
+                "buy_zone_high": item.get("buy_zone_high"),
+                "stop_loss_ref": float(item.get("stop_loss_ref") or 0),
+                "take_profit_ref": float(item.get("take_profit_ref") or 0),
+                "gap_pct": item.get("gap_pct", 0),
+            }
+
+        meta = {
+            **refs,
+            "open_price": round(open_px, 2),
+            "live_price": round(price, 2),
+            "pre_close": round(pre_close, 2) if pre_close > 0 else 0,
+            "intraday_pct": 0.0,
+            "buy_price_suggest": round(price, 2),
+            "morning_bonus": 4.0,
+            "morning_tags": ["扫描价买入"],
+        }
+        return True, "", round(price, 2), meta
 
     def _evaluate_live_buy(
         self,
@@ -209,8 +260,10 @@ class MorningSelector:
         *,
         relaxed: bool = False,
     ) -> Tuple[bool, str, float]:
-        """兼容旧接口，内部走实时买点评估。"""
-        ok, reason, buy_price, meta = self._evaluate_live_buy(item, quote)
+        """优先扫描价买入，实时价仅作回退。"""
+        ok, reason, buy_price, meta = self._evaluate_scan_price_buy(item)
+        if not ok:
+            ok, reason, buy_price, meta = self._evaluate_live_buy(item, quote)
         if not ok and relaxed:
             ok, reason, buy_price, meta = self._evaluate_relaxed_buy(item, quote)
         if ok:
@@ -423,7 +476,9 @@ class SimReplayEngine:
             name = str(row["name"])
             item = row.to_dict()
             q = live_map.loc[code] if code in live_map.index else None
-            ok, reason, buy_price, meta = self.selector._evaluate_live_buy(item, q)
+            ok, reason, buy_price, meta = self.selector._evaluate_scan_price_buy(item)
+            if not ok:
+                ok, reason, buy_price, meta = self.selector._evaluate_live_buy(item, q)
             if not ok and relaxed:
                 ok, reason, buy_price, meta = self.selector._evaluate_relaxed_buy(item, q)
             if not ok:
@@ -447,19 +502,34 @@ class SimReplayEngine:
             tag_extra = ""
             if meta.get("morning_tags"):
                 tag_extra = "," + ",".join(meta["morning_tags"])
+            stop_loss = float(meta.get("stop_loss_ref") or round(
+                buy_price * (1 + self.config.stop_loss_pct / 100), 2,
+            ))
+            take_profit = float(meta.get("take_profit_ref") or round(
+                buy_price * (1 + self.config.take_profit_pct / 100), 2,
+            ))
             pos = SimPosition(
                 code=code,
                 name=name,
                 quantity=qty,
                 buy_price=buy_price,
                 buy_date=today,
-                stop_loss=round(buy_price * (1 + self.config.stop_loss_pct / 100), 2),
-                take_profit=round(buy_price * (1 + self.config.take_profit_pct / 100), 2),
+                stop_loss=round(stop_loss, 2),
+                take_profit=round(take_profit, 2),
                 score=float(row.get("final_score", row.get("ultra_short_score", 0))),
                 tags=f"{row.get('tags', '')}{tag_extra},买点{zone}".strip(","),
             )
+            pos_dict = asdict(pos)
+            pos_dict.update({
+                "scan_price": meta.get("scan_price", buy_price),
+                "buy_price_ref": meta.get("buy_price_ref", buy_price),
+                "sell_price_ref": meta.get("sell_price_ref", buy_price),
+                "stop_loss_ref": stop_loss,
+                "take_profit_ref": take_profit,
+                "buy_zone": zone,
+            })
             self.state["cash"] = float(self.state["cash"]) - cost
-            self.state["positions"].append(asdict(pos))
+            self.state["positions"].append(pos_dict)
             bought.append({**item, **meta, "buy_price": buy_price})
 
         if bought:
@@ -474,12 +544,12 @@ class SimReplayEngine:
             for line in skipped_buy:
                 print(f"  - {line}")
         if show_progress and bought:
-            print(f"\n模拟买入 {len(bought)} 只（按实时价成交）:")
+            print(f"\n模拟买入 {len(bought)} 只（按扫描价成交）:")
             for row in bought:
                 print(
-                    f"  {row['name']}({row['code']}) 现价 {row.get('live_price', row['buy_price'])} "
-                    f"买点 {row.get('buy_zone')} 开盘 {row.get('open_price')} "
-                    f"评分 {row.get('final_score', 0):.0f}"
+                    f"  {row['name']}({row['code']}) 扫描价 {row.get('scan_price', row['buy_price'])} "
+                    f"止损{row.get('stop_loss_ref', '—')} 止盈{row.get('take_profit_ref', '—')} "
+                    f"买点 {row.get('buy_zone')} 评分 {row.get('final_score', 0):.0f}"
                 )
         return picks
 
@@ -546,6 +616,8 @@ class SimReplayEngine:
                 sell_price = price
                 reason = "持2日盈利3%落袋"
 
+            p["sell_price_ref"] = round(price, 2)
+
             if sell_price is not None:
                 trade = self._close_position(p, today, sell_price, reason, hold_days)
                 closed.append(trade)
@@ -579,7 +651,16 @@ class SimReplayEngine:
             exit_reason=reason,
             score=p.get("score", 0),
         )
-        self.state["closed_trades"].append(asdict(trade))
+        rec = asdict(trade)
+        rec.update({
+            "scan_price": p.get("scan_price", p["buy_price"]),
+            "buy_price_ref": p.get("buy_price_ref", p["buy_price"]),
+            "sell_price_ref": p.get("sell_price_ref", round(sell_price, 2)),
+            "stop_loss_ref": p.get("stop_loss_ref", p.get("stop_loss")),
+            "take_profit_ref": p.get("take_profit_ref", p.get("take_profit")),
+            "buy_zone": p.get("buy_zone", ""),
+        })
+        self.state["closed_trades"].append(rec)
         return trade
 
     def run_daily(self, force_select: bool = False, show_progress: bool = True) -> dict:
@@ -818,8 +899,9 @@ class SimReplayEngine:
         print(f"参数: T+1={t1} 止损{self.config.stop_loss_pct}% 止盈{self.config.take_profit_pct}% "
               f"最长{self.config.max_hold_days}日 min_score={self.config.min_score}")
         print(
-            f"买点: 开盘~+{self.config.buy_premium_pct}% 按实时价成交，"
-            f"日内追高≤{self.config.max_intraday_chase_pct}%"
+            f"买点: 以扫描价成交（参考止损{self.config.stop_loss_pct}% / "
+            f"止盈+{self.config.take_profit_pct}%），"
+            f"开盘~+{self.config.buy_premium_pct}%为理想区间"
         )
         print("-" * 60)
         today = self._today()

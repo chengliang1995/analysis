@@ -61,7 +61,33 @@ class AILearningOptimizer:
             analytics["real"] = self._build_analytics(real_df, config, source="real")
 
         param_deltas = self._optimize_params(analytics, config)
-        suggestions = self._build_suggestions(analytics, param_deltas, config)
+        selection_changes = self._optimize_selection_params(analytics, config, param_deltas)
+        midterm_df = self._load_midterm_closed_trades(engine)
+        if not midterm_df.empty:
+            analytics["midterm"] = self._build_analytics(midterm_df, config, source="midterm")
+            self._apply_midterm_selection(selection_changes, midterm_df)
+        try:
+            from quantpy.midterm_pick_tracker import load_tracker_summary, derive_factor_tuning
+            tracker = load_tracker_summary(evaluate=True)
+            summary = tracker.get("summary") or {}
+            if summary.get("matured_count", 0) >= 3:
+                analytics["midterm_tracker"] = {
+                    "matured_count": summary["matured_count"],
+                    "win_rate": summary["win_rate"],
+                    "avg_return": summary.get("avg_return", 0),
+                    "factor_insights": summary.get("factor_insights", [])[:6],
+                }
+                factor = derive_factor_tuning(summary)
+                if factor.get("midterm_min_score") is not None:
+                    selection_changes["midterm_min_score"] = max(
+                        selection_changes.get("midterm_min_score", 55),
+                        int(factor["midterm_min_score"]),
+                    )
+                for cond, bonus in (factor.get("midterm_condition_bonus") or {}).items():
+                    selection_changes.setdefault("midterm_condition_bonus", {})[cond] = bonus
+        except Exception:
+            pass
+        suggestions = self._build_suggestions(analytics, param_deltas, config, selection_changes)
         suggestions = self._maybe_llm_enhance(analytics, suggestions, config)
 
         param_changes: Dict[str, str] = {}
@@ -76,6 +102,7 @@ class AILearningOptimizer:
             "analytics": analytics,
             "param_deltas": param_deltas,
             "param_changes": param_changes,
+            "selection_changes": selection_changes,
             "suggestions": suggestions,
             "config_after": asdict(config),
             "generated_at": datetime.now().isoformat(),
@@ -207,8 +234,9 @@ class AILearningOptimizer:
         if by_score:
             best = max(by_score, key=lambda x: x["avg_profit"])
             worst = min(by_score, key=lambda x: x["avg_profit"])
+            # 高分段表现好 → 抬高入选门槛（注意：55/60 是 min_score，不是评分区间 75-90）
             if best["bucket"] in ("75-90", "90+") and best["win_rate"] >= 55:
-                target = 75 if best["bucket"] == "75-90" else 80
+                target = 55 if best["bucket"] == "75-90" else 60
                 if config.min_score < target:
                     deltas["min_score"] = float(target)
             if worst["bucket"] == "<60" and worst["count"] >= 2 and worst["win_rate"] < 40:
@@ -253,6 +281,88 @@ class AILearningOptimizer:
 
         return self._clamp_deltas(config, deltas)
 
+    def _load_midterm_closed_trades(self, engine: Any) -> pd.DataFrame:
+        mt = engine.state.get("midterm") or {}
+        trades = mt.get("closed_trades") or []
+        if not trades:
+            return pd.DataFrame()
+        df = pd.DataFrame(trades)
+        if "profit_pct" not in df.columns:
+            return pd.DataFrame()
+        score_col = "midterm_score" if "midterm_score" in df.columns else "score"
+        if score_col in df.columns and "score" not in df.columns:
+            df["score"] = df[score_col]
+        return df
+
+    def _optimize_selection_params(
+        self,
+        analytics: dict,
+        config: SimConfig,
+        param_deltas: Dict[str, float],
+    ) -> Dict[str, Any]:
+        """根据交易样本推导选股调优参数（超短/中线）。"""
+        changes: Dict[str, Any] = {}
+        sim = analytics if analytics.get("sufficient") else analytics.get("real", {})
+        if not sim.get("sufficient"):
+            return changes
+
+        min_score = int(param_deltas.get("min_score", config.min_score))
+        changes["ultra_min_score"] = min_score
+
+        win_rate = float(sim.get("win_rate", 0))
+        avg_profit = float(sim.get("avg_profit", 0))
+        by_exit = sim.get("by_exit", [])
+        total = sim.get("trade_count") or 1
+        stop_cnt = sum(x["count"] for x in by_exit if "止损" in str(x.get("key", "")))
+
+        if stop_cnt / total > 0.35:
+            changes["ultra_penalize_unsealed_above_pct"] = 6.5
+            changes["ultra_preferred_tags"] = ["涨停不破开", "强势封板", "封板", "连板"]
+            changes.setdefault("ultra_tag_bonus", {})
+            changes["ultra_tag_bonus"]["强势封板"] = 6
+            changes["ultra_tag_bonus"]["涨停不破开"] = 5
+
+        if win_rate < 45:
+            changes["ultra_min_score"] = max(min_score, 43)
+            changes["ultra_preferred_tags"] = ["涨停不破开", "强势封板", "封板", "连板"]
+
+        if avg_profit < 0:
+            changes["ultra_penalize_3d_gain_above"] = 22.0
+
+        for row in sim.get("by_score", []):
+            if row.get("bucket") in ("75-90", "90+") and row.get("win_rate", 0) >= 55:
+                changes.setdefault("ultra_tag_bonus", {})
+                changes["ultra_tag_bonus"]["涨停不破开"] = max(
+                    changes["ultra_tag_bonus"].get("涨停不破开", 0), 5,
+                )
+            if row.get("bucket") == "<60" and row.get("win_rate", 100) < 40:
+                changes["ultra_min_score"] = max(changes.get("ultra_min_score", min_score), 45)
+
+        return changes
+
+    def _apply_midterm_selection(
+        self,
+        changes: Dict[str, Any],
+        midterm_df: pd.DataFrame,
+    ) -> None:
+        if midterm_df.empty or len(midterm_df) < 3:
+            return
+        win_rate = (midterm_df["profit_pct"] > 0).mean() * 100
+        avg_profit = float(midterm_df["profit_pct"].mean())
+        if win_rate < 45 or avg_profit < -1:
+            changes["midterm_min_score"] = 58
+        score_col = "score" if "score" in midterm_df.columns else None
+        if score_col:
+            for low, high, label in [(0, 55, "<55"), (55, 70, "55-70"), (70, 999, "70+")]:
+                part = midterm_df[(midterm_df[score_col] >= low) & (midterm_df[score_col] < high)]
+                if part.empty:
+                    continue
+                wr = (part["profit_pct"] > 0).mean() * 100
+                if label == "<55" and len(part) >= 2 and wr < 40:
+                    changes["midterm_min_score"] = max(changes.get("midterm_min_score", 55), 60)
+                if label in ("55-70", "70+") and wr >= 55 and float(part["profit_pct"].mean()) > 1:
+                    changes["midterm_min_score"] = max(55, changes.get("midterm_min_score", 55) - 2)
+
     def _clamp_deltas(self, config: SimConfig, deltas: Dict[str, float]) -> Dict[str, float]:
         clamped: Dict[str, float] = {}
         for key, val in deltas.items():
@@ -277,6 +387,7 @@ class AILearningOptimizer:
         analytics: dict,
         param_deltas: Dict[str, float],
         config: SimConfig,
+        selection_changes: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         suggestions: List[str] = []
         sim = analytics if analytics.get("sufficient") else {}
@@ -331,14 +442,47 @@ class AILearningOptimizer:
 
         if param_deltas:
             parts = [f"{k}→{v}" for k, v in param_deltas.items()]
-            suggestions.append(f"策略参数优化建议：{', '.join(parts)}。")
+            suggestions.append(f"模拟参数优化：{', '.join(parts)}。")
         else:
-            suggestions.append("当前参数与样本匹配度尚可，维持现有选股与买卖点纪律。")
+            suggestions.append("当前模拟参数与样本匹配度尚可，维持现有买卖点纪律。")
+
+        if selection_changes:
+            sel_parts = []
+            if "ultra_min_score" in selection_changes:
+                sel_parts.append(f"超短门槛≥{selection_changes['ultra_min_score']}")
+            if "midterm_min_score" in selection_changes:
+                sel_parts.append(f"中线门槛≥{selection_changes['midterm_min_score']}")
+            if selection_changes.get("ultra_preferred_tags"):
+                sel_parts.append("偏好" + "/".join(selection_changes["ultra_preferred_tags"][:3]))
+            if selection_changes.get("ultra_penalize_unsealed_above_pct"):
+                sel_parts.append(
+                    f"未封板>{selection_changes['ultra_penalize_unsealed_above_pct']}%减分"
+                )
+            if sel_parts:
+                suggestions.append(f"选股参数优化：{' · '.join(sel_parts)}。")
+        else:
+            suggestions.append("选股参数维持默认，继续积累样本。")
+
+        midterm = analytics.get("midterm") or {}
+        if midterm.get("sufficient"):
+            suggestions.append(
+                f"【模拟中线】近 {midterm['trade_count']} 笔："
+                f"胜率 {midterm['win_rate']}%，均收益 {midterm['avg_profit']:+.2f}%。"
+            )
+
+        tracker = analytics.get("midterm_tracker") or {}
+        if tracker.get("matured_count", 0) >= 3:
+            suggestions.append(
+                f"【中线跟进1月】成熟 {tracker['matured_count']} 只，"
+                f"胜率 {tracker['win_rate']}%，均收益 {tracker.get('avg_return', 0):+.2f}%。"
+            )
+            for line in tracker.get("factor_insights", [])[:3]:
+                suggestions.append(line)
 
         suggestions.append(
-            f"超短纪律：买入控制在开盘+{config.buy_premium_pct}%附近；"
-            f"止损 {config.stop_loss_pct}% / 止盈 +{config.take_profit_pct}% / "
-            f"最长 {config.max_hold_days} 日；min_score≥{config.min_score}。"
+            f"超短纪律：以扫描价买入；参考止损 {config.stop_loss_pct}% / "
+            f"止盈 +{config.take_profit_pct}% / 最长 {config.max_hold_days} 日；"
+            f"min_score≥{config.min_score}。"
         )
         return suggestions
 
@@ -404,8 +548,12 @@ class AILearningOptimizer:
         for i, s in enumerate(result.get("suggestions", []), 1):
             lines.append(f"{i}. {s}\n")
         if result.get("param_changes"):
-            lines.append("\n## 参数调整\n")
+            lines.append("\n## 模拟参数调整\n")
             for k, v in result["param_changes"].items():
+                lines.append(f"- {k}: {v}\n")
+        if result.get("selection_changes"):
+            lines.append("\n## 选股参数优化\n")
+            for k, v in result["selection_changes"].items():
                 lines.append(f"- {k}: {v}\n")
         md_path.write_text("".join(lines), encoding="utf-8")
         return fname
@@ -417,8 +565,12 @@ class AILearningOptimizer:
         for i, s in enumerate(result.get("suggestions", [])[:6], 1):
             print(f"  {i}. {s}")
         if result.get("param_changes"):
-            print("\n【AI 参数优化】")
+            print("\n【模拟参数优化】")
             for k, v in result["param_changes"].items():
+                print(f"  {k}: {v}")
+        if result.get("selection_changes"):
+            print("\n【选股参数优化】")
+            for k, v in result["selection_changes"].items():
                 print(f"  {k}: {v}")
 
 

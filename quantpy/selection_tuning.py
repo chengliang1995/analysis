@@ -40,6 +40,8 @@ class SelectionTuning:
     midterm_ma20_chase_penalty: int = 0
     midterm_ma20_chase_ratio: float = 1.08
     midterm_penalize_ret_20d_below: Optional[float] = None
+    midterm_condition_bonus: Dict[str, int] = field(default_factory=dict)
+    midterm_tag_bonus: Dict[str, int] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     sources: List[str] = field(default_factory=list)
 
@@ -145,6 +147,27 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
     if cfg.get("min_score") is not None:
         tuning.ultra_min_score = max(tuning.ultra_min_score, int(cfg["min_score"]))
 
+    sel = ai.get("selection_changes") or {}
+    if sel.get("ultra_min_score") is not None:
+        tuning.ultra_min_score = max(tuning.ultra_min_score, int(sel["ultra_min_score"]))
+    if sel.get("midterm_min_score") is not None:
+        tuning.midterm_min_score = max(tuning.midterm_min_score, int(sel["midterm_min_score"]))
+    for cond, bonus in (sel.get("midterm_condition_bonus") or {}).items():
+        tuning.midterm_condition_bonus[cond] = max(
+            tuning.midterm_condition_bonus.get(cond, 0), int(bonus),
+        )
+    if sel.get("ultra_penalize_3d_gain_above") is not None:
+        tuning.ultra_penalize_3d_gain_above = sel["ultra_penalize_3d_gain_above"]
+    if sel.get("ultra_penalize_unsealed_above_pct") is not None:
+        tuning.ultra_penalize_unsealed_above_pct = min(
+            tuning.ultra_penalize_unsealed_above_pct or 99,
+            float(sel["ultra_penalize_unsealed_above_pct"]),
+        )
+    if sel.get("ultra_preferred_tags"):
+        tuning.ultra_preferred_tags = list(sel["ultra_preferred_tags"])
+    for tag, bonus in (sel.get("ultra_tag_bonus") or {}).items():
+        tuning.ultra_tag_bonus[tag] = max(tuning.ultra_tag_bonus.get(tag, 0), int(bonus))
+
     analytics = ai.get("analytics") or {}
     primary = analytics if analytics.get("sufficient") else analytics.get("real") or {}
     if not primary.get("sufficient"):
@@ -160,6 +183,41 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
     for row in primary.get("by_score", []):
         if row.get("bucket") == "<60" and row.get("win_rate", 100) < 40:
             tuning.ultra_min_score = max(tuning.ultra_min_score, 45)
+
+    midterm = analytics.get("midterm") or {}
+    if midterm.get("sufficient") and float(midterm.get("win_rate", 100)) < 45:
+        tuning.midterm_min_score = max(tuning.midterm_min_score, 58)
+
+
+def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
+    try:
+        from quantpy.midterm_pick_tracker import load_tracker_summary, derive_factor_tuning
+        payload = load_tracker_summary(evaluate=True)
+        summary = payload.get("summary") or {}
+        if summary.get("matured_count", 0) < 3:
+            return
+        tuning.sources.append("midterm_tracker")
+        factor = derive_factor_tuning(summary)
+        for cond, bonus in (factor.get("midterm_condition_bonus") or {}).items():
+            tuning.midterm_condition_bonus[cond] = max(
+                tuning.midterm_condition_bonus.get(cond, 0), int(bonus),
+            )
+        for tag, bonus in (factor.get("midterm_tag_bonus") or {}).items():
+            tuning.midterm_tag_bonus[tag] = max(
+                tuning.midterm_tag_bonus.get(tag, 0), int(bonus),
+            )
+        if factor.get("midterm_min_score") is not None:
+            tuning.midterm_min_score = max(
+                tuning.midterm_min_score, int(factor["midterm_min_score"]),
+            )
+        tuning.notes.extend((factor.get("notes") or [])[:4])
+        wr = summary.get("win_rate", 0)
+        if summary.get("matured_count", 0) >= 3:
+            tuning.notes.append(
+                f"中线跟进1月胜率 {wr}%（{summary['matured_count']} 笔），因子已调优"
+            )
+    except Exception:
+        pass
 
 
 def _apply_real_review(tuning: SelectionTuning, review: dict) -> None:
@@ -246,6 +304,7 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
 
     _apply_ai_learning(tuning, load_latest_ai_learning())
     _apply_real_review(tuning, load_latest_real_review())
+    _apply_midterm_tracker(tuning)
 
     if for_sim:
         tuning.strict_tag_filter = False

@@ -185,6 +185,15 @@ def _evaluate_midterm_technicals(
         score += 10
         tags.append("60分底背离")
 
+    if tuning:
+        for cond in conditions:
+            score += tuning.midterm_condition_bonus.get(cond, 0)
+        for tag_key, bonus in tuning.midterm_tag_bonus.items():
+            if any(tag_key in t or t == tag_key for t in tags):
+                score += bonus
+        if tuning.midterm_penalize_ret_20d_below is not None and ret_20d < tuning.midterm_penalize_ret_20d_below:
+            score -= 8
+
     if tuning and tuning.midterm_ma20_chase_penalty > 0 and ma20 > 0:
         if price > ma20 * tuning.midterm_ma20_chase_ratio:
             score -= tuning.midterm_ma20_chase_penalty
@@ -1346,6 +1355,19 @@ class MidtermPortfolioAdvisor:
         result["markdown"] = md
         result["report_path"] = str(md_path)
         _progress(f"分析完成：推荐 {len(rec_records)} 只，报告已保存", show_progress)
+
+        try:
+            from quantpy.midterm_pick_tracker import run_midterm_tracker_cycle
+            tracker = run_midterm_tracker_cycle(
+                rec_records[:10], show_progress=show_progress,
+            )
+            result["pick_tracker"] = tracker
+            if tracker.get("suggestions"):
+                result["suggestions"].extend(tracker["suggestions"][:4])
+        except Exception as exc:
+            if show_progress:
+                _progress(f"  跟进池记录跳过: {exc}", show_progress)
+
         return result
 
 

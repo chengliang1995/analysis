@@ -54,15 +54,21 @@ def _format_ultra_short_table(df: pd.DataFrame, top_n: int = 20) -> str:
     if df.empty:
         return "（今日未捕捉到符合条件的超短标的）\n"
 
-    headers = ["排名", "代码", "名称", "评分", "涨幅%", "换手%", "连板", "标签"]
+    headers = ["排名", "代码", "名称", "评分", "扫描价", "止损", "止盈", "涨幅%", "换手%", "连板", "标签"]
     rows = []
     for i, (_, row) in enumerate(df.head(top_n).iterrows(), 1):
         tags = truncate_display(str(row.get("tags", "") or ""), 30)
+        scan_px = row.get("scan_price", row.get("price", ""))
+        stop = row.get("stop_loss_ref", "")
+        take = row.get("take_profit_ref", "")
         rows.append([
             i,
             row["code"],
             row["name"],
             row["ultra_short_score"],
+            f"{float(scan_px):.2f}" if scan_px not in ("", None) else "—",
+            f"{float(stop):.2f}" if stop not in ("", None) else "—",
+            f"{float(take):.2f}" if take not in ("", None) else "—",
             f"{float(row['pct_chg']):.2f}",
             f"{float(row['turnover']):.2f}",
             row["consecutive_boards"],
@@ -71,7 +77,7 @@ def _format_ultra_short_table(df: pd.DataFrame, top_n: int = 20) -> str:
     return format_markdown_table(
         headers,
         rows,
-        aligns=["right", "left", "left", "right", "right", "right", "right", "left"],
+        aligns=["right", "left", "left", "right", "right", "right", "right", "right", "right", "right", "left"],
     )
 
 

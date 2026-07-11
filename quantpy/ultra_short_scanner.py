@@ -13,6 +13,7 @@ import pandas as pd
 
 from quantpy.qstock_strategy_optimizer import StrategyOptimizer
 from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
+from quantpy.ultra_trade_refs import compute_ultra_trade_refs, load_sim_config_for_refs
 from quantpy.stock_data import (
     get_market_spot,
     get_stock_code_column,
@@ -199,6 +200,7 @@ class UltraShortScanner:
     bar_low = float(latest.get("low", price) or price)
     high = float(spot.get("high", bar_high) or bar_high) if spot else bar_high
     low = float(spot.get("low", bar_low) or bar_low) if spot else bar_low
+    open_px = float(spot.get("open", 0) or 0) if spot else float(latest.get("open", price) or price)
     pre_close = float(spot.get("pre_close", 0) or 0) if spot else 0
     if pre_close <= 0 and len(hist) >= 2:
       pre_close = float(hist["close"].iloc[-2])
@@ -279,6 +281,8 @@ class UltraShortScanner:
       "code": str(code).zfill(6),
       "name": name,
       "price": round(price, 2),
+      "open_price": round(open_px, 2),
+      "pre_close": round(pre_close, 2) if pre_close > 0 else "",
       "pct_chg": round(spot_pct, 2),
       "turnover": round(turnover, 2),
       "consecutive_boards": consecutive,
@@ -294,6 +298,13 @@ class UltraShortScanner:
       "limit_date": str(limit_signal["limit_date"]) if limit_signal else "",
       "days_after_limit": limit_signal.get("days_after_limit", "") if limit_signal else "",
     }
+    refs = compute_ultra_trade_refs(
+      price,
+      config=load_sim_config_for_refs(),
+      open_price=open_px,
+      pre_close=pre_close,
+    )
+    item.update(refs)
     return self._apply_tuning_to_item(item, tuning)
 
   def _apply_tuning_to_item(self, item: dict, tuning: Optional[object]) -> Optional[Dict]:

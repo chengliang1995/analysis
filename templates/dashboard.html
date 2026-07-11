@@ -332,6 +332,7 @@
       <button type="button" data-action="sector">板块推荐</button>
       <button type="button" data-action="report">生成日报</button>
       <button type="button" data-action="midterm">中线分析</button>
+      <button type="button" data-action="midterm-track" class="secondary">中线跟进评估</button>
       <button type="button" data-action="alerts">价位提醒</button>
       <button type="button" data-action="review">实盘复盘</button>
       <button type="button" data-action="ai-learn" class="secondary">AI策略学习</button>
@@ -398,6 +399,21 @@
           <div class="rec-filter-summary" id="midterm-filter-summary" style="display:none"></div>
           <div class="table-wrap" id="midterm-rec-table"></div>
         </section>
+        <section class="panel" style="margin-bottom:20px" id="midterm-tracker-panel">
+          <div class="panel-head">
+            <h2>中线选股跟进<span class="drill-hint">TOP10 · 持续1月(22交易日) · 胜率学习</span></h2>
+            <span class="badge" id="midterm-tracker-badge">—</span>
+          </div>
+          <div class="stats" id="midterm-tracker-stats"></div>
+          <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <h3>因子胜率</h3>
+          </div>
+          <div class="table-wrap" id="midterm-tracker-factors"></div>
+          <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <h3>跟进明细（跟踪中 / 已到期）</h3>
+          </div>
+          <div class="table-wrap" id="midterm-tracker-table"></div>
+        </section>
       </div>
 
       <section class="panel" style="margin-bottom:20px" id="sector-panel">
@@ -435,7 +451,7 @@
 
       <div class="grid">
         <section class="panel">
-          <div class="panel-head"><h2>超短 TOP 10</h2><span class="badge" id="ultra-badge">缓存</span></div>
+          <div class="panel-head"><h2>超短 TOP 10</h2><span class="badge" id="ultra-badge">缓存 · 扫描价参考</span></div>
           <div class="table-wrap" id="ultra-table"></div>
         </section>
         <section class="panel" id="panel-suggest">
@@ -572,7 +588,7 @@
 
     <div class="main-tab-panel" id="tab-sim">
       <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>超短模拟持仓</h2><span class="badge">20万 · 实时买点 · T+1</span></div>
+        <div class="panel-head"><h2>超短模拟持仓</h2><span class="badge">20万 · 扫描价买卖 · T+1</span></div>
         <div class="stats" id="sim-stats"></div>
         <div class="table-wrap" id="sim-table"></div>
       </section>
@@ -653,6 +669,7 @@
       "sim-midterm": "模拟中线复盘中…",
       "sim-midterm-select": "中线模拟选股中（约 1～3 分钟）…",
       "ai-learn": "AI 策略学习中…",
+      "midterm-track": "中线跟进评估中…",
     };
     const ACTION_TIMEOUT_MS = {
       midterm: 600000,
@@ -665,7 +682,7 @@
       default: 180000,
     };
     const LONG_RUNNING_ACTIONS = new Set([
-      "midterm", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "ai-learn",
+      "midterm", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "ai-learn", "midterm-track",
     ]);
     let lastDashboardData = null;
 
@@ -1297,6 +1314,64 @@
       }
     }
 
+    function renderMidtermTracker(mt) {
+      const payload = mt || {};
+      const summary = payload.summary || {};
+      const badge = document.getElementById("midterm-tracker-badge");
+      const statsEl = document.getElementById("midterm-tracker-stats");
+      const factorEl = document.getElementById("midterm-tracker-factors");
+      const tableEl = document.getElementById("midterm-tracker-table");
+      if (!statsEl) return;
+      const matured = summary.matured_count || 0;
+      const tracking = summary.tracking_count || 0;
+      if (badge) {
+        badge.textContent = matured
+          ? `胜率 ${summary.win_rate ?? 0}% · 成熟${matured}`
+          : (tracking ? `跟踪 ${tracking} 只` : "待中线分析记录");
+      }
+      renderStats(statsEl, [
+        ["跟踪中", `${tracking} 只`],
+        ["已到期", `${matured} 只`],
+        ["胜率(≥3%)", matured ? `${summary.win_rate ?? 0}%` : "—"],
+        ["正收益率", matured ? `${summary.positive_rate ?? 0}%` : "—"],
+        ["均收益", matured ? fmtPct(summary.avg_return) : "—"],
+        ["跟进周期", `${summary.follow_trading_days || 22} 交易日`],
+      ]);
+      const factors = summary.by_condition || [];
+      renderTable(
+        factorEl,
+        ["因子", "样本", "胜率%", "正收益%", "均收益%"],
+        factors.map((x) => [
+          x.label || x.key,
+          x.count,
+          x.win_rate,
+          x.positive_rate,
+          fmtPct(x.avg_return),
+        ]),
+        "满 22 交易日后统计因子胜率，并反馈到选股评分"
+      );
+      const rows = [
+        ...(payload.tracking || []).map((x) => ({ ...x, _status: "跟踪" })),
+        ...(payload.matured_recent || []).map((x) => ({ ...x, _status: "到期" })),
+      ];
+      renderTable(
+        tableEl,
+        ["状态", "选股日", "排名", "代码", "名称", "选入价", "评分", "到期收益%", "胜率"],
+        rows.map((x) => [
+          x._status,
+          x.pick_date || "—",
+          x.rank || "—",
+          x.code,
+          x.name,
+          x.pick_price != null ? Number(x.pick_price).toFixed(2) : "—",
+          x.midterm_score != null ? Number(x.midterm_score).toFixed(0) : "—",
+          x.return_pct != null ? fmtPct(x.return_pct) : "—",
+          x.is_win === true ? "胜" : (x.is_win === false ? "负" : "—"),
+        ]),
+        "点击「中线分析」自动记录当日 TOP10；到期后自动计入胜率学习"
+      );
+    }
+
     function renderMidtermRecTable(rec, backendStats) {
       const el = document.getElementById("midterm-rec-table");
       const badge = document.getElementById("midterm-rec-badge");
@@ -1671,24 +1746,30 @@
         ["总权益", `${fmtMoney(s.equity)} 元`],
         ["现金", `${fmtMoney(s.cash)} 元`],
         ["总收益", fmtPct(s.total_return_pct)],
-        ["T+1 / 止损止盈", `${cfg.t_plus_one !== false ? "开启" : "关闭"} · ${cfg.stop_loss_pct || -3}% / +${cfg.take_profit_pct || 8}%`],
+        ["买卖参考", `${cfg.price_mode || "扫描价"} · 止损${cfg.stop_loss_pct || -3}% / 止盈+${cfg.take_profit_pct || 8}%`],
       ]);
       const positions = Array.isArray(s.positions) ? s.positions : [];
       renderTable(
         tableEl,
-        ["代码", "名称", "数量", "买入", "现价", "止损", "止盈", "浮盈%", "可卖"],
+        ["代码", "名称", "数量", "扫描买", "现价", "止损", "止盈", "浮盈%", "可卖"],
         positions.map((x) => [
-          x.code, x.name, x.quantity, x.buy_price, x.current_price,
-          x.stop_loss, x.take_profit, fmtPct(x.profit_pct),
+          x.code, x.name, x.quantity,
+          x.buy_price_ref || x.scan_price || x.buy_price,
+          x.current_price,
+          x.stop_loss_ref || x.stop_loss,
+          x.take_profit_ref || x.take_profit,
+          fmtPct(x.profit_pct),
           x.t_plus_one_locked ? "T+1锁" : (x.sellable_today !== false ? "可卖" : "—"),
         ]),
         "超短模拟空仓（点击「模拟选股」）"
       );
       renderTable(
         closedEl,
-        ["代码", "名称", "买入", "卖出", "收益%", "天数", "原因"],
+        ["代码", "名称", "扫描买", "卖出", "收益%", "天数", "原因"],
         (s.closed_trades || []).map((x) => [
-          x.code, x.name, x.buy_price, x.sell_price,
+          x.code, x.name,
+          x.buy_price_ref || x.scan_price || x.buy_price,
+          x.sell_price_ref || x.sell_price,
           fmtPct(x.profit_pct), x.hold_days, x.exit_reason || "",
         ]),
         "暂无平仓记录"
@@ -1784,11 +1865,13 @@
     function renderUltraShort(list) {
       renderTable(
         document.getElementById("ultra-table"),
-        ["代码", "名称", "评分", "涨幅%", "换手%", "连板", "标签"],
+        ["代码", "名称", "评分", "扫描价", "止损", "止盈", "涨幅%", "标签"],
         (list || []).map((x) => [
           x.code, x.name, x.ultra_short_score,
+          x.scan_price != null ? Number(x.scan_price).toFixed(2) : (x.price != null ? Number(x.price).toFixed(2) : "—"),
+          x.stop_loss_ref != null ? Number(x.stop_loss_ref).toFixed(2) : "—",
+          x.take_profit_ref != null ? Number(x.take_profit_ref).toFixed(2) : "—",
           fmtPct(x.pct_chg),
-          x.turnover, x.consecutive_boards || 0,
           `<span class="tag-list" title="${x.tags || ""}">${x.tags || ""}</span>`,
         ]),
         "暂无扫描结果，点击「超短扫描」"
@@ -1908,6 +1991,8 @@
         renderSuggestionGroup("个股复盘", groups.midterm_review, "点击「中线分析」") +
         renderSuggestionGroup("持仓优化", groups.midterm_optimize, "—") +
         renderSuggestionGroup("中线推荐", groups.midterm_recommend, "暂无推荐标的") +
+        renderSuggestionGroup("超短买卖参考", groups.ultra_recommend, "点击「超短扫描」获取扫描价参考") +
+        renderSuggestionGroup("中线跟进学习", groups.midterm_tracker, "中线 TOP10 跟进 1 月后统计胜率与因子") +
         renderSuggestionGroup("实盘复盘", groups.real_review, "点击「实盘复盘」生成买卖点分析") +
         renderSuggestionGroup("实盘操作", groups.portfolio_actions, "暂无持仓或待刷新行情") +
         renderSuggestionGroup("仓位分析", groups.portfolio_summary, "—") +
@@ -2137,6 +2222,7 @@
       try { renderLevelAlerts(data.level_alerts); } catch (e) { console.error("renderLevelAlerts", e); }
       try { renderTradeReview(data.portfolio_review); } catch (e) { console.error("renderTradeReview", e); }
       try { renderUltraShort(data.ultra_short); } catch (e) { console.error("renderUltraShort", e); }
+      try { renderMidtermTracker(data.midterm_tracker); } catch (e) { console.error("renderMidtermTracker", e); }
       try { renderSector(data.sector); } catch (e) { console.error("renderSector", e); }
       try { renderSuggestions(data); } catch (e) { console.error("renderSuggestions", e); }
       try { renderRecentTrades(data.trades); } catch (e) { console.error("renderRecentTrades", e); }
@@ -2512,6 +2598,9 @@
           if (body.midterm) {
             body.data.portfolio = body.data.portfolio || {};
             body.data.portfolio.midterm = body.midterm;
+          }
+          if (body.midterm_tracker) {
+            body.data.midterm_tracker = body.midterm_tracker;
           }
           renderAll(body.data);
           if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select"].includes(action)) {

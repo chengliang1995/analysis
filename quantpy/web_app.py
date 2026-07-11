@@ -44,6 +44,7 @@ from quantpy.midterm_portfolio_advisor import (
     load_latest_midterm_advice,
     run_midterm_advice,
 )
+from quantpy.midterm_pick_tracker import load_tracker_summary, run_midterm_tracker_cycle
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import (
     fetch_board_list,
@@ -94,6 +95,8 @@ def _ultra_short_records(df: pd.DataFrame, top_n: int = 10) -> list[dict]:
         "code", "name", "ultra_short_score", "pct_chg", "turnover",
         "consecutive_boards", "strength_factor", "is_sealed_board",
         "is_strong_today", "hold_no_sell", "tags",
+        "scan_price", "buy_price_ref", "sell_price_ref",
+        "stop_loss_ref", "take_profit_ref", "buy_zone",
     ]
     available = [c for c in cols if c in df.columns]
     rows = df.head(top_n)[available].copy()
@@ -207,9 +210,23 @@ def get_suggestions(
         ai_learn = list(ai_meta["suggestions"][:8])
         if ai_meta.get("param_changes"):
             ai_learn.append(
-                "最近 AI 参数调整: "
+                "模拟参数: "
                 + ", ".join(f"{k} {v}" for k, v in ai_meta["param_changes"].items())
             )
+        if ai_meta.get("selection_changes"):
+            sel = ai_meta["selection_changes"]
+            parts = []
+            if sel.get("ultra_min_score") is not None:
+                parts.append(f"超短≥{sel['ultra_min_score']}")
+            if sel.get("midterm_min_score") is not None:
+                parts.append(f"中线≥{sel['midterm_min_score']}")
+            if sel.get("ultra_preferred_tags"):
+                parts.append("偏好" + "/".join(sel["ultra_preferred_tags"][:2]))
+            if parts:
+                ai_learn.append("选股参数: " + " · ".join(parts))
+
+    tracker_payload = load_tracker_summary(evaluate=False)
+    midterm_tracker_learn = list(tracker_payload.get("suggestions") or [])[:6]
 
     midterm_review = [r.get("summary", "") for r in midterm.get("reviews", []) if r.get("ok")][:6]
     midterm_optimize = list(midterm.get("optimize_suggestions", []))[:5]
@@ -218,6 +235,21 @@ def get_suggestions(
         f"【推荐】{r['name']}({r['code']}) 评分{r['midterm_score']} · {r.get('reason', '')}"
         for r in midterm.get("recommendations", [])[:5]
     ]
+    ultra_recommend = []
+    for u in ultra[:5]:
+        buy_ref = u.get("buy_price_ref") or u.get("scan_price") or u.get("price")
+        stop_ref = u.get("stop_loss_ref")
+        take_ref = u.get("take_profit_ref")
+        ref_parts = [f"买{buy_ref}"] if buy_ref else []
+        if stop_ref:
+            ref_parts.append(f"止损{stop_ref}")
+        if take_ref:
+            ref_parts.append(f"止盈{take_ref}")
+        ref_txt = " · ".join(ref_parts)
+        ultra_recommend.append(
+            f"【超短】{u.get('name')}({u.get('code')}) 评分{u.get('ultra_short_score')} "
+            f"{ref_txt} · {u.get('tags', '')[:40]}"
+        )
 
     real_review = load_latest_real_review()
     real_review_suggestions = list(real_review.get("optimization_suggestions", []))[:8]
@@ -234,7 +266,8 @@ def get_suggestions(
     for s in (
         level_alert_msgs + portfolio_actions + portfolio_summary
         + midterm_daily + midterm_review
-        + midterm_optimize + midterm_recommend + real_review_suggestions + learn + ai_learn
+        + midterm_optimize + midterm_recommend + ultra_recommend
+        + midterm_tracker_learn + real_review_suggestions + learn + ai_learn
     ):
         if s and s not in seen:
             seen.add(s)
@@ -247,6 +280,8 @@ def get_suggestions(
         "midterm_daily": midterm_daily,
         "midterm_optimize": midterm_optimize,
         "midterm_recommend": midterm_recommend,
+        "ultra_recommend": ultra_recommend,
+        "midterm_tracker": midterm_tracker_learn,
         "real_review": real_review_suggestions,
         "level_alerts": level_alert_msgs,
         "learn": learn,
@@ -294,6 +329,7 @@ def _enrich_sim_portfolio(
         enriched.append({
             **p,
             "current_price": round(current, 2),
+            "sell_price_ref": round(current, 2),
             "market_value": round(market_value, 2),
             "profit_amount": round(market_value - cost_amount, 2),
             "profit_pct": round(profit_pct, 2),
@@ -332,6 +368,8 @@ def _enrich_sim_portfolio(
             "max_hold_days": engine.config.max_hold_days,
             "min_score": engine.config.min_score,
             "max_positions": engine.config.max_positions,
+            "buy_premium_pct": engine.config.buy_premium_pct,
+            "price_mode": "扫描价",
         },
         "updated_at": engine.state.get("updated_at", ""),
         "ai_learning": load_latest_ai_learning(),
@@ -422,6 +460,7 @@ def get_dashboard_data(
         level_alerts=level_alerts,
     )
     review = load_latest_real_review()
+    midterm_tracker = load_tracker_summary(evaluate=True)
     return {
         "portfolio": get_portfolio_data(
             portfolio_stats=portfolio_stats,
@@ -442,6 +481,7 @@ def get_dashboard_data(
         "level_alerts": level_alerts,
         "report": load_latest_report_meta(),
         "sector": load_latest_sector(),
+        "midterm_tracker": midterm_tracker,
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -1065,6 +1105,19 @@ def api_action(action: str):
                 midterm=result,
             )
             prefetched_dashboard["level_alerts"] = alerts
+        elif action == "midterm-track":
+            result, log = _run_quiet(
+                run_midterm_tracker_cycle,
+                None,
+                show_progress=True,
+            )
+            summary = result.get("summary") or {}
+            message = (
+                f"中线跟进更新：跟踪 {summary.get('tracking_count', 0)} 只，"
+                f"成熟 {summary.get('matured_count', 0)} 只，"
+                f"胜率 {summary.get('win_rate', 0)}%"
+            )
+            extra["midterm_tracker"] = result
         elif action == "alerts":
             pm_stats = PortfolioManager().analyze()
             if not pm_stats.get("has_data"):
@@ -1207,6 +1260,10 @@ def api_action(action: str):
             payload["data"]["ultra_short"] = extra["ultra_short"]
         if extra.get("sector") is not None:
             payload["data"]["sector"] = extra["sector"]
+        if extra.get("midterm_tracker") is not None:
+            payload["data"]["midterm_tracker"] = extra["midterm_tracker"]
+        if extra.get("level_alerts") is not None:
+            payload["data"]["level_alerts"] = extra["level_alerts"]
         return jsonify(payload)
     except Exception as exc:
         return jsonify({

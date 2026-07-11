@@ -802,9 +802,19 @@ class PortfolioManager:
                 )
             elif code in ultra_map:
                 u = ultra_map[code]
+                buy_ref = u.get("buy_price_ref", u.get("scan_price", u.get("price", "")))
+                stop_ref = u.get("stop_loss_ref", "")
+                take_ref = u.get("take_profit_ref", "")
+                ref_txt = ""
+                if buy_ref:
+                    ref_txt = f" 参考买{buy_ref}"
+                    if stop_ref:
+                        ref_txt += f" 止损{stop_ref}"
+                    if take_ref:
+                        ref_txt += f" 止盈{take_ref}"
                 actions.append(
                     f"【超短仓·{name}】超短榜评分 {u.get('ultra_short_score', 0)}，"
-                    f"标签：{u.get('tags', '')}。"
+                    f"标签：{u.get('tags', '')}{ref_txt}。"
                 )
             if weight > 35:
                 actions.append(f"【超短仓·{name}】单票占比 {weight:.1f}% 偏高。")
