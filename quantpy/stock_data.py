@@ -169,6 +169,41 @@ def is_usable_market_universe(
     return True, ""
 
 
+def is_usable_quote_snapshot(df: pd.DataFrame) -> Tuple[bool, str]:
+    """
+    判断行情字段是否可用于选股（拒绝集合竞价前/失败写入的全 0 涨跌幅快照）。
+    """
+    ok, reason = is_usable_market_universe(df)
+    if not ok:
+        return ok, reason
+    if df.empty:
+        return False, "行情为空"
+
+    n = len(df)
+    pct = None
+    for col in ("pct_chg", "changepercent", "涨跌幅"):
+        if col in df.columns:
+            pct = pd.to_numeric(df[col], errors="coerce")
+            break
+    volume = None
+    for col in ("volume", "amount"):
+        if col in df.columns:
+            volume = pd.to_numeric(df[col], errors="coerce")
+            break
+    open_px = pd.to_numeric(df["open"], errors="coerce") if "open" in df.columns else None
+
+    moved = int((pct.fillna(0).abs() > 0.01).sum()) if pct is not None else 0
+    traded = int((volume.fillna(0) > 0).sum()) if volume is not None else 0
+    opened = int((open_px.fillna(0) > 0).sum()) if open_px is not None else n
+
+    # 盘前脏数据：开盘价大量为 0，且涨跌幅/成交几乎全 0
+    if opened < max(200, int(n * 0.25)) and moved < max(50, int(n * 0.02)):
+        return False, f"疑似盘前脏数据(开盘有效{opened}、涨跌有效{moved})"
+    if moved < max(30, int(n * 0.015)) and traded < max(80, int(n * 0.03)):
+        return False, f"行情无有效涨跌/成交(涨跌{moved}、成交{traded})"
+    return True, ""
+
+
 def price_step_for_code(code: str) -> float:
     """行情价格最小变动单位：ETF 0.001，股票 0.01。"""
     return 0.001 if is_etf_code(code) else 0.01
@@ -621,9 +656,9 @@ def save_daily_close_snapshot(quotes: pd.DataFrame, trade_date: Optional[str] = 
     if quotes.empty:
         raise ValueError("行情数据为空，无法保存")
 
-    ok, reason = is_usable_market_universe(quotes)
+    ok, reason = is_usable_quote_snapshot(quotes)
     if not ok:
-        raise ValueError(f"行情快照不完整，拒绝保存: {reason}")
+        raise ValueError(f"行情快照不可用，拒绝保存: {reason}")
 
     if "trade_date" in quotes.columns and quotes["trade_date"].notna().any():
         trade_date = str(quotes["trade_date"].dropna().iloc[0])[:10]
@@ -664,7 +699,7 @@ def load_daily_close_snapshot(
     df = pd.read_csv(path, dtype={"code": str})
     df["code"] = df["code"].str.zfill(6)
     if not allow_partial:
-        ok, reason = is_usable_market_universe(df)
+        ok, reason = is_usable_quote_snapshot(df)
         if not ok:
             _remove_daily_close_snapshot(trade_date)
             return pd.DataFrame()
@@ -734,6 +769,12 @@ def get_market_spot(
     if not force_refresh:
         snap = load_daily_close_snapshot(today)
         if not snap.empty:
+            ok_quote, quote_reason = is_usable_quote_snapshot(snap)
+            if not ok_quote:
+                if verbose:
+                    print(f"今日快照不可用({quote_reason})，重新采集...")
+                snap = pd.DataFrame()
+        if not snap.empty:
             stats = snapshot_universe_stats(snap)
             if verbose:
                 print(
@@ -746,12 +787,12 @@ def get_market_spot(
             merged = base.copy()
             merged["code"] = merged["code"].astype(str).str.zfill(6)
             snap_idx = snap.set_index("code")
-            for col in ("close", "pct_chg", "turnover", "trade_date", "quote_time"):
+            for col in ("close", "pct_chg", "turnover", "trade_date", "quote_time", "open", "high", "low", "pre_close", "volume", "amount"):
                 src = "price" if col == "close" and "close" not in snap_idx.columns else col
                 if src in snap_idx.columns or col in snap_idx.columns:
-                    merged[col if col != "close" else "price"] = merged["code"].map(
-                        snap_idx[col if col in snap_idx.columns else src]
-                    )
+                    key = col if col in snap_idx.columns else src
+                    target = "price" if col == "close" else col
+                    merged[target] = merged["code"].map(snap_idx[key])
             if "close" in snap_idx.columns:
                 merged["price"] = merged["code"].map(snap_idx["close"])
             if "pct_chg" in snap_idx.columns:
@@ -759,6 +800,16 @@ def get_market_spot(
                 merged["changepercent"] = merged["pct_chg"]
             if "turnover" in snap_idx.columns:
                 merged["turnover"] = merged["code"].map(snap_idx["turnover"])
+            # 若涨跌幅仍全 0，用现价相对昨收重算
+            pct = pd.to_numeric(merged.get("changepercent"), errors="coerce")
+            if pct is not None and (pct.fillna(0).abs() <= 0.01).mean() > 0.98:
+                price = pd.to_numeric(merged.get("price"), errors="coerce")
+                pre = pd.to_numeric(merged.get("pre_close"), errors="coerce")
+                if pre is not None and price is not None:
+                    rebuild = ((price - pre) / pre * 100).where(pre > 0)
+                    if rebuild.notna().any() and (rebuild.fillna(0).abs() > 0.01).sum() >= 30:
+                        merged["pct_chg"] = rebuild.round(2)
+                        merged["changepercent"] = merged["pct_chg"]
             return merged
 
     quotes = collect_daily_market_close(verbose=verbose)
@@ -940,8 +991,25 @@ def get_stock_hist(
         try:
             df = fetcher()
             if isinstance(df, pd.DataFrame) and not df.empty:
+                df = df.copy()
+                if "date" not in df.columns:
+                    for col in ("日期", "day", "time", "datetime", "trade_date", "Date"):
+                        if col in df.columns:
+                            df = df.rename(columns={col: "date"})
+                            break
+                    else:
+                        if isinstance(df.index, pd.DatetimeIndex) or str(df.index.name).lower() in (
+                            "date", "日期", "day", "time", "datetime",
+                        ):
+                            df = df.reset_index()
+                            first = df.columns[0]
+                            if first != "date":
+                                df = df.rename(columns={first: "date"})
                 if "date" in df.columns:
-                    df["date"] = pd.to_datetime(df["date"])
+                    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                    df = df.dropna(subset=["date"])
+                if df.empty:
+                    continue
                 if patch_live:
                     df = _patch_hist_with_quote(df, code)
                 if "pct_chg" not in df.columns and "close" in df.columns:

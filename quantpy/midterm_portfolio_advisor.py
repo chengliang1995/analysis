@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -46,30 +48,38 @@ PERFORMANCE_FILTER_OPTIONS = {
     "value_growth": "低PE+正增长",
 }
 
-# 中线选股：MACD+OBV 底背离（通达信公式，日线 N=25）
+# 中线选股：趋势回调 + 底背离（避开自由落体）
 DIVERGENCE_N_DAILY = 25
 DIVERGENCE_N_60M = 15
 MIN_DAILY_AMOUNT_WAN = 5000  # 5000 万元（行情 amount 列通常为万元）
 MIDTERM_PREFILTER_DEFAULT = 500
 MIDTERM_PREFILTER_MAX = 1200
+MIDTERM_SCAN_WORKERS = 8
+# 趋势风控：拒绝空头自由落体
+MIDTERM_MAX_RET_20D = -12.0   # 20 日跌超 12% 不出
+MIDTERM_MAX_RET_60D = -22.0   # 60 日跌超 22% 不出
+MIDTERM_MIN_PRICE_TO_MA60 = 0.90  # 价相对 MA60 过低视为深套
 
 # 中线选股条件展示
 MIDTERM_SELECT_CONDITIONS = [
     {"id": "cap_range", "label": "市值150-1000亿", "category": "基本面"},
     {"id": "price_cap", "label": "股价<100元", "category": "基本面"},
     {"id": "liquidity", "label": "成交额≥5000万", "category": "基本面"},
+    {"id": "ma60_hold", "label": "MA60走平/向上(硬筛)", "category": "趋势"},
+    {"id": "not_freefall", "label": "拒绝20/60日深跌", "category": "趋势"},
+    {"id": "near_ma60", "label": "靠近MA60支撑带", "category": "趋势"},
     {"id": "price_new_low", "label": "股价创阶段新低", "category": "技术面"},
     {"id": "diff_div", "label": "DIFF底背离", "category": "技术面"},
     {"id": "obv_div", "label": "OBV资金底背离", "category": "技术面"},
     {"id": "diff_below_zero", "label": "DIFF零轴下", "category": "技术面"},
     {"id": "vol_shrink", "label": "缩量地量", "category": "技术面"},
-    {"id": "ma60_hold", "label": "MA60走平/向上", "category": "技术面"},
+    {"id": "stop_confirm", "label": "止跌确认(金叉/绿柱缩/RSI背离)", "category": "技术面"},
     {"id": "entry_confirm", "label": "MACD金叉确认", "category": "技术面"},
     {"id": "rsi_div", "label": "RSI底背离", "category": "技术面"},
 ]
 
 _CONDITION_LABELS = {c["id"]: c["label"] for c in MIDTERM_SELECT_CONDITIONS}
-MIDTERM_MIN_SCORE = 60
+MIDTERM_MIN_SCORE = 65
 
 
 def get_midterm_select_conditions() -> List[dict]:
@@ -114,10 +124,16 @@ def _evaluate_midterm_technicals(
     name: str = "",
     daily_amount: Optional[float] = None,
     code: str = "",
+    check_60m: bool = True,
 ) -> Optional[dict]:
     """
-    中线选股：MACD+OBV 底背离（日线 N=25）。
-    硬筛：阶段新低 + DIFF/OBV 背离 + DIFF<0 + 缩量；规避 ST/冷门/连续跌停。
+    中线选股：趋势回调中的 MACD+OBV 底背离（日线 N=25）。
+
+    硬筛：
+    - 底背离五要素（阶段新低 + DIFF/OBV 背离 + DIFF<0 + 缩量）
+    - MA60 走平/向上（拒绝空头下跌趋势）
+    - 拒绝 20/60 日深跌与远离 MA60 的深套
+    - 至少一类止跌确认（金叉 / 绿柱缩短 / RSI 底背离）
     """
     del min_daily_gain_pct, turnover
 
@@ -125,7 +141,7 @@ def _evaluate_midterm_technicals(
         return None
 
     pick = _evaluate_tdx_bottom_divergence(
-        hist, n=DIVERGENCE_N_DAILY, code=code, check_60m=True,
+        hist, n=DIVERGENCE_N_DAILY, code=code, check_60m=check_60m,
     )
     if pick is None or not pick.get("signal"):
         return None
@@ -139,51 +155,114 @@ def _evaluate_midterm_technicals(
 
     close = pd.to_numeric(hist["close"], errors="coerce")
     price = float(close.iloc[-1])
+    ma5 = float(close.rolling(5).mean().iloc[-1]) if len(close) >= 5 else price
+    ma10 = float(close.rolling(10).mean().iloc[-1]) if len(close) >= 10 else price
     ma20 = float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else price
+    ma60 = float(close.rolling(60).mean().iloc[-1]) if len(close) >= 60 else price
     rsi = pick.get("rsi", _rsi(close))
-    ret_20d = _safe_pct(price, float(close.iloc[-21])) if len(close) >= 21 else 0
+    ret_20d = _safe_pct(price, float(close.iloc[-21])) if len(close) >= 21 else 0.0
+    ret_60d = _safe_pct(price, float(close.iloc[-61])) if len(close) >= 61 else 0.0
+
+    ma60_trend = pick.get("ma60_trend", _ma60_trend_label(close))
+    # ---- 趋势硬筛：不要接自由落体 ----
+    if ma60_trend == "down":
+        return None
+    if ret_20d < MIDTERM_MAX_RET_20D:
+        return None
+    if ret_60d < MIDTERM_MAX_RET_60D:
+        return None
+    if ma60 > 0 and price < ma60 * MIDTERM_MIN_PRICE_TO_MA60:
+        return None
+
+    # MA20 中期也在加速下杀时放弃（即便 MA60 仍名义走平）
+    if len(close) >= 25:
+        ma20_prev = float(close.rolling(20).mean().iloc[-6])
+        if ma20_prev > 0 and (ma20 - ma20_prev) / ma20_prev * 100 < -2.5 and ret_20d < -8:
+            return None
+
+    has_golden = bool(pick.get("macd_golden_cross"))
+    has_bar_shrink = bool(pick.get("macd_bar_shrink"))
+    has_rsi_div = bool(pick.get("rsi_divergence"))
+    reclaim_ma = price >= ma5 * 0.998 or price >= ma10 * 0.99
+    stop_confirm = has_golden or has_bar_shrink or has_rsi_div or reclaim_ma
+    if not stop_confirm:
+        return None
 
     tags: List[str] = list(pick.get("tags", []))
     conditions: List[str] = [
         "cap_range", "price_cap", "liquidity",
+        "ma60_hold", "not_freefall", "near_ma60",
         "price_new_low", "diff_div", "obv_div", "diff_below_zero", "vol_shrink",
+        "stop_confirm",
     ]
-    score = 60
+    score = 55
 
-    ma60_trend = pick.get("ma60_trend", "unknown")
-    if ma60_trend in ("flat", "up"):
-        score += 15
-        tags.append("MA60走平/向上")
-        conditions.append("ma60_hold")
-        trend = "中线底背离"
-        hold_style = "趋势回调底背离，可中线持有"
+    if ma60_trend == "up":
+        score += 22
+        tags.append("MA60向上")
+        trend = "趋势回调底背离"
+        hold_style = "均线多头/走强中的回调底背离，适合中线"
+    elif ma60_trend == "flat":
+        score += 16
+        tags.append("MA60走平")
+        trend = "震荡筑底背离"
+        hold_style = "MA60走平筑底，确认止跌后中线轻仓"
     else:
-        score += 5
-        tags.append("MA60向下")
-        trend = "短线反弹"
-        hold_style = "MA60向下，轻仓快进快出"
+        # unknown：弱于 flat，仍给小加成（已非 down）
+        score += 8
+        tags.append("MA60未知")
+        trend = "弱趋势筑底"
+        hold_style = "趋势不明，需更强止跌信号"
 
-    if pick.get("rsi_divergence"):
+    # 靠近 MA60 支撑加分
+    if ma60 > 0:
+        dist_ma60 = (price / ma60 - 1) * 100
+        if -6 <= dist_ma60 <= 3:
+            score += 10
+            tags.append("贴近MA60")
+        elif dist_ma60 > 8:
+            score -= 6
+            tags.append("偏远离MA60")
+
+    if has_rsi_div:
         score += 10
         tags.append("RSI底背离")
         conditions.append("rsi_div")
+    elif 28 <= float(rsi) <= 42:
+        score += 4
+        tags.append("RSI回调区")
 
-    if pick.get("macd_golden_cross"):
-        score += 15
+    if has_golden:
+        score += 18
         tags.append("MACD金叉")
         conditions.append("entry_confirm")
-        entry_hint = "DIFF上穿DEA，可考虑介入"
-    elif pick.get("macd_bar_shrink"):
-        score += 8
+        entry_hint = "DIFF上穿DEA，可考虑分批介入"
+    elif has_bar_shrink:
+        score += 10
         tags.append("绿柱缩短")
-        entry_hint = "绿柱缩短，关注金叉确认"
+        entry_hint = "绿柱缩短止跌，等金叉或放量再加仓"
+    elif reclaim_ma:
+        score += 8
+        tags.append("收复短均")
+        entry_hint = "短均线止跌，仍需观察量能与金叉"
     else:
-        tags.append("等金叉确认")
-        entry_hint = "公式预警，等MACD金叉再介入，不抄最低"
+        entry_hint = "已具备止跌迹象，仍建议等放量确认"
 
     if pick.get("confirm_60m"):
-        score += 10
+        score += 8
         tags.append("60分底背离")
+
+    # 今日仍大跌则减分（抄底当日追跌）
+    if spot_pct <= -5:
+        score -= 10
+        tags.append("当日偏弱")
+    elif -3 <= spot_pct <= 2:
+        score += 4
+
+    if ret_20d >= -5:
+        score += 6
+    elif ret_20d <= -10:
+        score -= 6
 
     if tuning:
         for cond in conditions:
@@ -192,13 +271,14 @@ def _evaluate_midterm_technicals(
             if any(tag_key in t or t == tag_key for t in tags):
                 score += bonus
         if tuning.midterm_penalize_ret_20d_below is not None and ret_20d < tuning.midterm_penalize_ret_20d_below:
-            score -= 8
+            score -= 10
 
     if tuning and tuning.midterm_ma20_chase_penalty > 0 and ma20 > 0:
         if price > ma20 * tuning.midterm_ma20_chase_ratio:
             score -= tuning.midterm_ma20_chase_penalty
 
     min_score = tuning.midterm_min_score if tuning else MIDTERM_MIN_SCORE
+    min_score = max(min_score, MIDTERM_MIN_SCORE)
     if score < min_score:
         return None
 
@@ -207,17 +287,20 @@ def _evaluate_midterm_technicals(
         "tags": tags,
         "conditions": conditions,
         "price": price,
-        "ma5": round(float(close.rolling(5).mean().iloc[-1]), 2) if len(close) >= 5 else price,
-        "ma10": round(float(close.rolling(10).mean().iloc[-1]), 2) if len(close) >= 10 else price,
+        "ma5": round(ma5, 2),
+        "ma10": round(ma10, 2),
         "ma20": round(ma20, 2),
+        "ma60": round(ma60, 2),
         "rsi": round(float(rsi), 1),
         "ret_20d": round(ret_20d, 2),
+        "ret_60d": round(ret_60d, 2),
         "trend": trend,
         "hold_style": hold_style,
         "entry_hint": entry_hint,
         "ma60_trend": ma60_trend,
         "bottom_divergence": True,
         "bottom_divergence_detail": pick,
+        "stop_confirm": True,
     }
 
 
@@ -457,13 +540,16 @@ def _ma60_trend_label(close: pd.Series) -> str:
         return "unknown"
     ma60 = close.rolling(60).mean()
     now = float(ma60.iloc[-1])
-    prev = float(ma60.iloc[-6])
-    if prev <= 0:
+    prev5 = float(ma60.iloc[-6])
+    prev15 = float(ma60.iloc[-16]) if len(ma60) >= 16 else prev5
+    if prev5 <= 0:
         return "unknown"
-    slope_pct = (now - prev) / prev * 100
-    if slope_pct < -0.5:
+    slope5 = (now - prev5) / prev5 * 100
+    slope15 = (now - prev15) / prev15 * 100 if prev15 > 0 else slope5
+    # 5日急跌或 15 日持续走弱 → down
+    if slope5 < -0.35 or slope15 < -0.8:
         return "down"
-    if slope_pct > 0.5:
+    if slope5 > 0.35 and slope15 > 0:
         return "up"
     return "flat"
 
@@ -906,6 +992,8 @@ class MidtermPortfolioAdvisor:
         name: str,
         spot: Optional[dict] = None,
         tuning: Optional[SelectionTuning] = None,
+        *,
+        check_60m: bool = True,
     ) -> Optional[dict]:
         hist = get_stock_hist(code, days=120)
         if hist.empty or len(hist) < DIVERGENCE_N_DAILY + 5:
@@ -929,6 +1017,7 @@ class MidtermPortfolioAdvisor:
         tech = _evaluate_midterm_technicals(
             hist, spot_pct, turnover, tuning=tuning,
             name=name, daily_amount=daily_amount, code=code,
+            check_60m=check_60m,
         )
         if tech is None:
             return None
@@ -954,7 +1043,9 @@ class MidtermPortfolioAdvisor:
         cap_part = f"市值{cap:.0f}亿" if cap is not None else "市值—"
         reason = (
             f"{' · '.join(tech['tags'][:5])}；{tech.get('hold_style', '')}；"
-            f"{tech.get('entry_hint', '')}；20日{tech['ret_20d']:+.1f}% RSI{tech['rsi']:.0f}；"
+            f"{tech.get('entry_hint', '')}；"
+            f"MA60{tech.get('ma60_trend', '')} 20日{tech['ret_20d']:+.1f}% "
+            f"60日{tech.get('ret_60d', 0):+.1f}% RSI{tech['rsi']:.0f}；"
             f"{cap_part}{yoy_part}"
         )
 
@@ -969,13 +1060,16 @@ class MidtermPortfolioAdvisor:
             "trend": tech["trend"],
             "rsi": tech["rsi"],
             "ret_20d": tech["ret_20d"],
+            "ret_60d": tech.get("ret_60d", 0),
             "ma5": tech["ma5"],
             "ma10": tech["ma10"],
             "ma20": tech["ma20"],
+            "ma60": tech.get("ma60"),
             "bottom_divergence": tech.get("bottom_divergence", False),
             "hold_style": tech.get("hold_style", ""),
             "entry_hint": tech.get("entry_hint", ""),
             "ma60_trend": tech.get("ma60_trend", ""),
+            "stop_confirm": tech.get("stop_confirm", False),
             "pe": json_safe_float(pe, digits=2),
             "profit_yoy": json_safe_float(profit_yoy, digits=2),
             "industry": industry or "",
@@ -995,6 +1089,7 @@ class MidtermPortfolioAdvisor:
         performance: Optional[str] = None,
         early_stop_pass: int = 0,
         tuning: Optional[SelectionTuning] = None,
+        max_workers: int = MIDTERM_SCAN_WORKERS,
     ) -> Tuple[pd.DataFrame, dict]:
         """中线个股推荐（排除已持仓，支持行业/业绩筛选）。返回 (DataFrame, 筛选统计)。"""
         if tuning is None:
@@ -1089,11 +1184,14 @@ class MidtermPortfolioAdvisor:
                 pool = pool[~pool[name_col].astype(str).map(_is_st_or_delist_name)]
             if pool.empty:
                 return pool
-            # 底背离候选：优先回调、缩量、低波动
+            # 趋势回调候选：避免优先今日大跌，偏好温和调整 + 高流动性
+            crash = pool["_pct"].clip(upper=0)
+            mild = ((pool["_pct"] >= -4) & (pool["_pct"] <= 2)).astype(float)
             pool["_rank"] = (
-                (-pool["_pct"].clip(-12, 8)) * 0.4
-                + (12 - pool["_turnover"].clip(0, 15)) * 0.3
-                + pool["_amount_wan"].clip(0, 100000) / 100000 * 0.3
+                mild * 0.35
+                + crash.clip(lower=-8) * 0.12   # 大跌日降权（crash 为负）
+                + pool["_amount_wan"].clip(0, 120000) / 120000 * 0.38
+                + (10 - pool["_turnover"].clip(0, 15)) / 10 * 0.15
             )
             return pool.sort_values("_rank", ascending=False).head(limit)
 
@@ -1109,20 +1207,18 @@ class MidtermPortfolioAdvisor:
 
         select_stats["prefilter_count"] = len(candidates)
         select_stats["prefilter_limit"] = scan_limit
-        _progress(f"  初筛 {len(candidates)} 只（上限 {scan_limit}），技术面评分中…", show_progress)
+        select_stats["scan_workers"] = max_workers
+        _progress(
+            f"  初筛 {len(candidates)} 只（上限 {scan_limit}），"
+            f"多线程评分中（{max_workers} 线程）…",
+            show_progress,
+        )
 
         def _scan_rows(rows: pd.DataFrame) -> Tuple[List[dict], int, int, int]:
-            local_results: List[dict] = []
-            excluded = fail = errors = 0
-            total_local = len(rows)
-            for idx, (_, row) in enumerate(rows.iterrows(), 1):
-                if show_progress and (idx == 1 or idx % 25 == 0 or idx == total_local):
-                    _progress(
-                        f"  评分进度 {idx}/{total_local}（已命中 {len(local_results)}，未过线 {fail}"
-                        + (f"，异常 {errors}" if errors else "")
-                        + "）",
-                        True,
-                    )
+            """并行技术面评分（全市场扫描关闭 60 分确认以提速）。"""
+            tasks: List[dict] = []
+            excluded = 0
+            for _, row in rows.iterrows():
                 code = str(row[code_col]).zfill(6)
                 if is_bse_code(code):
                     continue
@@ -1132,36 +1228,83 @@ class MidtermPortfolioAdvisor:
                 name = str(row[name_col]) if name_col else code
                 cap_yi = row["_cap_yi"]
                 fund = fundamental_map.get(code, {})
-                spot = {
-                    "pct": row["_pct"],
-                    "turnover": row["_turnover"],
-                    "amount": float(row["_amount"]) if pd.notna(row.get("_amount")) else None,
-                    "market_cap_yi": float(cap_yi) if pd.notna(cap_yi) else None,
-                    "pe": fund.get("pe"),
-                    "profit_yoy": fund.get("profit_yoy"),
-                }
+                tasks.append({
+                    "code": code,
+                    "name": name,
+                    "spot": {
+                        "pct": row["_pct"],
+                        "turnover": row["_turnover"],
+                        "amount": float(row["_amount"]) if pd.notna(row.get("_amount")) else None,
+                        "market_cap_yi": float(cap_yi) if pd.notna(cap_yi) else None,
+                        "pe": fund.get("pe"),
+                        "profit_yoy": fund.get("profit_yoy"),
+                    },
+                })
+
+            local_results: List[dict] = []
+            fail = errors = 0
+            total_local = len(tasks)
+            if total_local == 0:
+                return local_results, excluded, fail, errors
+
+            lock = threading.Lock()
+            done = 0
+            stop_early = threading.Event()
+
+            def _score_one(task: dict) -> tuple[str, Optional[dict], Optional[Exception]]:
+                if stop_early.is_set():
+                    return "skip", None, None
                 try:
-                    item = self._score_candidate(code, name, spot, tuning=tuning)
-                except Exception as exc:
-                    errors += 1
-                    if errors <= 3:
-                        _progress(f"  评分异常 {code}: {exc}", show_progress)
-                    continue
-                if item:
-                    local_results.append(item)
-                else:
-                    fail += 1
-                if (
-                    early_stop_pass > 0
-                    and len(local_results) >= early_stop_pass
-                    and idx >= min(50, max(total_local // 3, 30))
-                ):
-                    select_stats["scored_stopped_early"] = True
-                    _progress(
-                        f"  已命中 {len(local_results)} 只，提前结束评分（{idx}/{total_local}）",
-                        show_progress,
+                    item = self._score_candidate(
+                        task["code"],
+                        task["name"],
+                        task["spot"],
+                        tuning=tuning,
+                        check_60m=False,
                     )
-                    break
+                    return ("hit" if item else "miss"), item, None
+                except Exception as exc:
+                    return "err", None, exc
+
+            workers = max(1, min(max_workers, total_local))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(_score_one, t) for t in tasks]
+                for future in as_completed(futures):
+                    status, item, exc = future.result()
+                    with lock:
+                        done += 1
+                        if status == "hit" and item:
+                            local_results.append(item)
+                        elif status == "miss":
+                            fail += 1
+                        elif status == "err":
+                            errors += 1
+                            if errors <= 3 and exc is not None:
+                                _progress(f"  评分异常: {exc}", show_progress)
+
+                        if show_progress and (
+                            done == 1 or done % 25 == 0 or done == total_local
+                        ):
+                            _progress(
+                                f"  评分进度 {done}/{total_local}（已命中 {len(local_results)}，"
+                                f"未过线 {fail}"
+                                + (f"，异常 {errors}" if errors else "")
+                                + "）",
+                                True,
+                            )
+
+                        if (
+                            early_stop_pass > 0
+                            and len(local_results) >= early_stop_pass
+                            and done >= min(50, max(total_local // 3, 30))
+                        ):
+                            select_stats["scored_stopped_early"] = True
+                            stop_early.set()
+                            _progress(
+                                f"  已命中 {len(local_results)} 只，提前结束评分（{done}/{total_local}）",
+                                show_progress,
+                            )
+
             return local_results, excluded, fail, errors
 
         results, excluded_held, scored_fail, scored_errors = _scan_rows(candidates)

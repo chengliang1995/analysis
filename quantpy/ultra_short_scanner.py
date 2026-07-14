@@ -324,6 +324,23 @@ class UltraShortScanner:
     else:
       df["_pct"] = 0
 
+    # 涨跌幅全 0 时用现价/昨收重算
+    if (df["_pct"].abs() <= 0.01).mean() > 0.95:
+      price = None
+      for c in ("price", "close", "trade"):
+        if c in df.columns:
+          price = pd.to_numeric(df[c], errors="coerce")
+          break
+      pre = None
+      for c in ("pre_close", "settlement", "昨收"):
+        if c in df.columns:
+          pre = pd.to_numeric(df[c], errors="coerce")
+          break
+      if price is not None and pre is not None:
+        rebuilt = ((price - pre) / pre * 100).where(pre > 0)
+        if rebuilt.notna().any() and int((rebuilt.fillna(0).abs() > 0.01).sum()) >= 30:
+          df["_pct"] = rebuilt.fillna(0)
+
     if turnover_col:
       df["_turnover"] = pd.to_numeric(df[turnover_col], errors="coerce").fillna(0)
     else:
@@ -334,6 +351,7 @@ class UltraShortScanner:
       (min_pct, min_turnover),
       (max(min_pct - 1.0, 2.0), max(min_turnover - 0.5, 1.5)),
       (max(min_pct - 2.0, 1.0), max(min_turnover - 1.0, 1.0)),
+      (0.5, 0.5),
     )
     filtered = pd.DataFrame()
     for pct_th, turn_th in thresholds:
@@ -341,6 +359,9 @@ class UltraShortScanner:
       filtered = df[mask].copy()
       if len(filtered) >= 30:
         break
+    if filtered.empty:
+      # 仍空：按涨幅排序取头部，避免完全无候选
+      filtered = df.sort_values("_pct", ascending=False).head(80).copy()
     filtered["_sort"] = filtered["_pct"] * 0.6 + filtered["_turnover"] * 0.4
     return filtered.sort_values("_sort", ascending=False)
 
@@ -384,8 +405,25 @@ class UltraShortScanner:
     code_col = get_stock_code_column(candidates)
     name_col = get_stock_name_column(candidates)
 
+    if candidates.empty or len(candidates) < 10:
+      if show_progress:
+        print("初筛过少，强制刷新全市场实时行情后重筛...")
+      stock_list = get_market_spot(verbose=show_progress, force_refresh=True)
+      if not stock_list.empty:
+        code_col = get_stock_code_column(stock_list)
+        if code_col:
+          stock_list = exclude_bse_from_df(stock_list, code_col)
+        candidates = self.prefilter_spot(stock_list).head(top_prefilter)
+        code_col = get_stock_code_column(candidates)
+        name_col = get_stock_name_column(candidates)
+
     if show_progress:
-      print(f"初筛 {len(candidates)} 只，开始深度分析...")
+      print(f"初筛 {len(candidates)} 只，开始深度分析（门槛≥{min_score}）...")
+
+    if candidates.empty:
+      if show_progress:
+        print("仍无初筛候选（行情涨跌幅/换手可能异常）")
+      return pd.DataFrame()
 
     tasks = []
     for _, row in candidates.iterrows():
@@ -397,11 +435,12 @@ class UltraShortScanner:
         "price": row.get("price", row.get("trade", 0)),
         "high": row.get("high"),
         "low": row.get("low"),
-        "pre_close": row.get("pre_close"),
+        "pre_close": row.get("pre_close", row.get("settlement")),
       }
       tasks.append((code, name, spot))
 
     results: List[Dict] = []
+    raw_hits: List[Dict] = []
     done = 0
     total = len(tasks)
 
@@ -416,10 +455,25 @@ class UltraShortScanner:
           print(f"  进度 {done}/{total}")
         try:
           item = future.result()
-          if item and item["ultra_short_score"] >= min_score:
+          if not item:
+            continue
+          raw_hits.append(item)
+          if item["ultra_short_score"] >= min_score:
             results.append(item)
         except Exception:
           pass
+
+    # 门槛过高时空结果，逐步放宽到 40/35
+    if not results and raw_hits:
+      for soft in (max(40, min_score - 10), 40, 35):
+        if soft >= min_score:
+          continue
+        softened = [x for x in raw_hits if x["ultra_short_score"] >= soft]
+        if softened:
+          if show_progress:
+            print(f"硬门槛 {min_score} 无结果，放宽至 ≥{soft}，命中 {len(softened)} 只")
+          results = softened
+          break
 
     if not results:
       return pd.DataFrame()

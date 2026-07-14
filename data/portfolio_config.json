@@ -9,8 +9,17 @@
     {
       "code": "002472",
       "name": "双环传动",
-      "quantity": 1500,
-      "cost_price": 41.632,
+      "quantity": 1800,
+      "cost_price": 41.7767,
+      "buy_date": "2026-07-13",
+      "strategy": "手动",
+      "note": ""
+    },
+    {
+      "code": "688353",
+      "name": "华盛锂电",
+      "quantity": 260,
+      "cost_price": 87.19,
       "buy_date": "2026-07-02",
       "strategy": "手动",
       "note": ""

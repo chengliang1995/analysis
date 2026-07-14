@@ -460,7 +460,16 @@ def get_dashboard_data(
         level_alerts=level_alerts,
     )
     review = load_latest_real_review()
-    midterm_tracker = load_tracker_summary(evaluate=True)
+    try:
+        # 仪表盘只读缓存摘要，避免每次刷新都拉 K 线评估
+        midterm_tracker = load_tracker_summary(evaluate=False)
+    except Exception:
+        midterm_tracker = {
+            "summary": {},
+            "tracking": [],
+            "matured_recent": [],
+            "suggestions": [],
+        }
     return {
         "portfolio": get_portfolio_data(
             portfolio_stats=portfolio_stats,

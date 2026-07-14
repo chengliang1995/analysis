@@ -1,5 +1,5 @@
 """
-中线选股跟进：每日记录 TOP10 推荐，持续跟踪约 1 个月（22 交易日），
+中线选股跟进：每日记录 TOP10 推荐，持续跟踪 10 个交易日，
 统计胜率与因子表现，并反馈到选股调优 / AI 学习。
 """
 
@@ -17,7 +17,7 @@ from quantpy.paths import MIDTERM_TRACKER_FILE
 from quantpy.stock_data import get_stock_hist
 
 TOP_N_DEFAULT = 10
-FOLLOW_TRADING_DAYS = 22
+FOLLOW_TRADING_DAYS = 10
 WIN_THRESHOLD_PCT = 3.0
 MIN_SAMPLES_FOR_FACTOR = 3
 
@@ -43,6 +43,8 @@ def _load_state() -> dict:
         data = json.loads(MIDTERM_TRACKER_FILE.read_text(encoding="utf-8"))
         base = _default_state()
         base.update(data)
+        # 始终同步当前跟进周期（缩短周期后需重评到期）
+        base["follow_trading_days"] = FOLLOW_TRADING_DAYS
         return base
     except (OSError, json.JSONDecodeError):
         return _default_state()
@@ -60,13 +62,47 @@ def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _normalize_hist_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """统一历史 K 线日期列为 YYYY-MM-DD 字符串的 date。"""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    if "date" not in out.columns:
+        for col in ("日期", "day", "time", "datetime", "trade_date"):
+            if col in out.columns:
+                out["date"] = out[col]
+                break
+        else:
+            if isinstance(out.index, pd.DatetimeIndex):
+                out = out.reset_index()
+                first = out.columns[0]
+                out = out.rename(columns={first: "date"})
+            elif out.index.name in ("date", "日期", "day", "time"):
+                out = out.reset_index().rename(columns={out.index.name: "date"})
+            else:
+                return pd.DataFrame()
+    try:
+        out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    except (TypeError, ValueError, AttributeError):
+        return pd.DataFrame()
+    out = out.dropna(subset=["date"])
+    return out
+
+
 def _trading_days_between(start: str, end: str) -> List[str]:
     """获取 [start, end] 区间交易日列表（含两端）。"""
-    ref = get_stock_hist("000001", days=400, patch_live=False)
+    try:
+        ref = get_stock_hist("000001", days=400, patch_live=False)
+        ref = _normalize_hist_dates(ref)
+    except Exception:
+        ref = pd.DataFrame()
     if ref.empty:
-        return []
-    ref = ref.copy()
-    ref["date"] = pd.to_datetime(ref["date"]).dt.strftime("%Y-%m-%d")
+        # 行情源异常时，用工作日近似（10 交易日 ≈ 14 自然日）
+        try:
+            days = pd.bdate_range(start=start, end=end).strftime("%Y-%m-%d").tolist()
+        except (ValueError, TypeError):
+            return []
+        return days
     days = ref["date"].tolist()
     if start not in days:
         days = [d for d in days if d >= start]
@@ -77,6 +113,8 @@ def _trading_days_between(start: str, end: str) -> List[str]:
 
 
 def _mature_date(pick_date: str, follow_days: int = FOLLOW_TRADING_DAYS) -> Optional[str]:
+    if not pick_date:
+        return None
     cal = _trading_days_between(pick_date, _today())
     if len(cal) <= follow_days:
         return None
@@ -180,9 +218,10 @@ def evaluate_matured_picks(
     show_progress: bool = False,
     force: bool = False,
 ) -> dict:
-    """评估已满跟进期的选股（默认 22 交易日）。"""
+    """评估已满跟进期的选股（默认 10 交易日）。"""
     state = _load_state()
-    follow_days = int(state.get("follow_trading_days", FOLLOW_TRADING_DAYS))
+    follow_days = FOLLOW_TRADING_DAYS
+    state["follow_trading_days"] = follow_days
     win_th = float(state.get("win_threshold_pct", WIN_THRESHOLD_PCT))
     today = _today()
     updated = 0
@@ -204,11 +243,12 @@ def evaluate_matured_picks(
             rec["status"] = "error"
             continue
 
-        hist = get_stock_hist(code, days=120, patch_live=False)
-        if hist.empty:
+        try:
+            hist = _normalize_hist_dates(get_stock_hist(code, days=120, patch_live=False))
+        except Exception:
             continue
-        hist = hist.copy()
-        hist["date"] = pd.to_datetime(hist["date"]).dt.strftime("%Y-%m-%d")
+        if hist.empty or "close" not in hist.columns:
+            continue
         window = hist[(hist["date"] >= pick_date) & (hist["date"] <= mature_day)]
         if window.empty:
             continue
@@ -216,10 +256,13 @@ def evaluate_matured_picks(
         mature_row = window[window["date"] == mature_day]
         if mature_row.empty:
             mature_row = window.iloc[[-1]]
-        mature_price = float(mature_row["close"].iloc[-1])
+        close = pd.to_numeric(mature_row["close"], errors="coerce")
+        if close.isna().all():
+            continue
+        mature_price = float(close.iloc[-1])
         ret_pct = (mature_price - pick_price) / pick_price * 100
 
-        highs = pd.to_numeric(window["high"], errors="coerce")
+        highs = pd.to_numeric(window["high"], errors="coerce") if "high" in window.columns else pd.Series(dtype=float)
         max_high = float(highs.max()) if highs.notna().any() else mature_price
         max_ret = (max_high - pick_price) / pick_price * 100
 
@@ -474,7 +517,7 @@ def build_learning_suggestions(summary: dict) -> List[str]:
     if summary.get("matured_count", 0) == 0:
         tracking = summary.get("tracking_count", 0)
         return [
-            f"中线跟进池：{tracking} 只跟踪中，满 {summary.get('follow_trading_days', 22)} "
+            f"中线跟进池：{tracking} 只跟踪中，满 {summary.get('follow_trading_days', FOLLOW_TRADING_DAYS)} "
             f"交易日后统计胜率并优化因子"
         ]
 
@@ -497,26 +540,66 @@ def build_learning_suggestions(summary: dict) -> List[str]:
 
 
 def load_tracker_summary(*, evaluate: bool = True) -> dict:
-    """加载跟进摘要；默认先尝试评估到期标的。"""
+    """加载跟进摘要；默认先尝试评估到期标的。评估失败不抛错。"""
     if evaluate:
-        evaluate_matured_picks(show_progress=False)
-    state = _load_state()
-    summary = state.get("summary") or compute_tracker_summary(state)
-    return {
-        "summary": summary,
-        "tracking": [
-            r for r in state.get("records", [])
-            if r.get("status") == "tracking"
-        ][-30:],
-        "matured_recent": [
-            r for r in state.get("records", [])
-            if r.get("status") == "matured"
-        ][-20:],
-        "suggestions": build_learning_suggestions(summary),
-        "factor_tuning": derive_factor_tuning(summary),
-        "last_record_date": state.get("last_record_date", ""),
-        "last_evaluated": state.get("last_evaluated", ""),
-    }
+        try:
+            evaluate_matured_picks(show_progress=False)
+        except Exception:
+            pass
+    try:
+        state = _load_state()
+        summary = state.get("summary") or compute_tracker_summary(state)
+        records = list(state.get("records") or [])
+        # 按选股日倒序，同日内按排名升序
+        records.sort(
+            key=lambda r: (
+                str(r.get("pick_date") or ""),
+                -int(r.get("rank") or 999),
+            ),
+            reverse=True,
+        )
+        # reverse=True 后同日 rank 为倒序，再按日分组重排 rank 正序
+        ordered: list = []
+        cur_date = None
+        bucket: list = []
+        for r in records:
+            d = str(r.get("pick_date") or "")
+            if cur_date is None:
+                cur_date = d
+            if d != cur_date:
+                ordered.extend(sorted(bucket, key=lambda x: int(x.get("rank") or 999)))
+                bucket = [r]
+                cur_date = d
+            else:
+                bucket.append(r)
+        if bucket:
+            ordered.extend(sorted(bucket, key=lambda x: int(x.get("rank") or 999)))
+
+        tracking = [r for r in ordered if r.get("status") == "tracking"]
+        matured = [r for r in ordered if r.get("status") == "matured"]
+        return {
+            "summary": summary,
+            "records": ordered,
+            "tracking": tracking,
+            "matured_recent": matured,
+            "suggestions": build_learning_suggestions(summary),
+            "factor_tuning": derive_factor_tuning(summary),
+            "last_record_date": state.get("last_record_date", ""),
+            "last_evaluated": state.get("last_evaluated", ""),
+            "total_records": len(ordered),
+        }
+    except Exception:
+        return {
+            "summary": compute_tracker_summary(_default_state()),
+            "records": [],
+            "tracking": [],
+            "matured_recent": [],
+            "suggestions": [],
+            "factor_tuning": {},
+            "last_record_date": "",
+            "last_evaluated": "",
+            "total_records": 0,
+        }
 
 
 def run_midterm_tracker_cycle(

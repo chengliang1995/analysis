@@ -28,7 +28,7 @@ class SelectionTuning:
     """选股调优参数（由复盘记录推导）。"""
 
     ultra_min_score: int = 35
-    midterm_min_score: int = 55
+    midterm_min_score: int = 65
     ultra_tag_bonus: Dict[str, int] = field(default_factory=dict)
     ultra_tag_penalty: Dict[str, int] = field(default_factory=dict)
     ultra_penalize_3d_gain_above: Optional[float] = None
@@ -192,7 +192,8 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
 def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
     try:
         from quantpy.midterm_pick_tracker import load_tracker_summary, derive_factor_tuning
-        payload = load_tracker_summary(evaluate=True)
+        # 选股时只读跟进结果，评估由「中线跟进评估」或学习周期触发
+        payload = load_tracker_summary(evaluate=False)
         summary = payload.get("summary") or {}
         if summary.get("matured_count", 0) < 3:
             return
@@ -311,7 +312,13 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
         tuning.require_ultra_tag_any = None
 
     tuning.ultra_min_score = int(max(35, min(65, tuning.ultra_min_score)))
-    tuning.midterm_min_score = int(max(50, min(70, tuning.midterm_min_score)))
+    # 实盘扫描避免 AI 把门槛抬到 55+ 导致经常空榜
+    if not for_sim and tuning.ultra_min_score > 48:
+        tuning.notes.append(
+            f"实盘扫描超短门槛由 {tuning.ultra_min_score} 软封顶至 48（避免空榜）"
+        )
+        tuning.ultra_min_score = 48
+    tuning.midterm_min_score = int(max(58, min(72, tuning.midterm_min_score)))
     return tuning
 
 

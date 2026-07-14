@@ -372,7 +372,7 @@
           <div class="stats stats-3" id="portfolio-stats"></div>
           <div class="table-wrap" id="portfolio-table"></div>
           <div class="panel-head" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-            <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">MACD+OBV底背离 · 市值150-1000亿</span></h2>
+            <h2 style="font-size:0.95rem">中线个股推荐<span class="drill-hint">趋势回调底背离 · MA60非向下 · 止跌确认</span></h2>
             <span class="badge" id="midterm-rec-badge">未持仓</span>
           </div>
           <div class="rec-conditions" id="midterm-select-conditions"></div>
@@ -401,7 +401,7 @@
         </section>
         <section class="panel" style="margin-bottom:20px" id="midterm-tracker-panel">
           <div class="panel-head">
-            <h2>中线选股跟进<span class="drill-hint">TOP10 · 持续1月(22交易日) · 胜率学习</span></h2>
+            <h2>中线选股跟进<span class="drill-hint">TOP10 · 持续10交易日 · 胜率学习</span></h2>
             <span class="badge" id="midterm-tracker-badge">—</span>
           </div>
           <div class="stats" id="midterm-tracker-stats"></div>
@@ -410,9 +410,34 @@
           </div>
           <div class="table-wrap" id="midterm-tracker-factors"></div>
           <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-            <h3>跟进明细（跟踪中 / 已到期）</h3>
+            <h3>跟进明细（全部）</h3>
+          </div>
+          <div class="rec-filters" id="midterm-tracker-filters" style="margin:8px 12px">
+            <div>
+              <label for="mt-filter-status">状态</label>
+              <select id="mt-filter-status">
+                <option value="all">全部</option>
+                <option value="tracking" selected>跟踪中</option>
+                <option value="matured">已到期</option>
+              </select>
+            </div>
+            <div>
+              <label for="mt-filter-date">选股日</label>
+              <select id="mt-filter-date">
+                <option value="">全部日期</option>
+              </select>
+            </div>
+            <div>
+              <label for="mt-page-size">每页</label>
+              <select id="mt-page-size">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+              </select>
+            </div>
           </div>
           <div class="table-wrap" id="midterm-tracker-table"></div>
+          <div class="pager" id="midterm-tracker-pager" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:8px 12px 14px;flex-wrap:wrap"></div>
         </section>
       </div>
 
@@ -660,7 +685,7 @@
     let savedServerTimeText = "";
     let logPollTimer = null;
     const ACTION_BUSY_LABEL = {
-      midterm: "中线分析进行中（约 1～3 分钟）…",
+      midterm: "中线分析进行中（约 3～8 分钟，多线程扫描）…",
       report: "生成日报中…",
       review: "实盘复盘中…",
       scan: "超短扫描中…",
@@ -672,8 +697,8 @@
       "midterm-track": "中线跟进评估中…",
     };
     const ACTION_TIMEOUT_MS = {
-      midterm: 600000,
-      report: 600000,
+      midterm: 1200000,
+      report: 1200000,
       review: 300000,
       scan: 300000,
       sector: 300000,
@@ -1054,12 +1079,15 @@
       { id: "cap_range", label: "市值150-1000亿", category: "基本面" },
       { id: "price_cap", label: "股价<100元", category: "基本面" },
       { id: "liquidity", label: "成交额≥5000万", category: "基本面" },
+      { id: "ma60_hold", label: "MA60走平/向上(硬筛)", category: "趋势" },
+      { id: "not_freefall", label: "拒绝20/60日深跌", category: "趋势" },
+      { id: "near_ma60", label: "靠近MA60支撑带", category: "趋势" },
       { id: "price_new_low", label: "股价创阶段新低", category: "技术面" },
       { id: "diff_div", label: "DIFF底背离", category: "技术面" },
       { id: "obv_div", label: "OBV资金底背离", category: "技术面" },
       { id: "diff_below_zero", label: "DIFF零轴下", category: "技术面" },
       { id: "vol_shrink", label: "缩量地量", category: "技术面" },
-      { id: "ma60_hold", label: "MA60走平/向上", category: "技术面" },
+      { id: "stop_confirm", label: "止跌确认(金叉/绿柱缩/RSI背离)", category: "技术面" },
       { id: "entry_confirm", label: "MACD金叉确认", category: "技术面" },
       { id: "rsi_div", label: "RSI底背离", category: "技术面" },
     ];
@@ -1068,7 +1096,7 @@
       const el = document.getElementById("midterm-select-conditions");
       const items = (conditions && conditions.length) ? conditions : DEFAULT_MIDTERM_CONDITIONS;
       el.innerHTML = items.map((c) =>
-        `<span class="cond-chip ${c.category === "技术面" ? "tech" : ""}" title="${escapeHtml(c.category || "")}">${escapeHtml(c.label)}</span>`
+        `<span class="cond-chip ${c.category === "技术面" || c.category === "趋势" ? "tech" : ""}" title="${escapeHtml(c.category || "")}">${escapeHtml(c.label)}</span>`
       ).join("");
     }
 
@@ -1314,28 +1342,108 @@
       }
     }
 
+    let midtermTrackerCache = { records: [], page: 1 };
+
+    function getMidtermTrackerRows() {
+      const all = midtermTrackerCache.records || [];
+      const status = document.getElementById("mt-filter-status")?.value || "all";
+      const date = document.getElementById("mt-filter-date")?.value || "";
+      return all.filter((x) => {
+        if (status === "tracking" && x.status !== "tracking") return false;
+        if (status === "matured" && x.status !== "matured") return false;
+        if (date && String(x.pick_date || "") !== date) return false;
+        return true;
+      });
+    }
+
+    function populateMidtermTrackerDateOptions(records) {
+      const sel = document.getElementById("mt-filter-date");
+      if (!sel) return;
+      const prev = sel.value;
+      const dates = [...new Set((records || []).map((r) => r.pick_date).filter(Boolean))].sort().reverse();
+      sel.innerHTML = `<option value="">全部日期</option>` + dates.map((d) =>
+        `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`
+      ).join("");
+      if (prev && dates.includes(prev)) sel.value = prev;
+    }
+
+    function renderMidtermTrackerPage() {
+      const tableEl = document.getElementById("midterm-tracker-table");
+      const pagerEl = document.getElementById("midterm-tracker-pager");
+      if (!tableEl) return;
+      const rows = getMidtermTrackerRows();
+      const pageSize = Math.max(1, Number(document.getElementById("mt-page-size")?.value || 20));
+      const total = rows.length;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      let page = Number(midtermTrackerCache.page || 1);
+      if (page > totalPages) page = totalPages;
+      if (page < 1) page = 1;
+      midtermTrackerCache.page = page;
+      const start = (page - 1) * pageSize;
+      const pageRows = rows.slice(start, start + pageSize);
+
+      renderTable(
+        tableEl,
+        ["状态", "选股日", "排名", "代码", "名称", "选入价", "评分", "到期收益%", "胜/负"],
+        pageRows.map((x) => [
+          x.status === "matured" ? "到期" : (x.status === "tracking" ? "跟踪" : (x.status || "—")),
+          x.pick_date || "—",
+          x.rank || "—",
+          x.code,
+          x.name,
+          x.pick_price != null ? Number(x.pick_price).toFixed(2) : "—",
+          x.midterm_score != null ? Number(x.midterm_score).toFixed(0) : "—",
+          x.return_pct != null ? fmtPct(x.return_pct) : "—",
+          x.is_win === true ? "胜" : (x.is_win === false ? "负" : "—"),
+        ]),
+        total ? "当前筛选无数据" : "点击「中线分析」自动记录当日 TOP10；到期后计入胜率学习"
+      );
+
+      if (pagerEl) {
+        if (!total) {
+          pagerEl.innerHTML = "";
+          return;
+        }
+        pagerEl.innerHTML =
+          `<span style="color:var(--muted);font-size:0.8rem">共 ${total} 条 · 第 ${page}/${totalPages} 页</span>` +
+          `<button type="button" class="secondary" data-mt-page="1" ${page <= 1 ? "disabled" : ""}>首页</button>` +
+          `<button type="button" class="secondary" data-mt-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>` +
+          `<button type="button" class="secondary" data-mt-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>下一页</button>` +
+          `<button type="button" class="secondary" data-mt-page="${totalPages}" ${page >= totalPages ? "disabled" : ""}>末页</button>`;
+        pagerEl.querySelectorAll("button[data-mt-page]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            midtermTrackerCache.page = Number(btn.getAttribute("data-mt-page"));
+            renderMidtermTrackerPage();
+          });
+        });
+      }
+    }
+
     function renderMidtermTracker(mt) {
       const payload = mt || {};
       const summary = payload.summary || {};
       const badge = document.getElementById("midterm-tracker-badge");
       const statsEl = document.getElementById("midterm-tracker-stats");
       const factorEl = document.getElementById("midterm-tracker-factors");
-      const tableEl = document.getElementById("midterm-tracker-table");
       if (!statsEl) return;
       const matured = summary.matured_count || 0;
       const tracking = summary.tracking_count || 0;
+      const total = payload.total_records
+        ?? (payload.records || []).length
+        ?? ((payload.tracking || []).length + (payload.matured_recent || []).length);
       if (badge) {
         badge.textContent = matured
-          ? `胜率 ${summary.win_rate ?? 0}% · 成熟${matured}`
-          : (tracking ? `跟踪 ${tracking} 只` : "待中线分析记录");
+          ? `胜率 ${summary.win_rate ?? 0}% · 共${total}条`
+          : (tracking ? `跟踪 ${tracking} · 共${total}条` : "待中线分析记录");
       }
       renderStats(statsEl, [
         ["跟踪中", `${tracking} 只`],
         ["已到期", `${matured} 只`],
+        ["全部记录", `${total} 条`],
         ["胜率(≥3%)", matured ? `${summary.win_rate ?? 0}%` : "—"],
         ["正收益率", matured ? `${summary.positive_rate ?? 0}%` : "—"],
         ["均收益", matured ? fmtPct(summary.avg_return) : "—"],
-        ["跟进周期", `${summary.follow_trading_days || 22} 交易日`],
+        ["跟进周期", `${summary.follow_trading_days || 10} 交易日`],
       ]);
       const factors = summary.by_condition || [];
       renderTable(
@@ -1348,29 +1456,34 @@
           x.positive_rate,
           fmtPct(x.avg_return),
         ]),
-        "满 22 交易日后统计因子胜率，并反馈到选股评分"
+        "满 10 交易日后统计因子胜率，并反馈到选股评分"
       );
-      const rows = [
-        ...(payload.tracking || []).map((x) => ({ ...x, _status: "跟踪" })),
-        ...(payload.matured_recent || []).map((x) => ({ ...x, _status: "到期" })),
-      ];
-      renderTable(
-        tableEl,
-        ["状态", "选股日", "排名", "代码", "名称", "选入价", "评分", "到期收益%", "胜率"],
-        rows.map((x) => [
-          x._status,
-          x.pick_date || "—",
-          x.rank || "—",
-          x.code,
-          x.name,
-          x.pick_price != null ? Number(x.pick_price).toFixed(2) : "—",
-          x.midterm_score != null ? Number(x.midterm_score).toFixed(0) : "—",
-          x.return_pct != null ? fmtPct(x.return_pct) : "—",
-          x.is_win === true ? "胜" : (x.is_win === false ? "负" : "—"),
-        ]),
-        "点击「中线分析」自动记录当日 TOP10；到期后自动计入胜率学习"
-      );
+
+      let records = payload.records;
+      if (!records || !records.length) {
+        records = [
+          ...(payload.tracking || []),
+          ...(payload.matured_recent || []),
+        ];
+      }
+      midtermTrackerCache.records = records;
+      midtermTrackerCache.page = 1;
+      populateMidtermTrackerDateOptions(records);
+      renderMidtermTrackerPage();
     }
+
+    document.getElementById("mt-filter-status")?.addEventListener("change", () => {
+      midtermTrackerCache.page = 1;
+      renderMidtermTrackerPage();
+    });
+    document.getElementById("mt-filter-date")?.addEventListener("change", () => {
+      midtermTrackerCache.page = 1;
+      renderMidtermTrackerPage();
+    });
+    document.getElementById("mt-page-size")?.addEventListener("change", () => {
+      midtermTrackerCache.page = 1;
+      renderMidtermTrackerPage();
+    });
 
     function renderMidtermRecTable(rec, backendStats) {
       const el = document.getElementById("midterm-rec-table");
