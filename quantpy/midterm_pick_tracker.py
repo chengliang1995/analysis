@@ -20,6 +20,8 @@ TOP_N_DEFAULT = 10
 FOLLOW_TRADING_DAYS = 10
 WIN_THRESHOLD_PCT = 3.0
 MIN_SAMPLES_FOR_FACTOR = 3
+INTERIM_MIN_SAMPLES = 5
+INTERIM_MIN_HOLD_DAYS = 2
 
 
 def _default_state() -> dict:
@@ -278,6 +280,11 @@ def evaluate_matured_picks(
 
     state["last_evaluated"] = today
     state["summary"] = compute_tracker_summary(state)
+    try:
+        state["interim_summary"] = compute_interim_summary(state)
+        state["interim_computed_at"] = today
+    except Exception:
+        pass
     _save_state(state)
 
     if show_progress and updated:
@@ -413,6 +420,201 @@ def _stats_from_buckets(buckets: Dict[str, List[dict]]) -> List[dict]:
     return rows
 
 
+def _interim_return_for_rec(rec: dict) -> Optional[float]:
+    """计算单只 tracking 标的截止最新交易日的中间收益。"""
+    pick_date = rec.get("pick_date", "")
+    pick_price = float(rec.get("pick_price") or 0)
+    code = str(rec.get("code", "")).zfill(6)
+    if not pick_date or pick_price <= 0 or not code:
+        return None
+    cal = _trading_days_between(pick_date, _today())
+    if len(cal) < INTERIM_MIN_HOLD_DAYS:
+        return None
+    try:
+        hist = _normalize_hist_dates(get_stock_hist(code, days=40, patch_live=False))
+    except Exception:
+        return None
+    if hist.empty or "close" not in hist.columns:
+        return None
+    window = hist[hist["date"] >= pick_date]
+    if window.empty:
+        return None
+    close = pd.to_numeric(window["close"], errors="coerce").dropna()
+    if close.empty:
+        return None
+    last_price = float(close.iloc[-1])
+    return (last_price - pick_price) / pick_price * 100
+
+
+def _enrich_interim_records(records: List[dict]) -> List[dict]:
+    """为 tracking 记录附加中间收益字段。"""
+    enriched: List[dict] = []
+    win_th = WIN_THRESHOLD_PCT
+    for rec in records:
+        if rec.get("status") != "tracking":
+            continue
+        ret = _interim_return_for_rec(rec)
+        if ret is None:
+            continue
+        copy = dict(rec)
+        copy["return_pct"] = round(ret, 2)
+        copy["is_win"] = ret >= win_th
+        copy["is_positive"] = ret > 0
+        enriched.append(copy)
+    return enriched
+
+
+def compute_interim_summary(state: Optional[dict] = None) -> dict:
+    """基于 tracking 池中间收益统计因子表现（成熟样本不足时使用）。"""
+    state = state or _load_state()
+    tracking = [r for r in state.get("records", []) if r.get("status") == "tracking"]
+    interim = _enrich_interim_records(tracking)
+    win_th = float(state.get("win_threshold_pct", WIN_THRESHOLD_PCT))
+
+    if len(interim) < INTERIM_MIN_SAMPLES:
+        return {
+            "interim_count": len(interim),
+            "tracking_count": len(tracking),
+            "matured_count": 0,
+            "win_rate": 0.0,
+            "positive_rate": 0.0,
+            "avg_return": 0.0,
+            "win_threshold_pct": win_th,
+            "follow_trading_days": state.get("follow_trading_days", FOLLOW_TRADING_DAYS),
+            "by_condition": [],
+            "by_tag": [],
+            "by_score_bucket": [],
+            "by_ma60_trend": [],
+            "factor_insights": [],
+            "provisional": True,
+        }
+
+    wins = [r for r in interim if r.get("is_win")]
+    positive = [r for r in interim if r.get("is_positive")]
+    rets = [float(r["return_pct"]) for r in interim]
+
+    by_condition = _group_factor_stats(interim, "conditions")
+    by_tag = _group_tag_stats(interim)
+    by_score = _group_score_stats(interim)
+    by_ma60 = _group_key_stats(interim, "ma60_trend")
+    insights = _build_factor_insights(by_condition, by_tag, by_score, by_ma60)
+    if insights:
+        insights.insert(
+            0,
+            f"【中间统计·{len(interim)}只】胜率(≥{win_th}%) "
+            f"{round(len(wins) / len(interim) * 100, 1)}%，"
+            f"均收益 {round(sum(rets) / len(rets), 2):+.2f}%",
+        )
+
+    return {
+        "interim_count": len(interim),
+        "tracking_count": len(tracking),
+        "matured_count": 0,
+        "win_rate": round(len(wins) / len(interim) * 100, 1),
+        "positive_rate": round(len(positive) / len(interim) * 100, 1),
+        "avg_return": round(sum(rets) / len(rets), 2),
+        "win_threshold_pct": win_th,
+        "follow_trading_days": state.get("follow_trading_days", FOLLOW_TRADING_DAYS),
+        "by_condition": by_condition,
+        "by_tag": by_tag,
+        "by_score_bucket": by_score,
+        "by_ma60_trend": by_ma60,
+        "factor_insights": insights[:12],
+        "provisional": True,
+    }
+
+
+def derive_interim_factor_tuning(summary: dict) -> Dict[str, Any]:
+    """从中间统计推导 provisional 因子加减分（样本门槛低于成熟统计）。"""
+    changes: Dict[str, Any] = {
+        "midterm_condition_bonus": {},
+        "midterm_condition_penalty": {},
+        "midterm_tag_bonus": {},
+        "midterm_tag_penalty": {},
+        "midterm_min_score": None,
+        "notes": [],
+    }
+    if summary.get("interim_count", 0) < INTERIM_MIN_SAMPLES:
+        return changes
+
+    from quantpy.midterm_portfolio_advisor import _CONDITION_LABELS
+
+    min_n = INTERIM_MIN_SAMPLES
+    overall_wr = float(summary.get("win_rate", 0))
+    for row in summary.get("by_condition", []):
+        if row["count"] < min_n:
+            continue
+        key = row["key"]
+        label = _CONDITION_LABELS.get(key, key)
+        # 底背离基础条件全员具备，不做降权
+        if key in ("diff_div", "obv_div", "price_new_low", "diff_below_zero", "vol_shrink"):
+            continue
+        if row["win_rate"] >= max(22, overall_wr + 5) and row["avg_return"] > -0.3:
+            changes["midterm_condition_bonus"][key] = 6
+            changes["notes"].append(f"中间强化 {label}（胜率{row['win_rate']}%）")
+        elif row["win_rate"] < max(12, overall_wr - 5) and row["count"] >= min_n:
+            changes["midterm_condition_penalty"][key] = 5
+            changes["notes"].append(f"中间降权 {label}（胜率{row['win_rate']}%）")
+
+    tag_bonus_map = {
+        "RSI底背离": ("rsi_div", 6),
+        "绿柱缩短": ("stop_confirm", 5),
+        "MACD金叉": ("entry_confirm", 4),
+        "MA60走平/向上": ("ma60_hold", 5),
+        "MA60向上": ("ma60_hold", 6),
+        "贴近MA60": ("near_ma60", 4),
+        "60分底背离": ("stop_confirm", 3),
+    }
+    tag_penalty_map = {
+        "等金叉确认": 8,
+        "MA60向下": 10,
+        "偏远离MA60": 6,
+        "当日偏弱": 5,
+        "弱止跌确认": 6,
+    }
+
+    for row in summary.get("by_tag", []):
+        if row["count"] < min_n:
+            continue
+        tag = row["key"]
+        rel_strong = row["win_rate"] >= max(20, overall_wr + 4)
+        rel_weak = row["win_rate"] < max(12, overall_wr - 4)
+        if rel_strong:
+            changes["midterm_tag_bonus"][tag] = 5
+            if tag in tag_bonus_map:
+                cond, bonus = tag_bonus_map[tag]
+                changes["midterm_condition_bonus"][cond] = max(
+                    changes["midterm_condition_bonus"].get(cond, 0), bonus,
+                )
+            if row["avg_return"] > 0:
+                changes["notes"].append(f"中间强化标签 {tag}（胜率{row['win_rate']}%）")
+        elif rel_weak:
+            changes["midterm_tag_penalty"][tag] = tag_penalty_map.get(tag, 6)
+            changes["notes"].append(f"中间降权标签 {tag}（胜率{row['win_rate']}%）")
+
+    for tag, penalty in tag_penalty_map.items():
+        for row in summary.get("by_tag", []):
+            if row["key"] == tag and row["count"] >= min_n and row["win_rate"] < max(15, overall_wr - 3):
+                changes["midterm_tag_penalty"][tag] = max(
+                    changes["midterm_tag_penalty"].get(tag, 0), penalty,
+                )
+
+    avg_ret = float(summary.get("avg_return", 0))
+    if overall_wr < 20 or avg_ret < -0.5:
+        changes["midterm_min_score"] = 68
+        changes["notes"].append(
+            f"中间胜率 {overall_wr}% / 均收益 {avg_ret:+.2f}%，抬高评分门槛"
+        )
+    elif overall_wr >= 35 and avg_ret > 1:
+        changes["midterm_min_score"] = 66
+
+    for row in summary.get("by_score_bucket", []):
+        if row["key"] in ("<60", "60-70") and row["count"] >= min_n and row["win_rate"] < 15:
+            changes["midterm_min_score"] = max(changes.get("midterm_min_score") or 65, 68)
+
+    return changes
+
+
 def _build_factor_insights(
     by_condition: List[dict],
     by_tag: List[dict],
@@ -463,18 +665,35 @@ def _build_factor_insights(
     return insights[:12]
 
 
-def derive_factor_tuning(summary: dict) -> Dict[str, Any]:
-    """从跟进统计推导选股因子加减分。"""
+def derive_factor_tuning(
+    summary: dict,
+    interim_summary: Optional[dict] = None,
+) -> Dict[str, Any]:
+    """从跟进统计推导选股因子加减分；成熟样本不足时使用中间统计。"""
+    if summary.get("matured_count", 0) >= MIN_SAMPLES_FOR_FACTOR:
+        return _derive_matured_factor_tuning(summary)
+    if interim_summary and interim_summary.get("interim_count", 0) >= INTERIM_MIN_SAMPLES:
+        return derive_interim_factor_tuning(interim_summary)
+    return {
+        "midterm_condition_bonus": {},
+        "midterm_condition_penalty": {},
+        "midterm_tag_bonus": {},
+        "midterm_tag_penalty": {},
+        "midterm_min_score": None,
+        "notes": [],
+    }
+
+
+def _derive_matured_factor_tuning(summary: dict) -> Dict[str, Any]:
+    """从满期成熟样本推导因子加减分。"""
+    from quantpy.midterm_portfolio_advisor import _CONDITION_LABELS
+
     changes: Dict[str, Any] = {
         "midterm_condition_bonus": {},
         "midterm_tag_bonus": {},
         "midterm_min_score": None,
         "notes": [],
     }
-    if summary.get("matured_count", 0) < MIN_SAMPLES_FOR_FACTOR:
-        return changes
-
-    from quantpy.midterm_portfolio_advisor import _CONDITION_LABELS
 
     for row in summary.get("by_condition", []):
         if row["count"] < MIN_SAMPLES_FOR_FACTOR:
@@ -514,7 +733,25 @@ def derive_factor_tuning(summary: dict) -> Dict[str, Any]:
 
 def build_learning_suggestions(summary: dict) -> List[str]:
     """生成可展示的学习建议。"""
+    interim = summary.get("interim") or {}
     if summary.get("matured_count", 0) == 0:
+        if interim.get("interim_count", 0) >= INTERIM_MIN_SAMPLES:
+            lines = [
+                f"【中线跟进·中间】{interim['interim_count']} 只满 {INTERIM_MIN_HOLD_DAYS}+ 交易日，"
+                f"胜率(≥{interim.get('win_threshold_pct', 3)}%) {interim['win_rate']}%，"
+                f"均收益 {interim.get('avg_return', 0):+.2f}%",
+            ]
+            lines.extend(interim.get("factor_insights", [])[:5])
+            tuning = derive_interim_factor_tuning(interim)
+            if tuning.get("midterm_condition_bonus") or tuning.get("midterm_tag_penalty"):
+                parts = []
+                for k, v in tuning.get("midterm_condition_bonus", {}).items():
+                    parts.append(f"{k}+{v}")
+                for k, v in tuning.get("midterm_tag_penalty", {}).items():
+                    parts.append(f"{k}-{v}")
+                if parts:
+                    lines.append(f"因子调优（中间）：{', '.join(parts[:8])}")
+            return lines
         tracking = summary.get("tracking_count", 0)
         return [
             f"中线跟进池：{tracking} 只跟踪中，满 {summary.get('follow_trading_days', FOLLOW_TRADING_DAYS)} "
@@ -522,14 +759,15 @@ def build_learning_suggestions(summary: dict) -> List[str]:
         ]
 
     lines = [
-        f"【中线跟进·1月】成熟 {summary['matured_count']} 只，"
+        f"【中线跟进·{summary.get('follow_trading_days', FOLLOW_TRADING_DAYS)}日】"
+        f"成熟 {summary['matured_count']} 只，"
         f"胜率(≥{summary.get('win_threshold_pct', 3)}%) {summary['win_rate']}%，"
         f"正收益率 {summary.get('positive_rate', 0)}%，"
         f"均收益 {summary.get('avg_return', 0):+.2f}%"
         f"（峰值均 {summary.get('avg_max_return', 0):+.2f}%）",
     ]
     lines.extend(summary.get("factor_insights", [])[:6])
-    tuning = derive_factor_tuning(summary)
+    tuning = derive_factor_tuning(summary, interim)
     if tuning.get("midterm_condition_bonus"):
         parts = [
             f"{k}+{v}" if v > 0 else f"{k}{v}"
@@ -537,6 +775,22 @@ def build_learning_suggestions(summary: dict) -> List[str]:
         ]
         lines.append(f"因子调优：{', '.join(parts[:8])}")
     return lines
+
+
+def _cached_interim_summary(state: dict, *, refresh: bool = False) -> dict:
+    """读取或刷新中间统计缓存（避免每次扫描重复拉行情）。"""
+    today = _today()
+    cached = state.get("interim_summary") or {}
+    if not refresh and state.get("interim_computed_at") == today:
+        return cached
+    try:
+        interim = compute_interim_summary(state)
+        state["interim_summary"] = interim
+        state["interim_computed_at"] = today
+        _save_state(state)
+        return interim
+    except Exception:
+        return cached
 
 
 def load_tracker_summary(*, evaluate: bool = True) -> dict:
@@ -549,6 +803,9 @@ def load_tracker_summary(*, evaluate: bool = True) -> dict:
     try:
         state = _load_state()
         summary = state.get("summary") or compute_tracker_summary(state)
+        interim = _cached_interim_summary(state, refresh=evaluate)
+        summary = dict(summary)
+        summary["interim"] = interim
         records = list(state.get("records") or [])
         # 按选股日倒序，同日内按排名升序
         records.sort(
@@ -583,7 +840,8 @@ def load_tracker_summary(*, evaluate: bool = True) -> dict:
             "tracking": tracking,
             "matured_recent": matured,
             "suggestions": build_learning_suggestions(summary),
-            "factor_tuning": derive_factor_tuning(summary),
+            "factor_tuning": derive_factor_tuning(summary, interim),
+            "interim_summary": interim,
             "last_record_date": state.get("last_record_date", ""),
             "last_evaluated": state.get("last_evaluated", ""),
             "total_records": len(ordered),

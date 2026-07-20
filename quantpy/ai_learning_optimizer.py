@@ -67,9 +67,14 @@ class AILearningOptimizer:
             analytics["midterm"] = self._build_analytics(midterm_df, config, source="midterm")
             self._apply_midterm_selection(selection_changes, midterm_df)
         try:
-            from quantpy.midterm_pick_tracker import load_tracker_summary, derive_factor_tuning
-            tracker = load_tracker_summary(evaluate=True)
+            from quantpy.midterm_pick_tracker import (
+                load_tracker_summary,
+                derive_factor_tuning,
+                INTERIM_MIN_SAMPLES,
+            )
+            tracker = load_tracker_summary(evaluate=False)
             summary = tracker.get("summary") or {}
+            interim = summary.get("interim") or tracker.get("interim_summary") or {}
             if summary.get("matured_count", 0) >= 3:
                 analytics["midterm_tracker"] = {
                     "matured_count": summary["matured_count"],
@@ -77,7 +82,19 @@ class AILearningOptimizer:
                     "avg_return": summary.get("avg_return", 0),
                     "factor_insights": summary.get("factor_insights", [])[:6],
                 }
-                factor = derive_factor_tuning(summary)
+                factor = derive_factor_tuning(summary, interim)
+            elif interim.get("interim_count", 0) >= INTERIM_MIN_SAMPLES:
+                analytics["midterm_tracker"] = {
+                    "interim_count": interim["interim_count"],
+                    "win_rate": interim["win_rate"],
+                    "avg_return": interim.get("avg_return", 0),
+                    "factor_insights": interim.get("factor_insights", [])[:6],
+                    "provisional": True,
+                }
+                factor = derive_factor_tuning(summary, interim)
+            else:
+                factor = {}
+            if factor:
                 if factor.get("midterm_min_score") is not None:
                     selection_changes["midterm_min_score"] = max(
                         selection_changes.get("midterm_min_score", 55),
@@ -85,6 +102,12 @@ class AILearningOptimizer:
                     )
                 for cond, bonus in (factor.get("midterm_condition_bonus") or {}).items():
                     selection_changes.setdefault("midterm_condition_bonus", {})[cond] = bonus
+                for cond, pen in (factor.get("midterm_condition_penalty") or {}).items():
+                    selection_changes.setdefault("midterm_condition_penalty", {})[cond] = pen
+                for tag, bonus in (factor.get("midterm_tag_bonus") or {}).items():
+                    selection_changes.setdefault("midterm_tag_bonus", {})[tag] = bonus
+                for tag, pen in (factor.get("midterm_tag_penalty") or {}).items():
+                    selection_changes.setdefault("midterm_tag_penalty", {})[tag] = pen
         except Exception:
             pass
         suggestions = self._build_suggestions(analytics, param_deltas, config, selection_changes)
@@ -473,8 +496,16 @@ class AILearningOptimizer:
         tracker = analytics.get("midterm_tracker") or {}
         if tracker.get("matured_count", 0) >= 3:
             suggestions.append(
-                f"【中线跟进1月】成熟 {tracker['matured_count']} 只，"
+                f"【中线跟进】成熟 {tracker['matured_count']} 只，"
                 f"胜率 {tracker['win_rate']}%，均收益 {tracker.get('avg_return', 0):+.2f}%。"
+            )
+            for line in tracker.get("factor_insights", [])[:3]:
+                suggestions.append(line)
+        elif tracker.get("interim_count", 0) >= 5:
+            suggestions.append(
+                f"【中线跟进·中间】{tracker['interim_count']} 只，"
+                f"胜率 {tracker['win_rate']}%，均收益 {tracker.get('avg_return', 0):+.2f}%"
+                f"（provisional）。"
             )
             for line in tracker.get("factor_insights", [])[:3]:
                 suggestions.append(line)

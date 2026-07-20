@@ -39,6 +39,7 @@ from quantpy.sim_replay import (
 from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
+from quantpy.midterm_triple_volume_selector import run_triple_volume_select
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.real_portfolio_reviewer import load_latest_real_review, run_real_portfolio_review
 from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
@@ -617,9 +618,10 @@ def main() -> None:
         default="report",
         choices=[
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
-            "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn", "midterm", "review", "alerts", "web",
+            "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn",
+            "midterm", "midterm-triple-volume", "review", "alerts", "web",
         ],
-        help="sim=模拟复盘, midterm=实盘中线分析, review=实盘操作复盘, alerts=支撑压力提醒",
+        help="sim=模拟复盘, midterm=实盘中线分析, midterm-triple-volume=三倍量选股, review=实盘操作复盘",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -685,6 +687,16 @@ def main() -> None:
             stats = show_portfolio(init=args.init)
             if stats.get("has_data"):
                 run_midterm_advice(stats, show_progress=True)
+        elif args.command == "midterm-triple-volume":
+            from quantpy.portfolio import PortfolioManager
+
+            pm = PortfolioManager()
+            held = [p["code"] for p in pm.list_positions()]
+            run_triple_volume_select(
+                exclude_codes=held,
+                show_progress=True,
+                force=args.force,
+            )
         elif args.command == "review":
             print("=" * 60)
             print("实盘操作复盘（买卖点分析）")

@@ -70,6 +70,8 @@ def prune_retention_files(retention_days: int = RETENTION_DAYS) -> dict[str, lis
         (OUTPUT_DIR, "ultra_short_*.csv"),
         (MIDTERM_OUTPUT_DIR, "midterm_*.json"),
         (MIDTERM_OUTPUT_DIR, "midterm_*.md"),
+        (MIDTERM_OUTPUT_DIR, "triple_volume_*.json"),
+        (MIDTERM_OUTPUT_DIR, "triple_volume_*.md"),
         (MIDTERM_OUTPUT_DIR, "level_alerts_*.json"),
         (REAL_REVIEW_DIR, "real_review_*.json"),
         (REAL_REVIEW_DIR, "real_review_*.md"),

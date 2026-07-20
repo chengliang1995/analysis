@@ -28,6 +28,9 @@ Write-Host ""
 # 早盘 9:35 - 刷新 + 模拟选股
 & $ActionTemplate "Morning" "morning" "09:35"
 
+# 尾盘 14:45 - 三倍量选股
+& $ActionTemplate "TripleVolume" "triple-volume" "14:45"
+
 # 收盘 15:10 - 采集收盘 + 模拟卖出
 & $ActionTemplate "Close" "close" "15:10"
 
@@ -43,4 +46,5 @@ Write-Host ""
 Write-Host "删除任务:"
 Write-Host "  Unregister-ScheduledTask -TaskName '$TaskPrefix-Morning' -Confirm:`$false"
 Write-Host "  Unregister-ScheduledTask -TaskName '$TaskPrefix-Close' -Confirm:`$false"
+Write-Host "  Unregister-ScheduledTask -TaskName '$TaskPrefix-TripleVolume' -Confirm:`$false"
 Write-Host "  Unregister-ScheduledTask -TaskName '$TaskPrefix-Report' -Confirm:`$false"

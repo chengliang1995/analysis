@@ -332,6 +332,7 @@
       <button type="button" data-action="sector">板块推荐</button>
       <button type="button" data-action="report">生成日报</button>
       <button type="button" data-action="midterm">中线分析</button>
+      <button type="button" data-action="midterm-triple-volume" class="secondary">三倍量选股</button>
       <button type="button" data-action="midterm-track" class="secondary">中线跟进评估</button>
       <button type="button" data-action="alerts">价位提醒</button>
       <button type="button" data-action="review">实盘复盘</button>
@@ -398,6 +399,14 @@
           </div>
           <div class="rec-filter-summary" id="midterm-filter-summary" style="display:none"></div>
           <div class="table-wrap" id="midterm-rec-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px" id="triple-volume-panel">
+          <div class="panel-head">
+            <h2 style="font-size:0.95rem">三倍量选股<span class="drill-hint">14:45 · 量≥3倍 · 一阳穿三线 · 非ST</span></h2>
+            <span class="badge" id="triple-volume-badge">—</span>
+          </div>
+          <div class="rec-conditions" id="triple-volume-conditions"></div>
+          <div class="table-wrap" id="triple-volume-table"></div>
         </section>
         <section class="panel" style="margin-bottom:20px" id="midterm-tracker-panel">
           <div class="panel-head">
@@ -514,7 +523,7 @@
               <div>
                 <label>策略</label>
                 <select id="pf-strategy">
-                  <option>中线</option><option>ETF</option><option>手动</option><option>趋势</option><option>波段</option><option>超短</option><option>涨停</option>
+                  <option>中线</option><option>三倍量</option><option>ETF</option><option>手动</option><option>趋势</option><option>波段</option><option>超短</option><option>涨停</option>
                 </select>
               </div>
               <div style="grid-column:1/-1"><label>备注</label><input id="pf-note" placeholder="可选" /></div>
@@ -686,6 +695,7 @@
     let logPollTimer = null;
     const ACTION_BUSY_LABEL = {
       midterm: "中线分析进行中（约 3～8 分钟，多线程扫描）…",
+      "midterm-triple-volume": "三倍量选股扫描中（约 2～5 分钟）…",
       report: "生成日报中…",
       review: "实盘复盘中…",
       scan: "超短扫描中…",
@@ -698,6 +708,7 @@
     };
     const ACTION_TIMEOUT_MS = {
       midterm: 1200000,
+      "midterm-triple-volume": 900000,
       report: 1200000,
       review: 300000,
       scan: 300000,
@@ -707,7 +718,7 @@
       default: 180000,
     };
     const LONG_RUNNING_ACTIONS = new Set([
-      "midterm", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "ai-learn", "midterm-track",
+      "midterm", "midterm-triple-volume", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "ai-learn", "midterm-track",
     ]);
     let lastDashboardData = null;
 
@@ -1091,6 +1102,57 @@
       { id: "entry_confirm", label: "MACD金叉确认", category: "技术面" },
       { id: "rsi_div", label: "RSI底背离", category: "技术面" },
     ];
+
+    const DEFAULT_TRIPLE_VOLUME_CONDITIONS = [
+      { id: "non_st", label: "非ST", category: "基本面" },
+      { id: "vol_3x", label: "成交量≥昨日3倍", category: "量能" },
+      { id: "yang_line", label: "当日阳线", category: "技术面" },
+      { id: "cross_ma5", label: "上穿MA5", category: "技术面" },
+      { id: "cross_ma10", label: "上穿MA10", category: "技术面" },
+      { id: "cross_ma20", label: "上穿MA20", category: "技术面" },
+    ];
+
+    function renderTripleVolumeConditions(conditions) {
+      const el = document.getElementById("triple-volume-conditions");
+      if (!el) return;
+      const items = (conditions && conditions.length) ? conditions : DEFAULT_TRIPLE_VOLUME_CONDITIONS;
+      el.innerHTML = items.map((c) =>
+        `<span class="cond-chip ${c.category === "技术面" || c.category === "量能" ? "tech" : ""}" title="${escapeHtml(c.category || "")}">${escapeHtml(c.label)}</span>`
+      ).join("");
+    }
+
+    function renderTripleVolumeTable(tv) {
+      const el = document.getElementById("triple-volume-table");
+      const badge = document.getElementById("triple-volume-badge");
+      if (!el) return;
+      const rec = (tv && tv.recommendations) || [];
+      renderTripleVolumeConditions(tv?.select_conditions);
+      if (!rec.length) {
+        badge.textContent = "—";
+        el.innerHTML = `<div class="empty">点击「三倍量选股」扫描（建议 14:45 后执行）</div>`;
+        return;
+      }
+      badge.textContent = `${rec.length} 只`;
+      const head = ["代码", "名称", "行业", "股价", "量比", "评分", "涨幅%", "MA5/10/20"]
+        .map((h) => `<th>${h}</th>`).join("");
+      const body = rec.map((x) =>
+        `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+        `<td>${x.code}</td><td>${x.name}</td>` +
+        `<td>${escapeHtml(x.industry || "—")}</td>` +
+        `<td>${x.price != null ? Number(x.price).toFixed(2) : "—"}</td>` +
+        `<td>${x.volume_ratio != null ? Number(x.volume_ratio).toFixed(1) + "x" : "—"}</td>` +
+        `<td>${x.midterm_score}</td>` +
+        `<td>${fmtPct(x.pct_chg)}</td>` +
+        `<td>${x.ma5}/${x.ma10}/${x.ma20}</td>` +
+        `</tr>`
+      ).join("");
+      el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+      el.querySelectorAll("tr.drill-row").forEach((row) => {
+        row.addEventListener("click", () => {
+          openStockDrilldown(row.dataset.code, row.dataset.name);
+        });
+      });
+    }
 
     function renderMidtermSelectConditions(conditions) {
       const el = document.getElementById("midterm-select-conditions");
@@ -1784,6 +1846,10 @@
       renderMidtermRecTable(rec, p.midterm?.select_stats);
     }
 
+    function renderTripleVolumeFromData(data) {
+      renderTripleVolumeTable(data?.triple_volume || null);
+    }
+
     function renderRealClosed(p) {
       const closed = p.closed_positions || [];
       document.getElementById("real-closed-badge").textContent =
@@ -2336,6 +2402,7 @@
       try { renderTradeReview(data.portfolio_review); } catch (e) { console.error("renderTradeReview", e); }
       try { renderUltraShort(data.ultra_short); } catch (e) { console.error("renderUltraShort", e); }
       try { renderMidtermTracker(data.midterm_tracker); } catch (e) { console.error("renderMidtermTracker", e); }
+      try { renderTripleVolumeFromData(data); } catch (e) { console.error("renderTripleVolume", e); }
       try { renderSector(data.sector); } catch (e) { console.error("renderSector", e); }
       try { renderSuggestions(data); } catch (e) { console.error("renderSuggestions", e); }
       try { renderRecentTrades(data.trades); } catch (e) { console.error("renderRecentTrades", e); }
@@ -2715,6 +2782,9 @@
           if (body.midterm_tracker) {
             body.data.midterm_tracker = body.midterm_tracker;
           }
+          if (body.triple_volume) {
+            body.data.triple_volume = body.triple_volume;
+          }
           renderAll(body.data);
           if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select"].includes(action)) {
             refreshSimPanel().catch(() => {});
@@ -2741,10 +2811,16 @@
             content: body.midterm?.markdown || "暂无报告内容",
           });
         }
+        if (action === "midterm-triple-volume" && body.ok) {
+          openReport(body.triple_volume_content || {
+            name: "三倍量选股报告",
+            content: body.triple_volume?.markdown || "暂无报告内容",
+          });
+        }
         if (body.ok) {
           if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select"].includes(action)) {
             switchMainTab("sim");
-          } else if (["midterm", "alerts", "review"].includes(action)) {
+          } else if (["midterm", "midterm-triple-volume", "alerts", "review"].includes(action)) {
             switchMainTab("real");
           }
         }
@@ -2882,6 +2958,7 @@
     });
 
     renderMidtermSelectConditions(DEFAULT_MIDTERM_CONDITIONS);
+    renderTripleVolumeConditions(DEFAULT_TRIPLE_VOLUME_CONDITIONS);
 
     loadDashboard()
       .then(() => {

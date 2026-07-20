@@ -41,7 +41,9 @@ class SelectionTuning:
     midterm_ma20_chase_ratio: float = 1.08
     midterm_penalize_ret_20d_below: Optional[float] = None
     midterm_condition_bonus: Dict[str, int] = field(default_factory=dict)
+    midterm_condition_penalty: Dict[str, int] = field(default_factory=dict)
     midterm_tag_bonus: Dict[str, int] = field(default_factory=dict)
+    midterm_tag_penalty: Dict[str, int] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     sources: List[str] = field(default_factory=list)
 
@@ -156,6 +158,16 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
         tuning.midterm_condition_bonus[cond] = max(
             tuning.midterm_condition_bonus.get(cond, 0), int(bonus),
         )
+    for cond, penalty in (sel.get("midterm_condition_penalty") or {}).items():
+        tuning.midterm_condition_penalty[cond] = max(
+            tuning.midterm_condition_penalty.get(cond, 0), int(penalty),
+        )
+    for tag, bonus in (sel.get("midterm_tag_bonus") or {}).items():
+        tuning.midterm_tag_bonus[tag] = max(tuning.midterm_tag_bonus.get(tag, 0), int(bonus))
+    for tag, penalty in (sel.get("midterm_tag_penalty") or {}).items():
+        tuning.midterm_tag_penalty[tag] = max(
+            tuning.midterm_tag_penalty.get(tag, 0), int(penalty),
+        )
     if sel.get("ultra_penalize_3d_gain_above") is not None:
         tuning.ultra_penalize_3d_gain_above = sel["ultra_penalize_3d_gain_above"]
     if sel.get("ultra_penalize_unsealed_above_pct") is not None:
@@ -187,35 +199,71 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
     midterm = analytics.get("midterm") or {}
     if midterm.get("sufficient") and float(midterm.get("win_rate", 100)) < 45:
         tuning.midterm_min_score = max(tuning.midterm_min_score, 58)
+    elif midterm.get("sufficient") and float(midterm.get("win_rate", 100)) >= 55:
+        # 模拟中线表现尚可，允许 AI 建议适度放宽（但不低于默认 65）
+        if sel.get("midterm_min_score") is not None:
+            tuning.midterm_min_score = max(tuning.midterm_min_score, 65)
 
 
 def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
     try:
-        from quantpy.midterm_pick_tracker import load_tracker_summary, derive_factor_tuning
+        from quantpy.midterm_pick_tracker import (
+            load_tracker_summary,
+            derive_factor_tuning,
+            INTERIM_MIN_SAMPLES,
+        )
         # 选股时只读跟进结果，评估由「中线跟进评估」或学习周期触发
         payload = load_tracker_summary(evaluate=False)
         summary = payload.get("summary") or {}
-        if summary.get("matured_count", 0) < 3:
+        interim = summary.get("interim") or payload.get("interim_summary") or {}
+        matured = summary.get("matured_count", 0)
+        if matured < 3 and interim.get("interim_count", 0) < INTERIM_MIN_SAMPLES:
             return
-        tuning.sources.append("midterm_tracker")
-        factor = derive_factor_tuning(summary)
+        tuning.sources.append(
+            "midterm_tracker" if matured >= 3 else "midterm_tracker_interim",
+        )
+        factor = derive_factor_tuning(summary, interim)
         for cond, bonus in (factor.get("midterm_condition_bonus") or {}).items():
-            tuning.midterm_condition_bonus[cond] = max(
-                tuning.midterm_condition_bonus.get(cond, 0), int(bonus),
+            if int(bonus) >= 0:
+                tuning.midterm_condition_bonus[cond] = max(
+                    tuning.midterm_condition_bonus.get(cond, 0), int(bonus),
+                )
+            else:
+                tuning.midterm_condition_penalty[cond] = max(
+                    tuning.midterm_condition_penalty.get(cond, 0), abs(int(bonus)),
+                )
+        for cond, penalty in (factor.get("midterm_condition_penalty") or {}).items():
+            tuning.midterm_condition_penalty[cond] = max(
+                tuning.midterm_condition_penalty.get(cond, 0), int(penalty),
             )
         for tag, bonus in (factor.get("midterm_tag_bonus") or {}).items():
-            tuning.midterm_tag_bonus[tag] = max(
-                tuning.midterm_tag_bonus.get(tag, 0), int(bonus),
+            if int(bonus) >= 0:
+                tuning.midterm_tag_bonus[tag] = max(
+                    tuning.midterm_tag_bonus.get(tag, 0), int(bonus),
+                )
+            else:
+                tuning.midterm_tag_penalty[tag] = max(
+                    tuning.midterm_tag_penalty.get(tag, 0), abs(int(bonus)),
+                )
+        for tag, penalty in (factor.get("midterm_tag_penalty") or {}).items():
+            tuning.midterm_tag_penalty[tag] = max(
+                tuning.midterm_tag_penalty.get(tag, 0), int(penalty),
             )
         if factor.get("midterm_min_score") is not None:
             tuning.midterm_min_score = max(
                 tuning.midterm_min_score, int(factor["midterm_min_score"]),
             )
         tuning.notes.extend((factor.get("notes") or [])[:4])
-        wr = summary.get("win_rate", 0)
-        if summary.get("matured_count", 0) >= 3:
+        if matured >= 3:
+            wr = summary.get("win_rate", 0)
             tuning.notes.append(
-                f"中线跟进1月胜率 {wr}%（{summary['matured_count']} 笔），因子已调优"
+                f"中线跟进{summary.get('follow_trading_days', 10)}日胜率 {wr}%"
+                f"（{summary['matured_count']} 笔），因子已调优"
+            )
+        elif interim.get("interim_count", 0) >= INTERIM_MIN_SAMPLES:
+            tuning.notes.append(
+                f"中线中间统计胜率 {interim.get('win_rate', 0)}%"
+                f"（{interim['interim_count']} 只），因子 provisional 调优"
             )
     except Exception:
         pass

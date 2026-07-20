@@ -39,7 +39,7 @@ def _classify_bucket(strategy: str) -> str:
     return "ultra_short" if str(strategy) in ULTRA_SHORT_STRATEGIES else "midterm"
 
 OUTPUT_DIR = MIDTERM_OUTPUT_DIR
-MIDTERM_STRATEGIES = {"中线", "趋势", "手动", "价值", "波段", "ETF"}
+MIDTERM_STRATEGIES = {"中线", "趋势", "手动", "价值", "波段", "ETF", "三倍量"}
 
 PERFORMANCE_FILTER_OPTIONS = {
     "profit_growth": "净利正增长",
@@ -184,7 +184,8 @@ def _evaluate_midterm_technicals(
     has_bar_shrink = bool(pick.get("macd_bar_shrink"))
     has_rsi_div = bool(pick.get("rsi_divergence"))
     reclaim_ma = price >= ma5 * 0.998 or price >= ma10 * 0.99
-    stop_confirm = has_golden or has_bar_shrink or has_rsi_div or reclaim_ma
+    strong_confirm = has_golden or has_bar_shrink or has_rsi_div
+    stop_confirm = strong_confirm or reclaim_ma
     if not stop_confirm:
         return None
 
@@ -198,18 +199,17 @@ def _evaluate_midterm_technicals(
     score = 55
 
     if ma60_trend == "up":
-        score += 22
+        score += 24
         tags.append("MA60向上")
         trend = "趋势回调底背离"
         hold_style = "均线多头/走强中的回调底背离，适合中线"
     elif ma60_trend == "flat":
-        score += 16
+        score += 18
         tags.append("MA60走平")
         trend = "震荡筑底背离"
         hold_style = "MA60走平筑底，确认止跌后中线轻仓"
     else:
-        # unknown：弱于 flat，仍给小加成（已非 down）
-        score += 8
+        score += 4
         tags.append("MA60未知")
         trend = "弱趋势筑底"
         hold_style = "趋势不明，需更强止跌信号"
@@ -221,11 +221,11 @@ def _evaluate_midterm_technicals(
             score += 10
             tags.append("贴近MA60")
         elif dist_ma60 > 8:
-            score -= 6
+            score -= 8
             tags.append("偏远离MA60")
 
     if has_rsi_div:
-        score += 10
+        score += 14
         tags.append("RSI底背离")
         conditions.append("rsi_div")
     elif 28 <= float(rsi) <= 42:
@@ -233,20 +233,26 @@ def _evaluate_midterm_technicals(
         tags.append("RSI回调区")
 
     if has_golden:
-        score += 18
+        score += 14
         tags.append("MACD金叉")
         conditions.append("entry_confirm")
         entry_hint = "DIFF上穿DEA，可考虑分批介入"
+        if has_rsi_div or has_bar_shrink:
+            score += 4
     elif has_bar_shrink:
-        score += 10
+        score += 12
         tags.append("绿柱缩短")
         entry_hint = "绿柱缩短止跌，等金叉或放量再加仓"
     elif reclaim_ma:
-        score += 8
+        score += 4
         tags.append("收复短均")
         entry_hint = "短均线止跌，仍需观察量能与金叉"
     else:
         entry_hint = "已具备止跌迹象，仍建议等放量确认"
+
+    if not strong_confirm and reclaim_ma:
+        score -= 8
+        tags.append("弱止跌确认")
 
     if pick.get("confirm_60m"):
         score += 8
@@ -262,14 +268,18 @@ def _evaluate_midterm_technicals(
     if ret_20d >= -5:
         score += 6
     elif ret_20d <= -10:
-        score -= 6
+        score -= 8
 
     if tuning:
         for cond in conditions:
             score += tuning.midterm_condition_bonus.get(cond, 0)
+            score -= tuning.midterm_condition_penalty.get(cond, 0)
         for tag_key, bonus in tuning.midterm_tag_bonus.items():
             if any(tag_key in t or t == tag_key for t in tags):
                 score += bonus
+        for tag_key, penalty in tuning.midterm_tag_penalty.items():
+            if any(tag_key in t or t == tag_key for t in tags):
+                score -= penalty
         if tuning.midterm_penalize_ret_20d_below is not None and ret_20d < tuning.midterm_penalize_ret_20d_below:
             score -= 10
 

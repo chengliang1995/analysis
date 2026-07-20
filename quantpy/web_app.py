@@ -44,6 +44,10 @@ from quantpy.midterm_portfolio_advisor import (
     load_latest_midterm_advice,
     run_midterm_advice,
 )
+from quantpy.midterm_triple_volume_selector import (
+    load_latest_triple_volume_advice,
+    run_triple_volume_select,
+)
 from quantpy.midterm_pick_tracker import load_tracker_summary, run_midterm_tracker_cycle
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import (
@@ -491,6 +495,7 @@ def get_dashboard_data(
         "report": load_latest_report_meta(),
         "sector": load_latest_sector(),
         "midterm_tracker": midterm_tracker,
+        "triple_volume": load_latest_triple_volume_advice(),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -1127,6 +1132,35 @@ def api_action(action: str):
                 f"胜率 {summary.get('win_rate', 0)}%"
             )
             extra["midterm_tracker"] = result
+        elif action == "midterm-triple-volume":
+            pm = PortfolioManager()
+            held = [p["code"] for p in pm.list_positions()]
+            result, log = _run_quiet(
+                run_triple_volume_select,
+                exclude_codes=held,
+                show_progress=True,
+                force=force,
+                action="midterm-triple-volume",
+            )
+            if not isinstance(result, dict):
+                return jsonify({
+                    "ok": False,
+                    "message": "三倍量选股失败，请查看运行日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
+            rec_n = len(result.get("recommendations", []))
+            select_stats = result.get("select_stats") or {}
+            message = (
+                f"三倍量选股完成：命中 {rec_n} 只"
+                f"（初筛{select_stats.get('prefilter_count', 0)}"
+                f"→技术{select_stats.get('scored_pass', 0)}）"
+            )
+            extra["triple_volume"] = result
+            extra["triple_volume_content"] = {
+                "name": "三倍量选股报告",
+                "content": result.get("markdown") or "",
+            }
         elif action == "alerts":
             pm_stats = PortfolioManager().analyze()
             if not pm_stats.get("has_data"):

@@ -2872,7 +2872,7 @@
     }
   ],
   "last_record_date": "2026-07-14",
-  "last_evaluated": "2026-07-15",
+  "last_evaluated": "2026-07-20",
   "summary": {
     "total_records": 53,
     "tracking_count": 53,
@@ -2888,5 +2888,274 @@
     "by_score_bucket": [],
     "by_ma60_trend": [],
     "factor_insights": []
-  }
+  },
+  "interim_summary": {
+    "interim_count": 53,
+    "tracking_count": 53,
+    "matured_count": 0,
+    "win_rate": 28.3,
+    "positive_rate": 64.2,
+    "avg_return": 0.28,
+    "win_threshold_pct": 3.0,
+    "follow_trading_days": 10,
+    "by_condition": [
+      {
+        "key": "diff_div",
+        "count": 53,
+        "win_rate": 28.3,
+        "positive_rate": 64.2,
+        "avg_return": 0.28,
+        "win_threshold_pct": 3.0,
+        "label": "DIFF底背离"
+      },
+      {
+        "key": "obv_div",
+        "count": 53,
+        "win_rate": 28.3,
+        "positive_rate": 64.2,
+        "avg_return": 0.28,
+        "win_threshold_pct": 3.0,
+        "label": "OBV资金底背离"
+      },
+      {
+        "key": "cap_range",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0,
+        "label": "市值150-1000亿"
+      },
+      {
+        "key": "price_cap",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0,
+        "label": "股价<100元"
+      },
+      {
+        "key": "liquidity",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0,
+        "label": "成交额≥5000万"
+      },
+      {
+        "key": "price_new_low",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0,
+        "label": "股价创阶段新低"
+      },
+      {
+        "key": "diff_below_zero",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0,
+        "label": "DIFF零轴下"
+      },
+      {
+        "key": "vol_shrink",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0,
+        "label": "缩量地量"
+      },
+      {
+        "key": "ma60_hold",
+        "count": 13,
+        "win_rate": 30.8,
+        "positive_rate": 61.5,
+        "avg_return": -1.27,
+        "win_threshold_pct": 3.0,
+        "label": "MA60走平/向上(硬筛)"
+      },
+      {
+        "key": "rsi_div",
+        "count": 13,
+        "win_rate": 30.8,
+        "positive_rate": 69.2,
+        "avg_return": 1.32,
+        "win_threshold_pct": 3.0,
+        "label": "RSI底背离"
+      },
+      {
+        "key": "entry_confirm",
+        "count": 1,
+        "win_rate": 100.0,
+        "positive_rate": 100.0,
+        "avg_return": 3.24,
+        "win_threshold_pct": 3.0,
+        "label": "MACD金叉确认"
+      }
+    ],
+    "by_tag": [
+      {
+        "key": "DIFF底背离",
+        "count": 53,
+        "win_rate": 28.3,
+        "positive_rate": 64.2,
+        "avg_return": 0.28,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "OBV底背离",
+        "count": 53,
+        "win_rate": 28.3,
+        "positive_rate": 64.2,
+        "avg_return": 0.28,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "阶段新低",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "缩量地量",
+        "count": 51,
+        "win_rate": 27.5,
+        "positive_rate": 64.7,
+        "avg_return": 0.37,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "MA60向下",
+        "count": 39,
+        "win_rate": 28.2,
+        "positive_rate": 66.7,
+        "avg_return": 1.14,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "等金叉确认",
+        "count": 38,
+        "win_rate": 21.1,
+        "positive_rate": 63.2,
+        "avg_return": 0.01,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "MA60走平/向上",
+        "count": 13,
+        "win_rate": 30.8,
+        "positive_rate": 61.5,
+        "avg_return": -1.27,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "RSI底背离",
+        "count": 13,
+        "win_rate": 30.8,
+        "positive_rate": 69.2,
+        "avg_return": 1.32,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "绿柱缩短",
+        "count": 12,
+        "win_rate": 41.7,
+        "positive_rate": 66.7,
+        "avg_return": 1.26,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "MACD金叉",
+        "count": 1,
+        "win_rate": 100.0,
+        "positive_rate": 100.0,
+        "avg_return": 3.24,
+        "win_threshold_pct": 3.0
+      }
+    ],
+    "by_score_bucket": [
+      {
+        "key": "70-80",
+        "count": 23,
+        "win_rate": 30.4,
+        "positive_rate": 65.2,
+        "avg_return": -0.1,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "60-70",
+        "count": 21,
+        "win_rate": 19.0,
+        "positive_rate": 61.9,
+        "avg_return": 0.54,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "80+",
+        "count": 9,
+        "win_rate": 44.4,
+        "positive_rate": 66.7,
+        "avg_return": 0.64,
+        "win_threshold_pct": 3.0
+      }
+    ],
+    "by_ma60_trend": [
+      {
+        "key": "down",
+        "count": 38,
+        "win_rate": 28.9,
+        "positive_rate": 68.4,
+        "avg_return": 1.49,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "flat",
+        "count": 11,
+        "win_rate": 27.3,
+        "positive_rate": 63.6,
+        "avg_return": -1.71,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "up",
+        "count": 3,
+        "win_rate": 33.3,
+        "positive_rate": 33.3,
+        "avg_return": -3.59,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "unknown",
+        "count": 1,
+        "win_rate": 0.0,
+        "positive_rate": 0.0,
+        "avg_return": -12.31,
+        "win_threshold_pct": 3.0
+      }
+    ],
+    "factor_insights": [
+      "【中间统计·53只】胜率(≥3.0%) 28.3%，均收益 +0.28%",
+      "因子「DIFF底背离」胜率 28.3% 偏低（53 笔），建议降权或提高门槛",
+      "因子「OBV资金底背离」胜率 28.3% 偏低（53 笔），建议降权或提高门槛",
+      "因子「市值150-1000亿」胜率 27.5% 偏低（51 笔），建议降权或提高门槛",
+      "因子「股价<100元」胜率 27.5% 偏低（51 笔），建议降权或提高门槛",
+      "因子「成交额≥5000万」胜率 27.5% 偏低（51 笔），建议降权或提高门槛",
+      "因子「股价创阶段新低」胜率 27.5% 偏低（51 笔），建议降权或提高门槛",
+      "因子「DIFF零轴下」胜率 27.5% 偏低（51 笔），建议降权或提高门槛",
+      "因子「缩量地量」胜率 27.5% 偏低（51 笔），建议降权或提高门槛",
+      "因子「MA60走平/向上(硬筛)」胜率 30.8% 偏低（13 笔），建议降权或提高门槛",
+      "因子「RSI底背离」胜率 30.8% 偏低（13 笔），建议降权或提高门槛",
+      "评分 70-80：23 笔，胜率 30.4%，均收益 -0.10%"
+    ],
+    "provisional": true
+  },
+  "interim_computed_at": "2026-07-20"
 }

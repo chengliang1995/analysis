@@ -1,7 +1,7 @@
 # 每日任务执行器（带日志）
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("morning", "close", "report", "all")]
+    [ValidateSet("morning", "close", "report", "triple-volume", "all")]
     [string]$Phase
 )
 
@@ -71,6 +71,9 @@ switch ($Phase) {
     "report" {
         Invoke-Step "Daily report" @("report", "--prefilter", "300", "--min-score", "35")
         Invoke-Step "Portfolio" @("portfolio")
+    }
+    "triple-volume" {
+        Invoke-Step "Triple volume select" @("midterm-triple-volume")
     }
     "all" {
         & $PSCommandPath -Phase morning
