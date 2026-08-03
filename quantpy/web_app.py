@@ -26,7 +26,7 @@ from flask.json.provider import DefaultJSONProvider
 from quantpy.json_util import df_to_records_safe, sanitize_for_json
 
 from quantpy import __version__ as APP_VERSION
-from quantpy.paths import OUTPUT_DIR, LOG_DIR, PROJECT_ROOT, REPORT_DIR, RETENTION_DAYS, TEMPLATES_DIR
+from quantpy.paths import OUTPUT_DIR, LOG_DIR, DATA_DIR, PROJECT_ROOT, REPORT_DIR, RETENTION_DAYS, TEMPLATES_DIR
 from quantpy.portfolio import PortfolioManager
 from quantpy.retention import prune_retention_files
 from quantpy.sim_replay import SimReplayEngine
@@ -48,6 +48,7 @@ from quantpy.midterm_triple_volume_selector import (
     load_latest_triple_volume_advice,
     run_triple_volume_select,
 )
+from quantpy.triple_volume_watchlist import load_watchlist_summary, sync_and_evaluate_watchlist
 from quantpy.midterm_pick_tracker import load_tracker_summary, run_midterm_tracker_cycle
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import (
@@ -113,9 +114,20 @@ def load_cached_ultra_short(top_n: int = 10) -> list[dict]:
     from quantpy.daily_advisor import load_ultra_short_scan_cache
 
     df = load_ultra_short_scan_cache()
-    if df.empty:
-        return []
-    return _ultra_short_records(df, top_n=top_n)
+    if not df.empty:
+        return _ultra_short_records(df, top_n=top_n)
+
+    # 回退：日报 JSON 摘要（定时任务 report 阶段产出）
+    summary_files = sorted(REPORT_DIR.glob("daily_summary_*.json"), reverse=True)
+    if summary_files:
+        try:
+            summary = json.loads(summary_files[0].read_text(encoding="utf-8"))
+            top = summary.get("ultra_short_top10") or []
+            if top:
+                return top[:top_n]
+        except (OSError, json.JSONDecodeError):
+            pass
+    return []
 
 
 def load_latest_report_meta() -> dict:
@@ -138,10 +150,139 @@ def load_latest_report_content() -> dict:
     return {"name": path.name, "content": path.read_text(encoding="utf-8")}
 
 
+def _file_mtime_meta(path: Path) -> dict:
+    if not path.exists():
+        return {"path": "", "updated_at": ""}
+    return {
+        "path": str(path.relative_to(BASE_DIR)).replace("\\", "/"),
+        "updated_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def load_scheduler_status() -> dict:
+    """读取计划任务状态：优先 data/scheduler_status.json，回退日志解析。"""
+    phases = {
+        "morning": "早盘 9:35",
+        "triple-volume": "三倍量 14:45",
+        "close": "收盘 15:10",
+        "report": "日报 15:25",
+    }
+    marker_path = DATA_DIR / "scheduler_status.json"
+    markers: dict = {}
+    if marker_path.exists():
+        try:
+            markers = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            markers = {}
+
+    status: dict = {}
+    for phase, label in phases.items():
+        marker = markers.get(phase) if isinstance(markers, dict) else None
+        if isinstance(marker, dict) and marker.get("state"):
+            state = str(marker.get("state") or "")
+            started = str(marker.get("started_at") or "")
+            finished = str(marker.get("finished_at") or "")
+            last_run = finished or started
+            if state == "running":
+                status[phase] = {
+                    "label": label,
+                    "last_run": started or last_run,
+                    "ok": False,
+                    "running": True,
+                    "state": "running",
+                    "log": str(marker.get("log") or ""),
+                    "message": str(marker.get("message") or "运行中"),
+                }
+                continue
+            if state == "ok":
+                status[phase] = {
+                    "label": label,
+                    "last_run": last_run,
+                    "ok": True,
+                    "running": False,
+                    "state": "ok",
+                    "log": str(marker.get("log") or ""),
+                    "message": str(marker.get("message") or ""),
+                }
+                continue
+            if state == "fail":
+                status[phase] = {
+                    "label": label,
+                    "last_run": last_run,
+                    "ok": False,
+                    "running": False,
+                    "state": "fail",
+                    "log": str(marker.get("log") or ""),
+                    "message": str(marker.get("message") or "失败"),
+                }
+                continue
+
+        logs = sorted(LOG_DIR.glob(f"daily_{phase}_*.log"), reverse=True)
+        if not logs:
+            status[phase] = {
+                "label": label,
+                "last_run": "",
+                "ok": False,
+                "running": False,
+                "state": "idle",
+                "log": "",
+                "message": "尚未执行",
+            }
+            continue
+        path = logs[0]
+        text = ""
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        started = "Start " in text
+        done = f"Done {phase}" in text or "Done " in text
+        has_body = len(text.strip()) > 120
+        success_hint = (
+            "报告已保存" in text
+            or "扫描完成" in text
+            or "完成，共" in text
+            or "观察池评估" in text
+        )
+        running = started and not done and has_body
+        ok = bool(done and (has_body or success_hint)) or (success_hint and done)
+        # 仅有 Start、几乎无正文 → 失败（常见于任务被立刻杀掉）
+        if started and not done and not has_body:
+            ok = False
+            running = False
+        status[phase] = {
+            "label": label,
+            "last_run": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "ok": ok,
+            "running": running,
+            "state": "running" if running else ("ok" if ok else "fail"),
+            "log": path.name,
+            "message": "运行中" if running else ("" if ok else "未完成"),
+        }
+    return status
+
+
+def load_data_freshness() -> dict:
+    """各模块缓存文件的最近更新时间（与定时任务产出对齐）。"""
+    today = datetime.now().strftime("%Y%m%d")
+    ultra_path = OUTPUT_DIR / f"ultra_short_{today}.csv"
+    if not ultra_path.exists():
+        ultra_files = sorted(OUTPUT_DIR.glob("ultra_short_*.csv"), reverse=True)
+        ultra_path = ultra_files[0] if ultra_files else ultra_path
+    midterm_files = sorted((OUTPUT_DIR / "midterm").glob("midterm_*.json"), reverse=True)
+    tv_files = sorted((OUTPUT_DIR / "midterm").glob("triple_volume_*.json"), reverse=True)
+    return {
+        "ultra_short": _file_mtime_meta(ultra_path),
+        "midterm": _file_mtime_meta(midterm_files[0]) if midterm_files else {"path": "", "updated_at": ""},
+        "triple_volume": _file_mtime_meta(tv_files[0]) if tv_files else {"path": "", "updated_at": ""},
+        "report": load_latest_report_meta(),
+    }
+
+
 def _resolve_midterm(portfolio_stats: dict) -> dict:
-    """仪表盘用：优先读缓存；无缓存时仅对持仓做轻量复盘（不扫全市场）。"""
+    """仪表盘用：优先读定时任务/手动分析落盘的缓存。"""
     cached = load_latest_midterm_advice()
-    if cached.get("reviews"):
+    if cached.get("reviews") or cached.get("recommendations"):
         return cached
     if not portfolio_stats.get("has_data"):
         return {}
@@ -496,6 +637,9 @@ def get_dashboard_data(
         "sector": load_latest_sector(),
         "midterm_tracker": midterm_tracker,
         "triple_volume": load_latest_triple_volume_advice(),
+        "triple_volume_watchlist": load_watchlist_summary(evaluate=False),
+        "scheduler": load_scheduler_status(),
+        "data_freshness": load_data_freshness(),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -1131,10 +1275,31 @@ def api_action(action: str):
                 f"成熟 {summary.get('matured_count', 0)} 只，"
                 f"胜率 {summary.get('win_rate', 0)}%"
             )
+            try:
+                from quantpy.midterm_pick_tracker import derive_factor_tuning
+                from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
+
+                factor = derive_factor_tuning(summary, summary.get("interim"))
+                tuning = build_selection_tuning()
+                notes = (factor.get("notes") or [])[:3]
+                if notes:
+                    message += "；策略已按跟进调优：" + "；".join(notes)
+                else:
+                    message += f"；{format_tuning_summary(tuning).splitlines()[0]}"
+                extra["selection_tuning"] = {
+                    "midterm_min_score": tuning.midterm_min_score,
+                    "condition_bonus": tuning.midterm_condition_bonus,
+                    "condition_penalty": tuning.midterm_condition_penalty,
+                    "tag_bonus": tuning.midterm_tag_bonus,
+                    "tag_penalty": tuning.midterm_tag_penalty,
+                    "notes": tuning.notes[:6],
+                }
+            except Exception:
+                pass
             extra["midterm_tracker"] = result
         elif action == "midterm-triple-volume":
             pm = PortfolioManager()
-            held = [p["code"] for p in pm.list_positions()]
+            held = [str(p.code).zfill(6) for p in pm.list_positions()]
             result, log = _run_quiet(
                 run_triple_volume_select,
                 exclude_codes=held,
@@ -1151,16 +1316,43 @@ def api_action(action: str):
                 }), 500
             rec_n = len(result.get("recommendations", []))
             select_stats = result.get("select_stats") or {}
+            wl_added = 0
+            if isinstance(result.get("watchlist"), dict):
+                wl_added = int((result["watchlist"].get("record") or {}).get("added") or 0)
             message = (
                 f"三倍量选股完成：命中 {rec_n} 只"
-                f"（初筛{select_stats.get('prefilter_count', 0)}"
-                f"→技术{select_stats.get('scored_pass', 0)}）"
+                f"（量比{select_stats.get('vol_prefilter_count', select_stats.get('prefilter_count', 0))}"
+                f"→K线{select_stats.get('hist_scan_count', select_stats.get('prefilter_count', 0))}"
+                f"→命中{select_stats.get('scored_pass', 0)}）"
             )
+            if wl_added:
+                message += f"；观察池新增 {wl_added} 只"
             extra["triple_volume"] = result
             extra["triple_volume_content"] = {
                 "name": "三倍量选股报告",
                 "content": result.get("markdown") or "",
             }
+            if result.get("watchlist"):
+                extra["triple_volume_watchlist"] = result["watchlist"]
+        elif action == "triple-volume-watch":
+            result, log = _run_quiet(
+                sync_and_evaluate_watchlist,
+                show_progress=True,
+                action="triple-volume-watch",
+            )
+            wl = result if isinstance(result, dict) and "summary" in result else load_watchlist_summary(evaluate=False)
+            eval_part = (result or {}).get("eval") if isinstance(result, dict) else {}
+            buy_n = int((eval_part or {}).get("new_buy_signals") or 0)
+            added_n = int((result or {}).get("record", {}).get("added") or 0) if isinstance(result, dict) else 0
+            message = (
+                f"观察池评估完成：同步入池 {added_n} 只，新增买入提示 {buy_n} 条"
+                f"（观察中 {wl.get('summary', {}).get('watching_count', 0)} · "
+                f"买入信号 {wl.get('summary', {}).get('buy_signal_count', 0)} · "
+                f"已结束 {wl.get('summary', {}).get('completed_count', 0)} · "
+                f"胜率 {wl.get('summary', {}).get('win_rate', 0)}%）"
+            )
+            extra["triple_volume_watchlist"] = wl
+            extra["watch_eval"] = eval_part or result
         elif action == "alerts":
             pm_stats = PortfolioManager().analyze()
             if not pm_stats.get("has_data"):

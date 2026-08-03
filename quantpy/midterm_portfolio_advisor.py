@@ -65,7 +65,7 @@ MIDTERM_SELECT_CONDITIONS = [
     {"id": "cap_range", "label": "市值150-1000亿", "category": "基本面"},
     {"id": "price_cap", "label": "股价<100元", "category": "基本面"},
     {"id": "liquidity", "label": "成交额≥5000万", "category": "基本面"},
-    {"id": "ma60_hold", "label": "MA60走平/向上(硬筛)", "category": "趋势"},
+    {"id": "ma60_hold", "label": "MA60走平/向上(软筛)", "category": "趋势"},
     {"id": "not_freefall", "label": "拒绝20/60日深跌", "category": "趋势"},
     {"id": "near_ma60", "label": "靠近MA60支撑带", "category": "趋势"},
     {"id": "price_new_low", "label": "股价创阶段新低", "category": "技术面"},
@@ -131,9 +131,9 @@ def _evaluate_midterm_technicals(
 
     硬筛：
     - 底背离五要素（阶段新低 + DIFF/OBV 背离 + DIFF<0 + 缩量）
-    - MA60 走平/向上（拒绝空头下跌趋势）
     - 拒绝 20/60 日深跌与远离 MA60 的深套
-    - 至少一类止跌确认（金叉 / 绿柱缩短 / RSI 底背离）
+    - 强止跌确认（金叉 / 绿柱缩短 / RSI 底背离）；仅收复短均不够
+    - MA60 向下允许（跟进成熟样本更优），但必须强止跌确认
     """
     del min_daily_gain_pct, turnover
 
@@ -164,9 +164,7 @@ def _evaluate_midterm_technicals(
     ret_60d = _safe_pct(price, float(close.iloc[-61])) if len(close) >= 61 else 0.0
 
     ma60_trend = pick.get("ma60_trend", _ma60_trend_label(close))
-    # ---- 趋势硬筛：不要接自由落体 ----
-    if ma60_trend == "down":
-        return None
+    # ---- 深跌硬筛：拒绝自由落体（保留）；MA60 方向改由强止跌 + 评分控制 ----
     if ret_20d < MIDTERM_MAX_RET_20D:
         return None
     if ret_60d < MIDTERM_MAX_RET_60D:
@@ -185,31 +183,40 @@ def _evaluate_midterm_technicals(
     has_rsi_div = bool(pick.get("rsi_divergence"))
     reclaim_ma = price >= ma5 * 0.998 or price >= ma10 * 0.99
     strong_confirm = has_golden or has_bar_shrink or has_rsi_div
-    stop_confirm = strong_confirm or reclaim_ma
-    if not stop_confirm:
+    # 跟进成熟样本：MA60 向下组胜率更高；走平组偏弱。
+    # 一律要求强止跌确认（金叉/绿柱缩/RSI），仅收复短均不再过筛。
+    if not strong_confirm:
         return None
 
     tags: List[str] = list(pick.get("tags", []))
     conditions: List[str] = [
         "cap_range", "price_cap", "liquidity",
-        "ma60_hold", "not_freefall", "near_ma60",
+        "not_freefall", "near_ma60",
         "price_new_low", "diff_div", "obv_div", "diff_below_zero", "vol_shrink",
         "stop_confirm",
     ]
+    if ma60_trend in ("up", "flat"):
+        conditions.append("ma60_hold")
     score = 55
 
-    if ma60_trend == "up":
-        score += 24
+    # 评分权重按跟进成熟结果校准（向下 > 向上 ≈ 走平）
+    if ma60_trend == "down":
+        score += 14
+        tags.append("MA60向下")
+        trend = "下跌趋势底背离反转"
+        hold_style = "MA60仍向下，仅作轻仓反转博弈，须强止跌+严格止损"
+    elif ma60_trend == "up":
+        score += 12
         tags.append("MA60向上")
         trend = "趋势回调底背离"
         hold_style = "均线多头/走强中的回调底背离，适合中线"
     elif ma60_trend == "flat":
-        score += 18
+        score += 6
         tags.append("MA60走平")
         trend = "震荡筑底背离"
-        hold_style = "MA60走平筑底，确认止跌后中线轻仓"
+        hold_style = "MA60走平筑底偏弱，需更强确认、控制仓位"
     else:
-        score += 4
+        score += 2
         tags.append("MA60未知")
         trend = "弱趋势筑底"
         hold_style = "趋势不明，需更强止跌信号"
@@ -225,7 +232,7 @@ def _evaluate_midterm_technicals(
             tags.append("偏远离MA60")
 
     if has_rsi_div:
-        score += 14
+        score += 18
         tags.append("RSI底背离")
         conditions.append("rsi_div")
     elif 28 <= float(rsi) <= 42:
@@ -240,19 +247,11 @@ def _evaluate_midterm_technicals(
         if has_rsi_div or has_bar_shrink:
             score += 4
     elif has_bar_shrink:
-        score += 12
+        score += 16
         tags.append("绿柱缩短")
         entry_hint = "绿柱缩短止跌，等金叉或放量再加仓"
-    elif reclaim_ma:
-        score += 4
-        tags.append("收复短均")
-        entry_hint = "短均线止跌，仍需观察量能与金叉"
     else:
-        entry_hint = "已具备止跌迹象，仍建议等放量确认"
-
-    if not strong_confirm and reclaim_ma:
-        score -= 8
-        tags.append("弱止跌确认")
+        entry_hint = "已具备强止跌信号，仍建议观察量能"
 
     if pick.get("confirm_60m"):
         score += 8
@@ -288,7 +287,7 @@ def _evaluate_midterm_technicals(
             score -= tuning.midterm_ma20_chase_penalty
 
     min_score = tuning.midterm_min_score if tuning else MIDTERM_MIN_SCORE
-    min_score = max(min_score, MIDTERM_MIN_SCORE)
+    # 尊重 AI/跟进调优门槛（build_selection_tuning 已限制在 58~72）
     if score < min_score:
         return None
 

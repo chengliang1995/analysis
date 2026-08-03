@@ -95,19 +95,49 @@ class AILearningOptimizer:
             else:
                 factor = {}
             if factor:
+                from quantpy.selection_tuning import (
+                    TRIPLE_VOLUME_CONDITION_IDS,
+                    TRIPLE_VOLUME_TAGS,
+                    MIDTERM_FORBIDDEN_TAG_BONUS,
+                )
+
                 if factor.get("midterm_min_score") is not None:
                     selection_changes["midterm_min_score"] = max(
                         selection_changes.get("midterm_min_score", 55),
                         int(factor["midterm_min_score"]),
                     )
                 for cond, bonus in (factor.get("midterm_condition_bonus") or {}).items():
-                    selection_changes.setdefault("midterm_condition_bonus", {})[cond] = bonus
+                    bucket = (
+                        "triple_condition_bonus"
+                        if cond in TRIPLE_VOLUME_CONDITION_IDS
+                        else "midterm_condition_bonus"
+                    )
+                    selection_changes.setdefault(bucket, {})[cond] = bonus
                 for cond, pen in (factor.get("midterm_condition_penalty") or {}).items():
-                    selection_changes.setdefault("midterm_condition_penalty", {})[cond] = pen
+                    bucket = (
+                        "triple_condition_penalty"
+                        if cond in TRIPLE_VOLUME_CONDITION_IDS
+                        else "midterm_condition_penalty"
+                    )
+                    selection_changes.setdefault(bucket, {})[cond] = pen
                 for tag, bonus in (factor.get("midterm_tag_bonus") or {}).items():
-                    selection_changes.setdefault("midterm_tag_bonus", {})[tag] = bonus
+                    if tag in MIDTERM_FORBIDDEN_TAG_BONUS and tag not in TRIPLE_VOLUME_TAGS:
+                        continue
+                    bucket = (
+                        "triple_tag_bonus" if tag in TRIPLE_VOLUME_TAGS else "midterm_tag_bonus"
+                    )
+                    selection_changes.setdefault(bucket, {})[tag] = bonus
                 for tag, pen in (factor.get("midterm_tag_penalty") or {}).items():
-                    selection_changes.setdefault("midterm_tag_penalty", {})[tag] = pen
+                    bucket = (
+                        "triple_tag_penalty" if tag in TRIPLE_VOLUME_TAGS else "midterm_tag_penalty"
+                    )
+                    selection_changes.setdefault(bucket, {})[tag] = pen
+                if selection_changes.get("triple_condition_penalty") or selection_changes.get(
+                    "triple_tag_penalty"
+                ):
+                    selection_changes["triple_min_score"] = max(
+                        int(selection_changes.get("triple_min_score", 60) or 60), 68,
+                    )
         except Exception:
             pass
         suggestions = self._build_suggestions(analytics, param_deltas, config, selection_changes)
@@ -360,6 +390,42 @@ class AILearningOptimizer:
                 )
             if row.get("bucket") == "<60" and row.get("win_rate", 100) < 40:
                 changes["ultra_min_score"] = max(changes.get("ultra_min_score", min_score), 45)
+            # 中高分虚高：75-90 胜率差 → 抑制未封板追涨
+            if (
+                row.get("bucket") == "75-90"
+                and int(row.get("count") or 0) >= 5
+                and float(row.get("win_rate") or 0) < 40
+            ):
+                changes["ultra_demote_midhigh_unsealed"] = True
+                changes["ultra_penalize_unsealed_above_pct"] = min(
+                    float(changes.get("ultra_penalize_unsealed_above_pct") or 99), 5.5,
+                )
+                changes["ultra_penalize_3d_gain_above"] = min(
+                    float(changes.get("ultra_penalize_3d_gain_above") or 99), 18.0,
+                )
+                changes["ultra_preferred_tags"] = ["涨停不破开", "强势封板", "封板", "连板"]
+                changes.setdefault("ultra_tag_bonus", {})
+                changes["ultra_tag_bonus"]["强势封板"] = max(
+                    changes["ultra_tag_bonus"].get("强势封板", 0), 6,
+                )
+                changes["ultra_tag_bonus"]["涨停不破开"] = max(
+                    changes["ultra_tag_bonus"].get("涨停不破开", 0), 5,
+                )
+
+        # 三倍量：观察池大而久无买入信号 → 提高质量门槛
+        try:
+            from quantpy.triple_volume_watchlist import load_watchlist_summary
+
+            wl = load_watchlist_summary(evaluate=False)
+            wsum = wl.get("summary") or {}
+            watching = int(wsum.get("watching_count") or 0)
+            buys = int(wsum.get("buy_signal_count") or 0)
+            if watching >= 40 and buys == 0:
+                changes["triple_min_score"] = max(int(changes.get("triple_min_score") or 60), 70)
+            elif watching >= 20 and buys <= 1:
+                changes["triple_min_score"] = max(int(changes.get("triple_min_score") or 60), 68)
+        except Exception:
+            pass
 
         return changes
 
@@ -475,12 +541,16 @@ class AILearningOptimizer:
                 sel_parts.append(f"超短门槛≥{selection_changes['ultra_min_score']}")
             if "midterm_min_score" in selection_changes:
                 sel_parts.append(f"中线门槛≥{selection_changes['midterm_min_score']}")
+            if "triple_min_score" in selection_changes:
+                sel_parts.append(f"三倍量门槛≥{selection_changes['triple_min_score']}")
             if selection_changes.get("ultra_preferred_tags"):
                 sel_parts.append("偏好" + "/".join(selection_changes["ultra_preferred_tags"][:3]))
             if selection_changes.get("ultra_penalize_unsealed_above_pct"):
                 sel_parts.append(
                     f"未封板>{selection_changes['ultra_penalize_unsealed_above_pct']}%减分"
                 )
+            if selection_changes.get("ultra_demote_midhigh_unsealed"):
+                sel_parts.append("中高分未封板降权")
             if sel_parts:
                 suggestions.append(f"选股参数优化：{' · '.join(sel_parts)}。")
         else:

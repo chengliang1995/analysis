@@ -564,13 +564,14 @@ def derive_interim_factor_tuning(summary: dict) -> Dict[str, Any]:
         "MA60向上": ("ma60_hold", 6),
         "贴近MA60": ("near_ma60", 4),
         "60分底背离": ("stop_confirm", 3),
+        "MA60向下": ("stop_confirm", 4),
     }
     tag_penalty_map = {
         "等金叉确认": 8,
-        "MA60向下": 10,
         "偏远离MA60": 6,
         "当日偏弱": 5,
         "弱止跌确认": 6,
+        "MA60走平": 6,
     }
 
     for row in summary.get("by_tag", []):
@@ -657,9 +658,18 @@ def _build_factor_insights(
     for row in by_ma60:
         if row["count"] < MIN_SAMPLES_FOR_FACTOR:
             continue
-        if row["key"] in ("flat", "up") and row["win_rate"] >= 50:
+        if row["key"] == "down" and row["win_rate"] >= 50:
+            insights.append(
+                f"MA60向下组胜率 {row['win_rate']}%（{row['count']} 笔），"
+                f"均收益 {row['avg_return']:+.2f}%，宜在强止跌确认下保留"
+            )
+        elif row["key"] in ("flat", "up") and row["win_rate"] >= 50:
             insights.append(f"MA60{row['key']} 组胜率 {row['win_rate']}%（{row['count']} 笔）")
-        elif row["key"] == "down" and row["win_rate"] < 45:
+        elif row["key"] == "flat" and row["win_rate"] < 40:
+            insights.append(
+                f"MA60走平组胜率仅 {row['win_rate']}%（{row['count']} 笔），宜降权并要求强确认"
+            )
+        elif row["key"] == "down" and row["win_rate"] < 40:
             insights.append(f"MA60向下组胜率仅 {row['win_rate']}%，宜轻仓或过滤")
 
     return insights[:12]
@@ -690,15 +700,25 @@ def _derive_matured_factor_tuning(summary: dict) -> Dict[str, Any]:
 
     changes: Dict[str, Any] = {
         "midterm_condition_bonus": {},
+        "midterm_condition_penalty": {},
         "midterm_tag_bonus": {},
+        "midterm_tag_penalty": {},
         "midterm_min_score": None,
         "notes": [],
+    }
+
+    # 底背离基础条件几乎全员具备，不做加减分
+    base_conds = {
+        "diff_div", "obv_div", "price_new_low", "diff_below_zero", "vol_shrink",
+        "cap_range", "price_cap", "liquidity", "near_ma60", "not_freefall",
     }
 
     for row in summary.get("by_condition", []):
         if row["count"] < MIN_SAMPLES_FOR_FACTOR:
             continue
         key = row["key"]
+        if key in base_conds:
+            continue
         label = _CONDITION_LABELS.get(key, key)
         if row["win_rate"] >= 58 and row["avg_return"] > 2:
             changes["midterm_condition_bonus"][key] = 8
@@ -706,27 +726,77 @@ def _derive_matured_factor_tuning(summary: dict) -> Dict[str, Any]:
         elif row["win_rate"] >= 52:
             changes["midterm_condition_bonus"][key] = 4
         elif row["win_rate"] < 38 and row["count"] >= 4:
-            changes["midterm_condition_bonus"][key] = -5
+            changes["midterm_condition_penalty"][key] = 5
             changes["notes"].append(f"跟进降权因子 {label}（胜率{row['win_rate']}%）")
 
     for row in summary.get("by_tag", []):
         if row["count"] < MIN_SAMPLES_FOR_FACTOR:
             continue
-        if row["win_rate"] >= 58:
-            changes["midterm_tag_bonus"][row["key"]] = 5
+        tag = row["key"]
+        if row["win_rate"] >= 55:
+            changes["midterm_tag_bonus"][tag] = 5
+            changes["notes"].append(f"跟进强化标签 {tag}（胜率{row['win_rate']}%）")
         elif row["win_rate"] < 35 and row["count"] >= 4:
-            changes["midterm_tag_bonus"][row["key"]] = -4
+            changes["midterm_tag_penalty"][tag] = 4
+            changes["notes"].append(f"跟进降权标签 {tag}（胜率{row['win_rate']}%）")
+
+    # MA60 趋势：按成熟分组校准
+    for row in summary.get("by_ma60_trend", []):
+        if row["count"] < MIN_SAMPLES_FOR_FACTOR:
+            continue
+        if row["key"] == "down" and row["win_rate"] >= 50:
+            changes["midterm_tag_bonus"]["MA60向下"] = max(
+                changes["midterm_tag_bonus"].get("MA60向下", 0), 5,
+            )
+            changes["notes"].append(
+                f"跟进保留 MA60向下（胜率{row['win_rate']}% / 均收益{row['avg_return']:+.2f}%）"
+            )
+        if row["key"] == "flat" and row["win_rate"] < 40:
+            changes["midterm_tag_penalty"]["MA60走平"] = max(
+                changes["midterm_tag_penalty"].get("MA60走平", 0), 6,
+            )
+            changes["midterm_tag_penalty"]["MA60走平/向上"] = max(
+                changes["midterm_tag_penalty"].get("MA60走平/向上", 0), 4,
+            )
+            changes["midterm_condition_penalty"]["ma60_hold"] = max(
+                changes["midterm_condition_penalty"].get("ma60_hold", 0), 5,
+            )
+
+    # RSI / 绿柱：成熟样本里均收益或胜率突出时额外加码
+    for row in summary.get("by_tag", []):
+        if row["key"] == "RSI底背离" and row["count"] >= 5 and row["avg_return"] >= 4:
+            changes["midterm_condition_bonus"]["rsi_div"] = max(
+                changes["midterm_condition_bonus"].get("rsi_div", 0), 6,
+            )
+            changes["midterm_tag_bonus"]["RSI底背离"] = max(
+                changes["midterm_tag_bonus"].get("RSI底背离", 0), 5,
+            )
+        if row["key"] == "绿柱缩短" and row["count"] >= 5 and row["win_rate"] >= 55:
+            changes["midterm_condition_bonus"]["stop_confirm"] = max(
+                changes["midterm_condition_bonus"].get("stop_confirm", 0), 5,
+            )
+            changes["midterm_tag_bonus"]["绿柱缩短"] = max(
+                changes["midterm_tag_bonus"].get("绿柱缩短", 0), 5,
+            )
 
     overall_wr = float(summary.get("win_rate", 0))
     if overall_wr < 40 and summary.get("matured_count", 0) >= 8:
-        changes["midterm_min_score"] = 62
+        changes["midterm_min_score"] = 68
         changes["notes"].append(f"中线跟进胜率 {overall_wr}% 偏低，抬高评分门槛")
     elif overall_wr >= 55:
-        changes["midterm_min_score"] = max(55, 58 - 2)
+        changes["midterm_min_score"] = max(55, 58)
+    elif 42 <= overall_wr < 50:
+        # 中等胜率：略抬门槛，优先强确认高分
+        changes["midterm_min_score"] = 66
 
     for row in summary.get("by_score_bucket", []):
         if row["key"] == "<60" and row["count"] >= 2 and row["win_rate"] < 40:
-            changes["midterm_min_score"] = max(changes.get("midterm_min_score") or 55, 62)
+            changes["midterm_min_score"] = max(changes.get("midterm_min_score") or 55, 66)
+        if row["key"] == "70-80" and row["count"] >= 8 and row["win_rate"] < overall_wr - 5:
+            # 中间分档偏弱时，更依赖强确认标签而非堆分
+            changes["notes"].append(
+                f"评分70-80档胜率 {row['win_rate']}% 偏低，偏好强止跌确认而非堆分"
+            )
 
     return changes
 

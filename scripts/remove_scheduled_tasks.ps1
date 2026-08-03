@@ -1,6 +1,6 @@
 # 删除 QuantPy 相关计划任务
 $TaskPrefix = "QuantPyStock"
-$names = @("Morning", "Close", "Report")
+$names = @("Morning", "TripleVolume", "Close", "Report")
 
 foreach ($n in $names) {
     $taskName = "$TaskPrefix-$n"

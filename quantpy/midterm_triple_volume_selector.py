@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 
 from quantpy.json_util import df_to_records_safe, json_safe_float, sanitize_for_json
-from quantpy.paths import MIDTERM_OUTPUT_DIR
+from quantpy.paths import CACHE_DIR, MIDTERM_OUTPUT_DIR
 from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.stock_data import (
     ensure_industry_map,
@@ -27,14 +27,21 @@ from quantpy.stock_data import (
     get_stock_hist,
     get_stock_name_column,
     is_bse_code,
+    load_daily_close_snapshot,
 )
 
 OUTPUT_DIR = MIDTERM_OUTPUT_DIR
+DAILY_CLOSE_DIR = CACHE_DIR / "daily_close"
 TRIPLE_VOLUME_RATIO = 3.0
+# 量比软预筛（同单位手/手），再拉 K 线做硬筛 3 倍 + 一阳穿三线
+VOL_PREFILTER_RATIO = 2.5
 SELECT_WINDOW_START = dt_time(14, 45)
 SELECT_WINDOW_END = dt_time(15, 5)
-SCAN_WORKERS = 8
+SCAN_WORKERS = 16
 PREFILTER_DEFAULT = 800
+# 量比预筛失败时的回退上限；有昨收快照时通常远小于此
+MAX_HIST_SCAN = 250
+HIST_DAYS = 45
 TOP_N_DEFAULT = 30
 
 TRIPLE_VOLUME_SELECT_CONDITIONS = [
@@ -76,48 +83,121 @@ def _is_select_window(now: Optional[datetime] = None) -> bool:
     return SELECT_WINDOW_START <= t <= SELECT_WINDOW_END
 
 
+def _align_volume_unit(today_vol: float, ref_vol: float) -> float:
+    """将 today_vol 对齐到与 ref_vol 相同单位（腾讯实时=手，K线=股）。"""
+    if today_vol <= 0 or ref_vol <= 0:
+        return today_vol
+    ratio = today_vol / ref_vol
+    if ratio < 0.02:
+        return today_vol * 100
+    if ratio > 50:
+        return today_vol / 100
+    return today_vol
+
+
+def _hist_date_str(value) -> str:
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    text = str(value or "")
+    return text[:10] if len(text) >= 10 else text
+
+
+def _load_prev_day_volume_map(today: Optional[str] = None) -> Tuple[dict, str]:
+    """读取上一交易日收盘快照成交量（与实时行情同为「手」）。"""
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    files = sorted(
+        p for p in DAILY_CLOSE_DIR.glob("*.csv")
+        if len(p.stem) == 10 and p.stem < today
+    )
+    if not files:
+        return {}, ""
+    prev_date = files[-1].stem
+    snap = load_daily_close_snapshot(prev_date, allow_partial=True)
+    if snap.empty or "volume" not in snap.columns:
+        return {}, prev_date
+    vol = pd.to_numeric(snap["volume"], errors="coerce")
+    codes = snap["code"].astype(str).str.zfill(6)
+    mapping = {
+        code: float(v)
+        for code, v in zip(codes, vol)
+        if pd.notna(v) and float(v) > 0
+    }
+    return mapping, prev_date
+
+
 def _evaluate_triple_volume(
     hist: pd.DataFrame,
     *,
     name: str = "",
     spot_volume: Optional[float] = None,
+    spot_price: Optional[float] = None,
+    spot_open: Optional[float] = None,
+    spot_pct: Optional[float] = None,
+    prev_day_volume: Optional[float] = None,
 ) -> Optional[dict]:
-    """判定三倍量 + 一阳穿三线。"""
+    """判定三倍量 + 一阳穿三线。优先用实时价/量，K 线只算均线与昨日基准。"""
     if _is_st_or_delist_name(name):
         return None
-    if hist is None or len(hist) < 22:
+    if hist is None or len(hist) < 21:
         return None
 
     hist = hist.sort_values("date").reset_index(drop=True) if "date" in hist.columns else hist.reset_index(drop=True)
-    close = pd.to_numeric(hist["close"], errors="coerce")
-    if "open" in hist.columns:
-        open_px = pd.to_numeric(hist["open"], errors="coerce")
+    today = datetime.now().strftime("%Y-%m-%d")
+    last_date = _hist_date_str(hist["date"].iloc[-1]) if "date" in hist.columns else ""
+    # 盘中 K 线末根可能是不完整今日，统一剥掉后用实时价拼接
+    base = hist.iloc[:-1].copy() if last_date == today and len(hist) > 21 else hist
+    if len(base) < 21:
+        return None
+
+    base_close = pd.to_numeric(base["close"], errors="coerce")
+    base_vol = pd.to_numeric(base.get("volume", 0), errors="coerce").fillna(0)
+    prev_close = float(base_close.iloc[-1])
+    if prev_close <= 0:
+        return None
+
+    curr_close = float(spot_price) if spot_price and spot_price > 0 else float(base_close.iloc[-1])
+    if spot_open is not None and spot_open > 0:
+        curr_open = float(spot_open)
+    elif last_date == today and "open" in hist.columns:
+        curr_open = float(pd.to_numeric(hist["open"], errors="coerce").iloc[-1])
     else:
-        open_px = close
-
-    volume = pd.to_numeric(hist.get("volume", 0), errors="coerce").fillna(0)
-    if len(volume) < 2:
-        return None
-
-    curr_close = float(close.iloc[-1])
-    curr_open = float(open_px.iloc[-1])
-    prev_close = float(close.iloc[-2])
-    yesterday_vol = float(volume.iloc[-2])
-    today_vol = float(spot_volume) if spot_volume is not None and spot_volume > 0 else float(volume.iloc[-1])
-
-    if yesterday_vol <= 0 or today_vol <= 0:
-        return None
-    vol_ratio = today_vol / yesterday_vol
-    if vol_ratio < TRIPLE_VOLUME_RATIO:
-        return None
+        curr_open = curr_close
 
     if curr_close <= curr_open:
         return None
 
-    ma5 = close.rolling(5).mean()
-    ma10 = close.rolling(10).mean()
-    ma20 = close.rolling(20).mean()
+    # 昨量：优先昨收快照（手），否则 K 线末根并对齐单位
+    yesterday_vol_raw = (
+        float(prev_day_volume)
+        if prev_day_volume is not None and prev_day_volume > 0
+        else float(base_vol.iloc[-1])
+    )
+    today_vol_raw = (
+        float(spot_volume) if spot_volume is not None and spot_volume > 0
+        else float(pd.to_numeric(hist.get("volume", 0), errors="coerce").fillna(0).iloc[-1])
+    )
+    if yesterday_vol_raw <= 0 or today_vol_raw <= 0:
+        return None
+
+    # 快照对快照（同单位）无需对齐；快照对 K 线才对齐
+    if prev_day_volume is not None and prev_day_volume > 0 and spot_volume is not None and spot_volume > 0:
+        yesterday_vol = yesterday_vol_raw
+        today_vol = today_vol_raw
+    else:
+        yesterday_vol = yesterday_vol_raw
+        today_vol = _align_volume_unit(today_vol_raw, yesterday_vol)
+
+    vol_ratio = today_vol / yesterday_vol
+    if vol_ratio < TRIPLE_VOLUME_RATIO:
+        return None
+
+    closes = pd.concat([base_close, pd.Series([curr_close])], ignore_index=True)
+    ma5 = closes.rolling(5).mean()
+    ma10 = closes.rolling(10).mean()
+    ma20 = closes.rolling(20).mean()
     if pd.isna(ma5.iloc[-1]) or pd.isna(ma10.iloc[-1]) or pd.isna(ma20.iloc[-1]):
+        return None
+    if pd.isna(ma5.iloc[-2]) or pd.isna(ma10.iloc[-2]) or pd.isna(ma20.iloc[-2]):
         return None
 
     curr_ma5 = float(ma5.iloc[-1])
@@ -133,17 +213,26 @@ def _evaluate_triple_volume(
     if not (cross5 and cross10 and cross20):
         return None
 
-    pct_chg = 0.0
-    if "pct_chg" in hist.columns and pd.notna(hist["pct_chg"].iloc[-1]):
-        pct_chg = float(hist["pct_chg"].iloc[-1])
+    if spot_pct is not None:
+        pct_chg = float(spot_pct)
     elif prev_close > 0:
         pct_chg = (curr_close - prev_close) / prev_close * 100
+    else:
+        pct_chg = 0.0
 
     score = 60.0
     score += min(25.0, max(0.0, (vol_ratio - TRIPLE_VOLUME_RATIO) * 4.0))
-    score += min(10.0, max(0.0, pct_chg * 1.5))
+    # 涨幅仅温和加分，大涨追高减分（与 AI「避免急拉追高」一致）
+    if 0 < pct_chg < 5:
+        score += min(6.0, pct_chg * 1.2)
+    elif pct_chg >= 7:
+        score -= 5.0
+    elif pct_chg >= 5:
+        score -= 2.0
     if curr_close > curr_ma5 > curr_ma10 > curr_ma20:
         score += 5.0
+    if vol_ratio >= 5:
+        score += 3.0
 
     conditions = ["non_st", "vol_3x", "yang_line", "cross_ma5", "cross_ma10", "cross_ma20"]
     tags = [
@@ -176,31 +265,59 @@ class TripleVolumeSelector:
 
     def __init__(self) -> None:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        self._tuning = None
 
     def _score_candidate(
         self,
         code: str,
         name: str,
         spot: Optional[dict] = None,
+        prev_day_volume: Optional[float] = None,
     ) -> Optional[dict]:
-        hist = get_stock_hist(code, days=40, patch_live=True)
-        if hist.empty or len(hist) < 22:
+        # 不 patch_live：避免每只票再打一次实时行情；量价用 spot / 昨收快照
+        hist = get_stock_hist(code, days=HIST_DAYS, patch_live=False)
+        if hist.empty or len(hist) < 21:
             return None
 
+        spot = spot or {}
         spot_volume = None
-        if spot:
-            raw_vol = spot.get("volume")
-            if raw_vol is not None:
-                try:
-                    spot_volume = float(raw_vol)
-                except (TypeError, ValueError):
-                    spot_volume = None
+        raw_vol = spot.get("volume")
+        if raw_vol is not None:
+            try:
+                spot_volume = float(raw_vol)
+            except (TypeError, ValueError):
+                spot_volume = None
 
-        tech = _evaluate_triple_volume(hist, name=name, spot_volume=spot_volume)
+        spot_price = None
+        raw_px = spot.get("price")
+        if raw_px is not None:
+            try:
+                spot_price = float(raw_px)
+            except (TypeError, ValueError):
+                spot_price = None
+
+        spot_open = None
+        raw_open = spot.get("open")
+        if raw_open is not None:
+            try:
+                spot_open = float(raw_open)
+            except (TypeError, ValueError):
+                spot_open = None
+
+        spot_pct = float(spot.get("pct", 0) or 0)
+
+        tech = _evaluate_triple_volume(
+            hist,
+            name=name,
+            spot_volume=spot_volume,
+            spot_price=spot_price,
+            spot_open=spot_open,
+            spot_pct=spot_pct if spot_pct else None,
+            prev_day_volume=prev_day_volume,
+        )
         if tech is None:
             return None
 
-        spot_pct = float(spot.get("pct", 0)) if spot else tech["pct_chg"]
         if spot_pct == 0 and tech.get("pct_chg"):
             spot_pct = float(tech["pct_chg"])
 
@@ -210,7 +327,7 @@ class TripleVolumeSelector:
             f"MA5/10/20={tech['ma5']}/{tech['ma10']}/{tech['ma20']}"
         )
 
-        return {
+        item = {
             "code": code,
             "name": name,
             "price": tech["price"],
@@ -230,6 +347,13 @@ class TripleVolumeSelector:
             "condition_labels": tech["condition_labels"],
             "reason": reason,
         }
+        if self._tuning is not None:
+            from quantpy.selection_tuning import apply_triple_tuning
+
+            item = apply_triple_tuning(item, self._tuning)
+            if item is None:
+                return None
+        return item
 
     def recommend_stocks(
         self,
@@ -238,20 +362,42 @@ class TripleVolumeSelector:
         prefilter: int = PREFILTER_DEFAULT,
         show_progress: bool = False,
         max_workers: int = SCAN_WORKERS,
+        tuning=None,
     ) -> Tuple[pd.DataFrame, dict]:
+        from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
+
+        self._tuning = tuning if tuning is not None else build_selection_tuning(for_sim=False)
+        if show_progress and self._tuning:
+            _progress(format_tuning_summary(self._tuning), show_progress)
         select_stats: dict = {
             "market_total": 0,
             "prefilter_count": 0,
+            "vol_prefilter_count": 0,
+            "hist_scan_count": 0,
             "scored_pass": 0,
             "scored_fail": 0,
             "scored_errors": 0,
             "excluded_held": 0,
             "scan_workers": max_workers,
+            "prev_trade_date": "",
+            "triple_min_score": int(getattr(self._tuning, "triple_min_score", 60) or 60),
         }
         exclude = {str(c).zfill(6) for c in (exclude_codes or [])}
 
-        _progress("  拉取全市场行情…", show_progress)
-        market = get_market_spot(verbose=show_progress, force_refresh=False)
+        prev_vol_map, prev_date = _load_prev_day_volume_map()
+        select_stats["prev_trade_date"] = prev_date
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        snap_path = DAILY_CLOSE_DIR / f"{today}.csv"
+        force_refresh = True
+        if snap_path.exists():
+            age_min = (datetime.now().timestamp() - snap_path.stat().st_mtime) / 60
+            if age_min <= 3:
+                force_refresh = False
+                _progress(f"  今日快照较新（{age_min:.1f} 分钟前），跳过全市场重拉", show_progress)
+
+        _progress("  拉取全市场行情（实时成交量）…", show_progress)
+        market = get_market_spot(verbose=show_progress, force_refresh=force_refresh)
         if market.empty:
             _progress("  行情为空，跳过扫描", show_progress)
             return pd.DataFrame(), select_stats
@@ -266,6 +412,7 @@ class TripleVolumeSelector:
         pct_col = next((c for c in ("pct_chg", "changepercent", "涨跌幅") if c in df.columns), None)
         turnover_col = next((c for c in ("turnover", "turnoverratio", "换手率") if c in df.columns), None)
         volume_col = next((c for c in ("volume", "成交量") if c in df.columns), None)
+        open_col = next((c for c in ("open", "开盘价") if c in df.columns), None)
 
         if pct_col:
             df["_pct"] = pd.to_numeric(df[pct_col], errors="coerce").fillna(0)
@@ -279,9 +426,18 @@ class TripleVolumeSelector:
             df["_volume"] = pd.to_numeric(df[volume_col], errors="coerce").fillna(0)
         else:
             df["_volume"] = 0.0
+        if open_col:
+            df["_open"] = pd.to_numeric(df[open_col], errors="coerce")
+        else:
+            df["_open"] = float("nan")
 
         df["_price"] = _spot_price_series(df)
-        pool = df[(df["_price"] > 0) & (df["_pct"] > 0)].copy()
+        # 阳线：优先 收盘>开盘；无开盘价时用涨幅>0
+        yang = (df["_price"] > 0) & (
+            (df["_open"].notna() & (df["_price"] > df["_open"]))
+            | (df["_open"].isna() & (df["_pct"] > 0))
+        )
+        pool = df[yang].copy()
         if name_col and name_col in pool.columns:
             pool = pool[~pool[name_col].astype(str).map(_is_st_or_delist_name)]
 
@@ -289,16 +445,36 @@ class TripleVolumeSelector:
             _progress("  初筛无阳线非ST标的", show_progress)
             return pd.DataFrame(), select_stats
 
-        pool["_rank"] = (
-            pool["_volume"].clip(0, 1e10) / 1e10 * 0.55
-            + pool["_turnover"].clip(0, 20) / 20 * 0.25
-            + pool["_pct"].clip(0, 10) / 10 * 0.20
-        )
-        candidates = pool.sort_values("_rank", ascending=False).head(max(prefilter, 200))
+        prev_vol_map, prev_date = _load_prev_day_volume_map()
+        select_stats["prev_trade_date"] = prev_date
+        if prev_vol_map:
+            codes = pool[code_col].astype(str).str.zfill(6)
+            pool["_prev_vol"] = codes.map(prev_vol_map)
+            pool["_vol_ratio"] = pool["_volume"] / pool["_prev_vol"].replace(0, pd.NA)
+            vol_hit = pool[pool["_vol_ratio"] >= VOL_PREFILTER_RATIO].copy()
+            select_stats["vol_prefilter_count"] = len(vol_hit)
+            _progress(
+                f"  量比预筛（昨收 {prev_date}）：{len(pool)} 阳线 → "
+                f"{len(vol_hit)} 只 ≥{VOL_PREFILTER_RATIO}x",
+                show_progress,
+            )
+            if not vol_hit.empty:
+                candidates = vol_hit.sort_values("_vol_ratio", ascending=False).head(MAX_HIST_SCAN)
+            else:
+                candidates = pool.sort_values("_volume", ascending=False).head(min(prefilter, 200))
+        else:
+            _progress("  无昨收成交量快照，回退为量能排序初筛", show_progress)
+            pool["_rank"] = (
+                pool["_volume"].clip(0, 1e10) / 1e10 * 0.55
+                + pool["_turnover"].clip(0, 20) / 20 * 0.25
+                + pool["_pct"].clip(0, 10) / 10 * 0.20
+            )
+            candidates = pool.sort_values("_rank", ascending=False).head(min(prefilter, MAX_HIST_SCAN))
+
         select_stats["prefilter_count"] = len(candidates)
+        select_stats["hist_scan_count"] = len(candidates)
         _progress(
-            f"  初筛 {len(candidates)} 只（阳线+非ST，按量能排序），"
-            f"多线程评分（{max_workers} 线程）…",
+            f"  拉取 K 线评分 {len(candidates)} 只（{max_workers} 线程，无逐票实时补丁）…",
             show_progress,
         )
 
@@ -313,12 +489,25 @@ class TripleVolumeSelector:
                     excluded += 1
                     continue
                 name = str(row[name_col]) if name_col else code
+                prev_v = row.get("_prev_vol")
+                try:
+                    prev_v_f = float(prev_v) if pd.notna(prev_v) else None
+                except (TypeError, ValueError):
+                    prev_v_f = None
+                open_v = row.get("_open")
+                try:
+                    open_f = float(open_v) if pd.notna(open_v) else None
+                except (TypeError, ValueError):
+                    open_f = None
                 tasks.append({
                     "code": code,
                     "name": name,
+                    "prev_day_volume": prev_v_f,
                     "spot": {
-                        "pct": row["_pct"],
+                        "pct": float(row["_pct"]) if pd.notna(row["_pct"]) else 0.0,
                         "volume": float(row["_volume"]) if pd.notna(row.get("_volume")) else None,
+                        "price": float(row["_price"]) if pd.notna(row.get("_price")) else None,
+                        "open": open_f,
                     },
                 })
 
@@ -332,12 +521,16 @@ class TripleVolumeSelector:
             def _worker(task: dict) -> Optional[dict]:
                 try:
                     return self._score_candidate(
-                        task["code"], task["name"], spot=task["spot"],
+                        task["code"],
+                        task["name"],
+                        spot=task["spot"],
+                        prev_day_volume=task.get("prev_day_volume"),
                     )
                 except Exception:
                     return None
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            workers = max(1, min(max_workers, max(total, 1)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {executor.submit(_worker, t): t for t in tasks}
                 for fut in as_completed(futures):
                     done += 1
@@ -350,7 +543,7 @@ class TripleVolumeSelector:
                             fail += 1
                     except Exception:
                         errors += 1
-                    if show_progress and (done % 50 == 0 or done == total):
+                    if show_progress and (done % 25 == 0 or done == total):
                         _progress(
                             f"  进度 {done}/{total}，命中 {len(results)} 只",
                             show_progress,
@@ -389,7 +582,8 @@ def format_triple_volume_report_markdown(result: dict) -> str:
     stats = result.get("select_stats") or {}
     parts.append(
         f"全市场 {stats.get('market_total', 0)} 只 → "
-        f"初筛 {stats.get('prefilter_count', 0)} → "
+        f"量比预筛 {stats.get('vol_prefilter_count', stats.get('prefilter_count', 0))} → "
+        f"K线 {stats.get('hist_scan_count', stats.get('prefilter_count', 0))} → "
         f"命中 {stats.get('scored_pass', 0)} 只\n\n"
     )
 
@@ -420,6 +614,37 @@ def format_triple_volume_report_markdown(result: dict) -> str:
                 ["代码", "名称", "行业", "股价", "量比", "评分", "涨幅%", "理由"],
                 rows,
                 aligns=["left", "left", "left", "right", "right", "right", "right", "left"],
+            )
+        )
+        parts.append("\n")
+
+    buy_alerts = (
+        result.get("buy_alerts")
+        or (result.get("watchlist") or {}).get("recent_alerts")
+        or (result.get("watchlist") or {}).get("buy_signals")
+        or []
+    )
+    if buy_alerts:
+        parts.append(f"\n## 观察池买入提示 ({len(buy_alerts)})\n\n")
+        alert_rows = [
+            [
+                a.get("code", ""),
+                a.get("name", ""),
+                a.get("pick_date", "") or a.get("signal_date", ""),
+                (
+                    f"{a.get('buy_signal_price') or a.get('price', 0):.2f}"
+                    if (a.get("buy_signal_price") or a.get("price"))
+                    else "—"
+                ),
+                truncate_display(a.get("buy_reason") or a.get("reason", ""), 36),
+            ]
+            for a in buy_alerts[:10]
+        ]
+        parts.append(
+            format_markdown_table(
+                ["代码", "名称", "选股日", "现价", "买入理由"],
+                alert_rows,
+                aligns=["left", "left", "left", "right", "left"],
             )
         )
         parts.append("\n")
@@ -493,5 +718,29 @@ def run_triple_volume_select(
     md_path.write_text(md, encoding="utf-8")
     result["markdown"] = md
     result["report_path"] = str(md_path)
+
+    if rec_records:
+        try:
+            from quantpy.triple_volume_watchlist import run_watchlist_cycle
+
+            watchlist = run_watchlist_cycle(
+                rec_records,
+                pick_date=now.strftime("%Y-%m-%d"),
+                show_progress=show_progress,
+            )
+            result["watchlist"] = watchlist
+        except Exception as exc:
+            if show_progress:
+                _progress(f"  观察池记录跳过: {exc}", show_progress)
+    else:
+        # 当日无命中时仍同步历史选股报告并刷新观察池评估
+        try:
+            from quantpy.triple_volume_watchlist import run_watchlist_cycle
+
+            result["watchlist"] = run_watchlist_cycle(show_progress=show_progress)
+        except Exception as exc:
+            if show_progress:
+                _progress(f"  观察池评估跳过: {exc}", show_progress)
+
     _progress(f"扫描完成：命中 {len(rec_records)} 只，报告已保存", show_progress)
     return result

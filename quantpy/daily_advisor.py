@@ -40,6 +40,7 @@ from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
 from quantpy.midterm_triple_volume_selector import run_triple_volume_select
+from quantpy.triple_volume_watchlist import sync_and_evaluate_watchlist
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.real_portfolio_reviewer import load_latest_real_review, run_real_portfolio_review
 from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
@@ -269,6 +270,13 @@ def generate_daily_report(
     print("实盘中线分析（复盘 / 优化 / 推荐）")
     print("=" * 60)
     midterm = run_midterm_advice(portfolio_stats, show_progress=True)
+    print("\n" + "=" * 60)
+    print("三倍量观察池（每日选股入池 · 站稳MA5 + 缩量买入）")
+    print("=" * 60)
+    watch_payload = sync_and_evaluate_watchlist(show_progress=True)
+    watch_eval = watch_payload.get("eval") or {}
+    for i, a in enumerate(watch_eval.get("alerts", [])[:5], 1):
+        print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
     for i, s in enumerate(midterm.get("review_summaries", []), 1):
         print(f"  复盘 {i}. {s}")
     for i, s in enumerate(midterm.get("optimize_suggestions", []), 1):
@@ -619,9 +627,9 @@ def main() -> None:
         choices=[
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
             "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn",
-            "midterm", "midterm-triple-volume", "review", "alerts", "web",
+            "midterm", "midterm-triple-volume", "triple-volume-watch", "review", "alerts", "web",
         ],
-        help="sim=模拟复盘, midterm=实盘中线分析, midterm-triple-volume=三倍量选股, review=实盘操作复盘",
+        help="sim=模拟复盘, midterm=实盘中线分析, midterm-triple-volume=三倍量选股, triple-volume-watch=观察池评估, review=实盘操作复盘",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -691,12 +699,31 @@ def main() -> None:
             from quantpy.portfolio import PortfolioManager
 
             pm = PortfolioManager()
-            held = [p["code"] for p in pm.list_positions()]
+            held = [str(p.code).zfill(6) for p in pm.list_positions()]
             run_triple_volume_select(
                 exclude_codes=held,
                 show_progress=True,
                 force=args.force,
             )
+        elif args.command == "triple-volume-watch":
+            print("=" * 60)
+            print("三倍量观察池评估")
+            print("=" * 60)
+            payload = sync_and_evaluate_watchlist(show_progress=True)
+            result = payload.get("eval") or {}
+            added = int((payload.get("record") or {}).get("added") or 0)
+            if added:
+                print(f"\n已从每日选股同步入池 {added} 只")
+            if not result.get("evaluated"):
+                print("\n观察池为空。请先运行三倍量选股。")
+            else:
+                print(
+                    f"\n评估 {result['evaluated']} 只："
+                    f"买入信号 {result['buy_signals']} · "
+                    f"观察中 {result['watching']} · 已过期 {result['expired']}"
+                )
+                for i, a in enumerate(result.get("alerts", []), 1):
+                    print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
         elif args.command == "review":
             print("=" * 60)
             print("实盘操作复盘（买卖点分析）")

@@ -194,6 +194,25 @@
     .alert-tag.buy { background: rgba(34,197,94,0.15); color: var(--up); }
     .alert-tag.sell { background: rgba(239,68,68,0.15); color: var(--down); }
     .alert-tag.watch { background: rgba(245,158,11,0.15); color: #f59e0b; }
+    .scheduler-bar {
+      margin: 0 0 12px;
+      padding: 10px 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.82rem;
+    }
+    .sched-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+    .sched-chip {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(148,163,184,0.12);
+      color: var(--muted);
+    }
+    .sched-chip.ok { background: rgba(34,197,94,0.12); color: #22c55e; }
+    .sched-chip.fail { background: rgba(239,68,68,0.12); color: #ef4444; }
+    .sched-chip.running { background: rgba(245,158,11,0.14); color: #d97706; }
+    .sched-fresh { color: var(--muted); font-size: 0.78rem; }
     tr.row-alert-buy { background: rgba(34,197,94,0.06); }
     tr.row-alert-sell { background: rgba(239,68,68,0.06); }
     #log-panel {
@@ -326,6 +345,8 @@
       <button type="button" data-main-tab="sim">模拟盘</button>
     </div>
 
+    <div class="scheduler-bar" id="scheduler-bar" style="display:none"></div>
+
     <div class="toolbar" id="toolbar-real" data-toolbar="real">
       <button type="button" data-action="refresh">刷新持仓行情</button>
       <button type="button" data-action="scan">超短扫描</button>
@@ -333,6 +354,7 @@
       <button type="button" data-action="report">生成日报</button>
       <button type="button" data-action="midterm">中线分析</button>
       <button type="button" data-action="midterm-triple-volume" class="secondary">三倍量选股</button>
+      <button type="button" data-action="triple-volume-watch" class="secondary">观察池评估</button>
       <button type="button" data-action="midterm-track" class="secondary">中线跟进评估</button>
       <button type="button" data-action="alerts">价位提醒</button>
       <button type="button" data-action="review">实盘复盘</button>
@@ -407,6 +429,26 @@
           </div>
           <div class="rec-conditions" id="triple-volume-conditions"></div>
           <div class="table-wrap" id="triple-volume-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px" id="triple-volume-watch-panel">
+          <div class="panel-head">
+            <h2 style="font-size:0.95rem">三倍量观察池<span class="drill-hint">每日选股入池 · 5~10日 · 站稳MA5 · 缩量买入</span></h2>
+            <span class="badge" id="triple-volume-watch-badge">—</span>
+          </div>
+          <div class="rec-conditions" id="triple-volume-watch-rules"></div>
+          <div class="stats" id="triple-volume-watch-stats"></div>
+          <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <h3>买入提示</h3>
+          </div>
+          <div class="table-wrap" id="triple-volume-buy-table"></div>
+          <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <h3>观察中</h3>
+          </div>
+          <div class="table-wrap" id="triple-volume-watch-table"></div>
+          <div class="panel-head sub" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <h3>已结束观察</h3>
+          </div>
+          <div class="table-wrap" id="triple-volume-completed-table"></div>
         </section>
         <section class="panel" style="margin-bottom:20px" id="midterm-tracker-panel">
           <div class="panel-head">
@@ -695,7 +737,8 @@
     let logPollTimer = null;
     const ACTION_BUSY_LABEL = {
       midterm: "中线分析进行中（约 3～8 分钟，多线程扫描）…",
-      "midterm-triple-volume": "三倍量选股扫描中（约 2～5 分钟）…",
+      "midterm-triple-volume": "三倍量选股扫描中（通常 1～3 分钟）…",
+      "triple-volume-watch": "观察池评估中…",
       report: "生成日报中…",
       review: "实盘复盘中…",
       scan: "超短扫描中…",
@@ -709,6 +752,7 @@
     const ACTION_TIMEOUT_MS = {
       midterm: 1200000,
       "midterm-triple-volume": 900000,
+      "triple-volume-watch": 600000,
       report: 1200000,
       review: 300000,
       scan: 300000,
@@ -718,7 +762,7 @@
       default: 180000,
     };
     const LONG_RUNNING_ACTIONS = new Set([
-      "midterm", "midterm-triple-volume", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "ai-learn", "midterm-track",
+      "midterm", "midterm-triple-volume", "triple-volume-watch", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "ai-learn", "midterm-track",
     ]);
     let lastDashboardData = null;
 
@@ -1558,8 +1602,11 @@
       );
       renderMidtermFilterSummary(stats, backendStats, fallbackUsed);
       if (!rec.length) {
-        badge.textContent = "未持仓";
-        el.innerHTML = `<div class="empty">点击「中线分析」生成推荐（可先选行业/业绩筛选）</div>`;
+        badge.textContent = "—";
+        const midUpdated = window._lastDataFreshness?.midterm?.updated_at;
+        el.innerHTML = midUpdated
+          ? `<div class="empty">今日扫描无中线推荐（缓存 ${escapeHtml(midUpdated)}）</div>`
+          : `<div class="empty">点击「中线分析」生成推荐，或等待 15:25 日报任务</div>`;
         return;
       }
       populateMidtermIndustryOptions(rec);
@@ -1846,8 +1893,174 @@
       renderMidtermRecTable(rec, p.midterm?.select_stats);
     }
 
+    function renderTripleVolumeWatchlist(wl) {
+      const badge = document.getElementById("triple-volume-watch-badge");
+      const rulesEl = document.getElementById("triple-volume-watch-rules");
+      const statsEl = document.getElementById("triple-volume-watch-stats");
+      const buyEl = document.getElementById("triple-volume-buy-table");
+      const watchEl = document.getElementById("triple-volume-watch-table");
+      const completedEl = document.getElementById("triple-volume-completed-table");
+      if (!badge || !buyEl || !watchEl) return;
+
+      const summary = wl?.summary || {};
+      const rules = wl?.rules || {};
+      const buySignals = wl?.buy_signals || [];
+      const watching = wl?.watching || [];
+      const completed = wl?.completed || wl?.expired || [];
+      const total = summary.total || 0;
+      const settled = summary.settled_count || 0;
+
+      badge.textContent = total
+        ? `观察 ${summary.watching_count || 0} · 买入 ${summary.buy_signal_count || 0} · 结束 ${summary.completed_count || completed.length || 0}`
+          + (settled ? ` · 胜率(>5%) ${summary.win_rate ?? 0}%` : "")
+        : "—";
+
+      if (rulesEl) {
+        const chips = [
+          rules.watch_days && `窗口 ${rules.watch_days}`,
+          rules.ma5_hold,
+          rules.volume_shrink,
+          rules.win_rule,
+        ].filter(Boolean);
+        rulesEl.innerHTML = chips.map((t) =>
+          `<span class="cond-chip tech">${escapeHtml(t)}</span>`
+        ).join("");
+      }
+
+      if (statsEl) {
+        const cards = [
+          ["观察中", String(summary.watching_count || 0)],
+          ["买入信号", String(summary.buy_signal_count || 0)],
+          ["已结束", String(summary.completed_count || completed.length || 0)],
+          ["胜率(>5%)", settled ? `${summary.win_rate ?? 0}%` : "—"],
+          ["均收益", settled ? `${Number(summary.avg_return || 0) >= 0 ? "+" : ""}${Number(summary.avg_return || 0).toFixed(2)}%` : "—"],
+          ["买入信号胜率", summary.buy_signal_count ? `${summary.signal_win_rate ?? 0}%` : "—"],
+        ];
+        statsEl.innerHTML = cards.map(([k, v]) =>
+          `<div class="stat"><div class="label">${escapeHtml(k)}</div><div class="value">${escapeHtml(v)}</div></div>`
+        ).join("");
+      }
+
+      if (!buySignals.length) {
+        buyEl.innerHTML = `<div class="empty">暂无买入提示（点击「观察池评估」刷新）</div>`;
+      } else {
+        const head = ["代码", "名称", "选股日", "突破价", "信号价", "收益", "缩量比", "提示"]
+          .map((h) => `<th>${h}</th>`).join("");
+        const body = buySignals.map((x) => {
+          const ret = x.return_pct;
+          const retCls = ret == null ? "" : (Number(ret) > 0 ? "pos" : (Number(ret) < 0 ? "neg" : ""));
+          const retTxt = ret == null ? "—" : `${Number(ret) >= 0 ? "+" : ""}${Number(ret).toFixed(2)}%`;
+          return `<tr class="drill-row buy-signal-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+          `<td>${x.code}</td><td>${x.name}</td>` +
+          `<td>${escapeHtml(x.pick_date || "—")}</td>` +
+          `<td>${x.pick_price != null ? Number(x.pick_price).toFixed(2) : "—"}</td>` +
+          `<td>${x.buy_signal_price != null ? Number(x.buy_signal_price).toFixed(2) : (x.last_price != null ? Number(x.last_price).toFixed(2) : "—")}</td>` +
+          `<td class="${retCls}">${retTxt}</td>` +
+          `<td>${x.last_volume_ratio != null ? (Number(x.last_volume_ratio) * 100).toFixed(0) + "%" : "—"}</td>` +
+          `<td>${escapeHtml(truncateText(x.buy_reason || "站稳MA5+缩量", 28))}</td>` +
+          `</tr>`;
+        }).join("");
+        buyEl.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+        buyEl.querySelectorAll("tr.drill-row").forEach((row) => {
+          row.addEventListener("click", () => openStockDrilldown(row.dataset.code, row.dataset.name));
+        });
+      }
+
+      if (!watching.length) {
+        watchEl.innerHTML = `<div class="empty">暂无观察中标的。</div>`;
+      } else {
+        const head = ["代码", "名称", "选股日", "已观察", "突破价", "现价", "MA5", "状态"]
+          .map((h) => `<th>${h}</th>`).join("");
+        const body = watching.map((x) =>
+          `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+          `<td>${x.code}</td><td>${x.name}</td>` +
+          `<td>${escapeHtml(x.pick_date || "—")}</td>` +
+          `<td>${x.days_watched != null ? x.days_watched + "日" : "—"}</td>` +
+          `<td>${x.pick_price != null ? Number(x.pick_price).toFixed(2) : "—"}</td>` +
+          `<td>${x.last_price != null ? Number(x.last_price).toFixed(2) : "—"}</td>` +
+          `<td>${x.last_ma5 != null ? Number(x.last_ma5).toFixed(2) : "—"}</td>` +
+          `<td>${escapeHtml(truncateText(x.buy_reason || "观察中", 24))}</td>` +
+          `</tr>`
+        ).join("");
+        watchEl.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+        watchEl.querySelectorAll("tr.drill-row").forEach((row) => {
+          row.addEventListener("click", () => openStockDrilldown(row.dataset.code, row.dataset.name));
+        });
+      }
+
+      if (completedEl) {
+        if (!completed.length) {
+          completedEl.innerHTML = `<div class="empty">暂无已结束记录。观察期满或触发买入后会出现在此，并统计胜率。</div>`;
+        } else {
+          const head = ["代码", "名称", "选股日", "结束日", "状态", "突破价", "结算价", "收益", "结果"]
+            .map((h) => `<th>${h}</th>`).join("");
+          const body = completed.map((x) => {
+            const statusLabel = x.status === "buy_signal" ? "买入信号" : "已过期";
+            const ret = x.return_pct;
+            const retCls = ret == null ? "" : (Number(ret) > 0 ? "pos" : (Number(ret) < 0 ? "neg" : ""));
+            const retTxt = ret == null ? "—" : `${Number(ret) >= 0 ? "+" : ""}${Number(ret).toFixed(2)}%`;
+            const winTxt = x.is_win == null ? "—" : (x.is_win ? "胜" : "负");
+            return `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+              `<td>${x.code}</td><td>${x.name}</td>` +
+              `<td>${escapeHtml(x.pick_date || "—")}</td>` +
+              `<td>${escapeHtml(x.completed_at || x.buy_signal_date || x.last_check_date || "—")}</td>` +
+              `<td>${statusLabel}</td>` +
+              `<td>${x.pick_price != null ? Number(x.pick_price).toFixed(2) : "—"}</td>` +
+              `<td>${x.settle_price != null ? Number(x.settle_price).toFixed(2) : (x.last_price != null ? Number(x.last_price).toFixed(2) : "—")}</td>` +
+              `<td class="${retCls}">${retTxt}</td>` +
+              `<td>${winTxt}</td>` +
+              `</tr>`;
+          }).join("");
+          completedEl.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+          completedEl.querySelectorAll("tr.drill-row").forEach((row) => {
+            row.addEventListener("click", () => openStockDrilldown(row.dataset.code, row.dataset.name));
+          });
+        }
+      }
+    }
+
+    function truncateText(s, n) {
+      const t = String(s || "");
+      return t.length > n ? t.slice(0, n) + "…" : t;
+    }
+
+    function renderSchedulerStatus(data) {
+      const el = document.getElementById("scheduler-bar");
+      if (!el) return;
+      const sched = data?.scheduler || {};
+      const fresh = data?.data_freshness || {};
+      const keys = ["morning", "triple-volume", "close", "report"];
+      const items = keys
+        .filter((k) => sched[k])
+        .map((k) => {
+          const v = sched[k];
+          const running = !!v.running || v.state === "running";
+          const cls = running ? "running" : (v.ok ? "ok" : (v.last_run ? "fail" : ""));
+          const mark = running ? " …" : (v.ok ? " ✓" : (v.last_run ? " ✗" : ""));
+          const tip = [v.message, v.log].filter(Boolean).join(" · ");
+          const timeTxt = running
+            ? `运行中 ${v.last_run || ""}`.trim()
+            : (v.last_run || "未运行");
+          return `<span class="sched-chip ${cls}" title="${escapeHtml(tip)}">${escapeHtml(v.label)} ${escapeHtml(timeTxt)}${mark}</span>`;
+        });
+      const freshParts = [];
+      if (fresh.ultra_short?.updated_at) freshParts.push(`超短 ${fresh.ultra_short.updated_at}`);
+      if (fresh.midterm?.updated_at) freshParts.push(`中线 ${fresh.midterm.updated_at}`);
+      if (fresh.triple_volume?.updated_at) freshParts.push(`三倍量 ${fresh.triple_volume.updated_at}`);
+      if (fresh.report?.updated_at) freshParts.push(`日报 ${fresh.report.updated_at}`);
+      if (!items.length && !freshParts.length) {
+        el.style.display = "none";
+        return;
+      }
+      el.innerHTML =
+        (items.length ? `<div class="sched-row">${items.join("")}</div>` : "") +
+        (freshParts.length ? `<div class="sched-fresh">缓存数据：${freshParts.join(" · ")}</div>` : "");
+      el.style.display = "block";
+    }
+
     function renderTripleVolumeFromData(data) {
       renderTripleVolumeTable(data?.triple_volume || null);
+      renderTripleVolumeWatchlist(data?.triple_volume_watchlist || null);
     }
 
     function renderRealClosed(p) {
@@ -2394,8 +2607,10 @@
 
     function renderAll(data) {
       lastDashboardData = data || {};
+      window._lastDataFreshness = data?.data_freshness || {};
       document.getElementById("server-time").textContent =
         `更新时间：${data.server_time}` + (data.report?.name ? ` · 日报：${data.report.name}` : "");
+      try { renderSchedulerStatus(data); } catch (e) { console.error("renderSchedulerStatus", e); }
       try { renderSim(data.sim); } catch (e) { console.error("renderSim", e); }
       try { renderPortfolio(data.portfolio); } catch (e) { console.error("renderPortfolio", e); }
       try { renderLevelAlerts(data.level_alerts); } catch (e) { console.error("renderLevelAlerts", e); }
@@ -2785,6 +3000,9 @@
           if (body.triple_volume) {
             body.data.triple_volume = body.triple_volume;
           }
+          if (body.triple_volume_watchlist) {
+            body.data.triple_volume_watchlist = body.triple_volume_watchlist;
+          }
           renderAll(body.data);
           if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select"].includes(action)) {
             refreshSimPanel().catch(() => {});
@@ -2820,7 +3038,7 @@
         if (body.ok) {
           if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select"].includes(action)) {
             switchMainTab("sim");
-          } else if (["midterm", "midterm-triple-volume", "alerts", "review"].includes(action)) {
+          } else if (["midterm", "midterm-triple-volume", "triple-volume-watch", "alerts", "review"].includes(action)) {
             switchMainTab("real");
           }
         }

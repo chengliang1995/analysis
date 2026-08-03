@@ -85,27 +85,165 @@ class MorningSelector:
         self.scanner = UltraShortScanner()
         self.optimizer = StrategyOptimizer()
 
+    @staticmethod
+    def _limit_threshold(code: str) -> float:
+        code = str(code).zfill(6)
+        if code.startswith(("300", "301", "688", "689")):
+            return 19.5
+        return 9.8
+
+    def _limit_up_price(self, code: str, pre_close: float) -> float:
+        if pre_close <= 0:
+            return 0.0
+        thr = self._limit_threshold(code)
+        return round(float(pre_close) * (1 + thr / 100), 2)
+
+    def _is_yi_zi_ban(
+        self,
+        code: str,
+        *,
+        open_px: float,
+        high: float,
+        low: float,
+        close: float,
+        pre_close: float,
+    ) -> bool:
+        """一字板：开盘即涨停且全日几乎无打开，实盘无法买入。"""
+        if pre_close <= 0 or open_px <= 0:
+            return False
+        limit_px = self._limit_up_price(code, pre_close)
+        if limit_px <= 0:
+            return False
+        # 开盘未到涨停，不是一字
+        if open_px < limit_px * 0.997:
+            return False
+        hi = float(high or open_px)
+        lo = float(low or open_px)
+        cl = float(close or open_px)
+        # 最低价曾明显离开涨停 → 有打开过，可能有买点
+        if lo < limit_px * 0.995:
+            return False
+        amp = (hi - lo) / open_px if open_px > 0 else 0.0
+        if amp > 0.005:
+            return False
+        # 收盘仍贴涨停
+        return cl >= limit_px * 0.995
+
+    def _unbuyable_limit_reason(
+        self,
+        code: str,
+        *,
+        open_px: float,
+        high: float = 0.0,
+        low: float = 0.0,
+        close: float = 0.0,
+        pre_close: float = 0.0,
+        pct: float = 0.0,
+        buy_price: float = 0.0,
+    ) -> str:
+        """无法实盘成交时返回原因，可买则返回空串。"""
+        if pre_close <= 0:
+            return ""
+        limit_px = self._limit_up_price(code, pre_close)
+        thr = self._limit_threshold(code)
+        open_px = float(open_px or 0)
+        close = float(close or buy_price or 0)
+        high = float(high or max(open_px, close))
+        low = float(low or min(open_px, close) if open_px and close else open_px)
+
+        if self._is_yi_zi_ban(
+            code,
+            open_px=open_px,
+            high=high,
+            low=low,
+            close=close,
+            pre_close=pre_close,
+        ):
+            return "一字板无法买入"
+
+        # 开盘即涨停且现价仍在涨停附近
+        if open_px >= limit_px * 0.997 and close >= limit_px * 0.995:
+            return "开盘涨停难成交"
+
+        # 现价已触及涨停，无卖单可接
+        if close > 0 and close >= limit_px * 0.997:
+            return "涨停无卖单"
+
+        if pct >= thr - 0.2 and close >= limit_px * 0.995:
+            return "涨停难成交"
+
+        # 买点上沿已顶到涨停价 → 没有实际买点空间
+        if open_px > 0:
+            zone_high = round(open_px * (1 + self.config.buy_premium_pct / 100), 2)
+            if zone_high >= limit_px * 0.997:
+                return "买点触及涨停无空间"
+
+        if buy_price > 0 and buy_price >= limit_px * 0.997:
+            return "成交价触及涨停"
+
+        return ""
+
+    def _buy_zone(self, open_px: float) -> Tuple[float, float, float]:
+        zone_low = round(open_px * 0.998, 2)
+        zone_high = round(open_px * (1 + self.config.buy_premium_pct / 100), 2)
+        chase_cap = round(
+            zone_high * (1 + self.config.max_chase_above_zone_pct / 100), 2,
+        )
+        return zone_low, zone_high, chase_cap
+
     def _evaluate_scan_price_buy(
         self,
         item: dict,
     ) -> Tuple[bool, str, float, dict]:
-        """以扫描时价格作为买入价与参数参考（优先于实时追价）。"""
+        """以扫描时价格作为买入价；必须落在开盘买点区间，且非一字/涨停无卖单。"""
+        code = str(item.get("code", "")).zfill(6)
         price = float(item.get("scan_price") or item.get("buy_price_ref") or item.get("price") or 0)
         if price <= 0:
             return False, "无扫描价", 0.0, {}
 
+        open_px = float(item.get("open_price") or item.get("open_price_ref") or 0)
+        pre_close = float(item.get("pre_close") or 0)
+        high = float(item.get("high") or item.get("high_price") or price)
+        low = float(item.get("low") or item.get("low_price") or price)
         pct = float(item.get("pct_chg", 0) or 0)
+        if open_px <= 0:
+            open_px = price
+
         if pct <= -9.5:
             return False, "大跌/跌停", 0.0, {}
-        if pct >= 9.8 and not item.get("is_sealed_board"):
-            return False, "涨停难成交", 0.0, {}
 
-        open_px = float(item.get("open_price") or item.get("open_price_ref") or price)
-        pre_close = float(item.get("pre_close") or 0)
+        blocked = self._unbuyable_limit_reason(
+            code,
+            open_px=open_px,
+            high=high,
+            low=low,
+            close=price,
+            pre_close=pre_close,
+            pct=pct,
+            buy_price=price,
+        )
+        if blocked:
+            return False, blocked, 0.0, {}
+
+        zone_low, zone_high, chase_cap = self._buy_zone(open_px)
+        if price > chase_cap:
+            return False, f"扫描价{price:.2f}超买点{zone_high:.2f}", 0.0, {}
+        if price < zone_low * 0.995:
+            return False, f"扫描价{price:.2f}低于买点下轨{zone_low:.2f}", 0.0, {}
+
+        # 成交价限制在买点区间内（不追涨停价）
+        buy_price = min(max(price, zone_low), chase_cap)
+        if pre_close > 0:
+            limit_px = self._limit_up_price(code, pre_close)
+            if limit_px > 0:
+                buy_price = min(buy_price, round(limit_px * 0.994, 2))
+                if buy_price < zone_low * 0.995:
+                    return False, "买点贴近涨停无法成交", 0.0, {}
+
         refs_ok = bool(item.get("buy_price_ref")) and bool(item.get("stop_loss_ref"))
         if not refs_ok:
             refs = compute_ultra_trade_refs(
-                price,
+                buy_price,
                 config=self.config,
                 open_price=open_px,
                 pre_close=pre_close,
@@ -113,15 +251,18 @@ class MorningSelector:
         else:
             refs = {
                 "scan_price": float(item.get("scan_price") or price),
-                "buy_price_ref": float(item.get("buy_price_ref") or price),
-                "sell_price_ref": float(item.get("sell_price_ref") or price),
-                "buy_zone": item.get("buy_zone", ""),
-                "buy_zone_low": item.get("buy_zone_low"),
-                "buy_zone_high": item.get("buy_zone_high"),
+                "buy_price_ref": float(item.get("buy_price_ref") or buy_price),
+                "sell_price_ref": float(item.get("sell_price_ref") or buy_price),
+                "buy_zone": item.get("buy_zone") or f"{zone_low}-{zone_high}",
+                "buy_zone_low": item.get("buy_zone_low", zone_low),
+                "buy_zone_high": item.get("buy_zone_high", zone_high),
                 "stop_loss_ref": float(item.get("stop_loss_ref") or 0),
                 "take_profit_ref": float(item.get("take_profit_ref") or 0),
                 "gap_pct": item.get("gap_pct", 0),
             }
+        refs["buy_zone"] = refs.get("buy_zone") or f"{zone_low}-{zone_high}"
+        refs["buy_zone_low"] = zone_low
+        refs["buy_zone_high"] = zone_high
 
         meta = {
             **refs,
@@ -129,11 +270,11 @@ class MorningSelector:
             "live_price": round(price, 2),
             "pre_close": round(pre_close, 2) if pre_close > 0 else 0,
             "intraday_pct": 0.0,
-            "buy_price_suggest": round(price, 2),
+            "buy_price_suggest": round(buy_price, 2),
             "morning_bonus": 4.0,
-            "morning_tags": ["扫描价买入"],
+            "morning_tags": ["扫描价买入", f"买点{zone_low}-{zone_high}"],
         }
-        return True, "", round(price, 2), meta
+        return True, "", round(buy_price, 2), meta
 
     def _evaluate_live_buy(
         self,
@@ -147,15 +288,34 @@ class MorningSelector:
         if quote is None or (isinstance(quote, pd.Series) and quote.empty):
             return False, "无实时行情", 0.0, {}
 
+        code = str(item.get("code", quote.get("code", ""))).zfill(6)
         open_px = float(quote.get("open", item.get("open_price", 0)) or 0)
         pre_close = float(quote.get("pre_close", item.get("pre_close", 0)) or 0)
         current = float(quote.get("close", quote.get("price", 0)) or 0)
+        high = float(quote.get("high", current) or current)
+        low = float(quote.get("low", current) or current)
 
         if pre_close <= 0 or open_px <= 0 or current <= 0:
             return False, "行情数据不全", 0.0, {}
 
         gap_pct = (open_px - pre_close) / pre_close * 100
         intraday_pct = (current - open_px) / open_px * 100 if open_px > 0 else 0
+        pct = float(quote.get("pct_chg", item.get("pct_chg", 0)) or 0)
+        if pct == 0 and pre_close > 0:
+            pct = (current - pre_close) / pre_close * 100
+
+        blocked = self._unbuyable_limit_reason(
+            code,
+            open_px=open_px,
+            high=high,
+            low=low,
+            close=current,
+            pre_close=pre_close,
+            pct=pct,
+            buy_price=current,
+        )
+        if blocked:
+            return False, blocked, 0.0, {}
 
         if gap_pct > self.config.max_open_gap_pct:
             return False, f"高开过大{gap_pct:.1f}%", 0.0, {}
@@ -164,11 +324,10 @@ class MorningSelector:
         if intraday_pct > 5.0:
             return False, "开盘至今急拉", 0.0, {}
 
-        zone_low = round(open_px * 0.998, 2)
-        zone_high = round(open_px * (1 + self.config.buy_premium_pct / 100), 2)
-        chase_cap = round(
-            zone_high * (1 + self.config.max_chase_above_zone_pct / 100), 2,
-        )
+        zone_low, zone_high, chase_cap = self._buy_zone(open_px)
+        limit_px = self._limit_up_price(code, pre_close)
+        if limit_px > 0 and zone_high >= limit_px * 0.997:
+            return False, "买点触及涨停无空间", 0.0, {}
 
         if current > chase_cap:
             return (
@@ -182,6 +341,10 @@ class MorningSelector:
         if current < zone_low * 0.995:
             return False, f"现价{current:.2f}低于买点下轨{zone_low:.2f}", 0.0, {}
 
+        buy_price = min(max(current, zone_low), chase_cap)
+        if limit_px > 0:
+            buy_price = min(buy_price, round(limit_px * 0.994, 2))
+
         bonus = 0.0
         tags: List[str] = []
         if 1.0 <= gap_pct <= 4.0:
@@ -190,6 +353,7 @@ class MorningSelector:
         if -1.0 <= intraday_pct <= self.config.max_intraday_chase_pct:
             bonus += 6
             tags.append("买点可接")
+        tags.append(f"买点{zone_low}-{zone_high}")
 
         meta = {
             "open_price": round(open_px, 2),
@@ -198,12 +362,13 @@ class MorningSelector:
             "gap_pct": round(gap_pct, 2),
             "intraday_pct": round(intraday_pct, 2),
             "buy_zone": f"{zone_low}-{zone_high}",
-            "buy_price_suggest": round(current, 2),
+            "buy_zone_low": zone_low,
+            "buy_zone_high": zone_high,
+            "buy_price_suggest": round(buy_price, 2),
             "morning_bonus": bonus,
+            "morning_tags": tags,
         }
-        if tags:
-            meta["morning_tags"] = tags
-        return True, "", round(current, 2), meta
+        return True, "", round(buy_price, 2), meta
 
     def _evaluate_relaxed_buy(
         self,
@@ -212,16 +377,22 @@ class MorningSelector:
     ) -> Tuple[bool, str, float, dict]:
         """
         非早盘窗口或实时行情缺失时，用快照价模拟成交（略放宽）。
-        用于缓存选股 / 收盘后补跑模拟。
+        仍禁止一字板/涨停无卖单，并要求落在开盘买点附近。
         """
+        code = str(item.get("code", "")).zfill(6)
         price = 0.0
         pre_close = 0.0
         open_px = 0.0
+        high = 0.0
+        low = 0.0
 
         if quote is not None and not (isinstance(quote, pd.Series) and quote.empty):
             open_px = float(quote.get("open", 0) or 0)
             pre_close = float(quote.get("pre_close", 0) or 0)
             price = float(quote.get("close", quote.get("price", 0)) or 0)
+            high = float(quote.get("high", 0) or 0)
+            low = float(quote.get("low", 0) or 0)
+            code = str(quote.get("code", code)).zfill(6)
 
         if price <= 0:
             price = float(item.get("price", item.get("live_price", 0)) or 0)
@@ -229,6 +400,10 @@ class MorningSelector:
             pre_close = float(item.get("pre_close", 0) or 0)
         if open_px <= 0:
             open_px = float(item.get("open_price", price) or price)
+        if high <= 0:
+            high = float(item.get("high", price) or price)
+        if low <= 0:
+            low = float(item.get("low", price) or price)
 
         if price <= 0:
             return False, "无可用价格", 0.0, {}
@@ -236,8 +411,31 @@ class MorningSelector:
         pct = float(item.get("pct_chg", 0) or 0)
         if pct <= -9.5:
             return False, "大跌/跌停", 0.0, {}
-        if pct >= 9.8:
-            return False, "涨停难成交", 0.0, {}
+
+        blocked = self._unbuyable_limit_reason(
+            code,
+            open_px=open_px,
+            high=high,
+            low=low,
+            close=price,
+            pre_close=pre_close,
+            pct=pct,
+            buy_price=price,
+        )
+        if blocked:
+            return False, blocked, 0.0, {}
+
+        zone_low, zone_high, chase_cap = self._buy_zone(open_px)
+        if price > chase_cap * 1.01:
+            return False, f"快照价{price:.2f}远离买点{zone_high:.2f}", 0.0, {}
+
+        buy_price = min(max(price, zone_low), chase_cap)
+        if pre_close > 0:
+            limit_px = self._limit_up_price(code, pre_close)
+            if limit_px > 0:
+                if zone_high >= limit_px * 0.997:
+                    return False, "买点触及涨停无空间", 0.0, {}
+                buy_price = min(buy_price, round(limit_px * 0.994, 2))
 
         gap_pct = (open_px - pre_close) / pre_close * 100 if pre_close > 0 else pct
         meta = {
@@ -246,12 +444,14 @@ class MorningSelector:
             "pre_close": round(pre_close, 2),
             "gap_pct": round(gap_pct, 2),
             "intraday_pct": 0.0,
-            "buy_zone": "快照价",
-            "buy_price_suggest": round(price, 2),
+            "buy_zone": f"{zone_low}-{zone_high}",
+            "buy_zone_low": zone_low,
+            "buy_zone_high": zone_high,
+            "buy_price_suggest": round(buy_price, 2),
             "morning_bonus": 0,
-            "morning_tags": ["快照成交"],
+            "morning_tags": ["快照成交", f"买点{zone_low}-{zone_high}"],
         }
-        return True, "", round(price, 2), meta
+        return True, "", round(buy_price, 2), meta
 
     def _morning_filters(
         self,
@@ -801,7 +1001,8 @@ class SimReplayEngine:
             suggestions.append(f"最优退出方式: {best_reason}（均收益 {by_reason.max():.2f}%）")
 
         suggestions.append(
-            "买卖点优化：买入控制在开盘价 +0.5% 附近；卖出优先止损→止盈→到期顺序判定。"
+            "买卖点优化：买入控制在开盘价 +0.5% 附近；一字板/开盘涨停禁止买入；"
+            "卖出优先止损→止盈→到期顺序判定。"
         )
         if self.config.t_plus_one:
             suggestions.append(
@@ -1028,10 +1229,24 @@ class SimReplayEngine:
 
         slots = self.config.max_positions - len(self.state["positions"])
         for item in candidates[:slots]:
-            buy_price = item["open_price"]
+            buy_price = float(item["open_price"])
+            pre_close = float(item.get("pre_close") or 0)
+            blocked = self.selector._unbuyable_limit_reason(
+                item["code"],
+                open_px=buy_price,
+                high=float(item.get("high") or buy_price),
+                low=float(item.get("low") or buy_price),
+                close=buy_price,
+                pre_close=pre_close,
+                pct=float(item.get("gap_pct") or 0),
+                buy_price=buy_price,
+            )
+            if blocked:
+                continue
             qty = self._calc_quantity(buy_price, slots)
             if qty <= 0 or buy_price * qty > float(self.state["cash"]):
                 continue
+            zone_low, zone_high, _ = self.selector._buy_zone(buy_price)
             pos = SimPosition(
                 code=item["code"],
                 name=item["name"],
@@ -1041,6 +1256,7 @@ class SimReplayEngine:
                 stop_loss=round(buy_price * (1 + self.config.stop_loss_pct / 100), 2),
                 take_profit=round(buy_price * (1 + self.config.take_profit_pct / 100), 2),
                 score=item.get("score", 0),
+                tags=f"回测开盘买,买点{zone_low}-{zone_high}",
             )
             self.state["cash"] -= buy_price * qty
             self.state["positions"].append(asdict(pos))

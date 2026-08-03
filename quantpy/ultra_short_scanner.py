@@ -107,6 +107,32 @@ class UltraShortScanner:
         return True
     return False
 
+  def _is_yi_zi_ban(
+    self,
+    code: str,
+    open_px: float,
+    high: float,
+    low: float,
+    close: float,
+    pre_close: float,
+  ) -> bool:
+    """一字板：开盘即涨停且几乎无振幅。"""
+    if pre_close <= 0 or open_px <= 0:
+      return False
+    thr = self._limit_threshold(code)
+    limit_px = round(pre_close * (1 + thr / 100), 2)
+    if open_px < limit_px * 0.997:
+      return False
+    hi = float(high or open_px)
+    lo = float(low or open_px)
+    cl = float(close or open_px)
+    if lo < limit_px * 0.995:
+      return False
+    amp = (hi - lo) / open_px if open_px > 0 else 0.0
+    if amp > 0.005:
+      return False
+    return cl >= limit_px * 0.995
+
   def _evaluate_strength(
     self,
     code: str,
@@ -116,13 +142,19 @@ class UltraShortScanner:
     low: float,
     vol_ratio: float,
     pre_close: float = 0,
+    open_px: float = 0,
   ) -> Dict:
     is_sealed = self._is_sealed_limit_up(code, pct, close, high, pre_close)
     is_strong = self._is_strong_today(code, pct, close, high, low, vol_ratio)
+    open_val = float(open_px or close)
+    is_yi_zi = self._is_yi_zi_ban(code, open_val, high, low, close, pre_close)
 
     strength_factor = 0
     tags: List[str] = []
-    if is_sealed and is_strong:
+    if is_yi_zi:
+      # 一字板无法买入，评分不加成，仅打标供模拟过滤
+      tags.append("一字板")
+    elif is_sealed and is_strong:
       strength_factor = 25
       tags.append("强势封板")
     elif is_sealed:
@@ -135,8 +167,9 @@ class UltraShortScanner:
     return {
       "is_sealed_board": is_sealed,
       "is_strong_today": is_strong,
+      "is_yi_zi_ban": is_yi_zi,
       "strength_factor": strength_factor,
-      "hold_no_sell": is_sealed and is_strong,
+      "hold_no_sell": is_sealed and is_strong and not is_yi_zi,
       "strength_tags": tags,
     }
 
@@ -155,7 +188,7 @@ class UltraShortScanner:
     if pct == 0 and pre_close > 0 and close > 0:
       pct = (close - pre_close) / pre_close * 100
 
-    strength = self._evaluate_strength(code, pct, close, high, low, 1.0, pre_close)
+    strength = self._evaluate_strength(code, pct, close, high, low, 1.0, pre_close, open_px=float(q.get("open") or close))
     strength["pct_chg"] = round(pct, 2)
     return strength
 
@@ -168,9 +201,12 @@ class UltraShortScanner:
     pct_chg: float,
     pre_close: float = 0,
     vol_ratio: float = 1.0,
+    open_px: float = 0,
   ) -> Dict:
     """根据 K 线单日 OHLC 判断强势/封板（回测退出用）。"""
-    strength = self._evaluate_strength(code, pct_chg, close, high, low, vol_ratio, pre_close)
+    strength = self._evaluate_strength(
+      code, pct_chg, close, high, low, vol_ratio, pre_close, open_px=open_px or close,
+    )
     strength["pct_chg"] = round(pct_chg, 2)
     return strength
 
@@ -268,7 +304,7 @@ class UltraShortScanner:
       tags.append("3日强势")
 
     strength = self._evaluate_strength(
-      code, spot_pct, price, high, low, vol_ratio, pre_close
+      code, spot_pct, price, high, low, vol_ratio, pre_close, open_px=open_px,
     )
     score += strength["strength_factor"]
     tags.extend(strength["strength_tags"])
@@ -282,6 +318,8 @@ class UltraShortScanner:
       "name": name,
       "price": round(price, 2),
       "open_price": round(open_px, 2),
+      "high": round(high, 2),
+      "low": round(low, 2),
       "pre_close": round(pre_close, 2) if pre_close > 0 else "",
       "pct_chg": round(spot_pct, 2),
       "turnover": round(turnover, 2),
@@ -292,6 +330,7 @@ class UltraShortScanner:
       "strength_factor": strength["strength_factor"],
       "is_sealed_board": strength["is_sealed_board"],
       "is_strong_today": strength["is_strong_today"],
+      "is_yi_zi_ban": strength.get("is_yi_zi_ban", False),
       "hold_no_sell": strength["hold_no_sell"],
       "tags": ",".join(tags),
       "has_limit_hold": bool(limit_signal),

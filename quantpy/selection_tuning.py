@@ -13,6 +13,14 @@ from quantpy.paths import SIM_REVIEW_DIR, SIM_STATE_FILE
 
 ULTRA_SHORT_STRATEGIES = frozenset({"超短", "涨停", "短线"})
 
+# 三倍量策略条件/标签（与中线底背离分流，避免互相污染加减分）
+TRIPLE_VOLUME_CONDITION_IDS = frozenset({
+    "non_st", "vol_3x", "yang_line", "cross_ma5", "cross_ma10", "cross_ma20",
+})
+TRIPLE_VOLUME_TAGS = frozenset({"一阳穿三线"})
+# 中线策略不应强化的标签（三倍量污染项）；MA60向下已由成熟跟进证实有效，允许加分
+MIDTERM_FORBIDDEN_TAG_BONUS = frozenset({"一阳穿三线"})
+
 # 强势标签别名：复盘偏好「封板」时，连板/高换手等同类信号一并认可
 ULTRA_STRONG_TAG_GROUPS: Dict[str, List[str]] = {
     "封板": ["封板", "强势封板", "涨停不破开", "连板"],
@@ -29,6 +37,7 @@ class SelectionTuning:
 
     ultra_min_score: int = 35
     midterm_min_score: int = 65
+    triple_min_score: int = 60
     ultra_tag_bonus: Dict[str, int] = field(default_factory=dict)
     ultra_tag_penalty: Dict[str, int] = field(default_factory=dict)
     ultra_penalize_3d_gain_above: Optional[float] = None
@@ -37,6 +46,8 @@ class SelectionTuning:
     ultra_preferred_tags: Optional[List[str]] = None
     require_ultra_tag_any: Optional[List[str]] = None
     strict_tag_filter: bool = False
+    # AI：中高分(约75-90)未封板时软降权，避免虚高分追涨
+    ultra_demote_midhigh_unsealed: bool = False
     midterm_ma20_chase_penalty: int = 0
     midterm_ma20_chase_ratio: float = 1.08
     midterm_penalize_ret_20d_below: Optional[float] = None
@@ -44,11 +55,62 @@ class SelectionTuning:
     midterm_condition_penalty: Dict[str, int] = field(default_factory=dict)
     midterm_tag_bonus: Dict[str, int] = field(default_factory=dict)
     midterm_tag_penalty: Dict[str, int] = field(default_factory=dict)
+    triple_condition_bonus: Dict[str, int] = field(default_factory=dict)
+    triple_condition_penalty: Dict[str, int] = field(default_factory=dict)
+    triple_tag_bonus: Dict[str, int] = field(default_factory=dict)
+    triple_tag_penalty: Dict[str, int] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     sources: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _route_condition_maps(
+    bonus: Optional[Dict[str, int]],
+    penalty: Optional[Dict[str, int]],
+) -> tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int]]:
+    """将条件加减分拆到中线 / 三倍量两套字典。"""
+    mid_b: Dict[str, int] = {}
+    mid_p: Dict[str, int] = {}
+    tri_b: Dict[str, int] = {}
+    tri_p: Dict[str, int] = {}
+    for key, val in (bonus or {}).items():
+        bucket = tri_b if key in TRIPLE_VOLUME_CONDITION_IDS else mid_b
+        bucket[key] = int(val)
+    for key, val in (penalty or {}).items():
+        bucket = tri_p if key in TRIPLE_VOLUME_CONDITION_IDS else mid_p
+        bucket[key] = int(val)
+    return mid_b, mid_p, tri_b, tri_p
+
+
+def _route_tag_maps(
+    bonus: Optional[Dict[str, int]],
+    penalty: Optional[Dict[str, int]],
+) -> tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int]]:
+    """将标签加减分拆到中线 / 三倍量；过滤中线冲突 bonus。"""
+    mid_b: Dict[str, int] = {}
+    mid_p: Dict[str, int] = {}
+    tri_b: Dict[str, int] = {}
+    tri_p: Dict[str, int] = {}
+    for key, val in (bonus or {}).items():
+        if key in TRIPLE_VOLUME_TAGS:
+            tri_b[key] = int(val)
+        elif key in MIDTERM_FORBIDDEN_TAG_BONUS:
+            continue
+        else:
+            mid_b[key] = int(val)
+    for key, val in (penalty or {}).items():
+        if key in TRIPLE_VOLUME_TAGS:
+            tri_p[key] = int(val)
+        else:
+            mid_p[key] = int(val)
+    return mid_b, mid_p, tri_b, tri_p
+
+
+def _merge_int_map(target: Dict[str, int], src: Dict[str, int]) -> None:
+    for key, val in src.items():
+        target[key] = max(target.get(key, 0), int(val))
 
 
 def _bucket_score_stats(df: pd.DataFrame, col: str = "score") -> List[dict]:
@@ -131,6 +193,20 @@ def _apply_sim_trade_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None
         if row["bucket"] in ("75-90", "90+") and row["win_rate"] >= 55 and row["avg_profit"] > 1:
             tuning.ultra_tag_bonus.setdefault("涨停不破开", 5)
             tuning.notes.append(f"评分 {row['bucket']} 区间表现较好，强化同类信号权重")
+        if row["bucket"] == "75-90" and row["count"] >= 5 and row["win_rate"] < 40:
+            tuning.ultra_demote_midhigh_unsealed = True
+            tuning.ultra_penalize_unsealed_above_pct = min(
+                tuning.ultra_penalize_unsealed_above_pct or 99, 5.5,
+            )
+            tuning.ultra_penalize_3d_gain_above = min(
+                tuning.ultra_penalize_3d_gain_above or 99, 18.0,
+            )
+            tuning.ultra_preferred_tags = ["涨停不破开", "强势封板", "封板", "连板"]
+            tuning.ultra_tag_bonus.setdefault("强势封板", 6)
+            tuning.ultra_tag_bonus.setdefault("涨停不破开", 5)
+            tuning.notes.append(
+                f"评分75-90胜率仅{row['win_rate']:.0f}%，抑制未封板中高分追涨"
+            )
 
     stop_heavy = df[df["exit_reason"].astype(str).str.contains("止损", na=False)]
     if len(stop_heavy) >= max(2, len(df) * 0.35):
@@ -154,20 +230,53 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
         tuning.ultra_min_score = max(tuning.ultra_min_score, int(sel["ultra_min_score"]))
     if sel.get("midterm_min_score") is not None:
         tuning.midterm_min_score = max(tuning.midterm_min_score, int(sel["midterm_min_score"]))
-    for cond, bonus in (sel.get("midterm_condition_bonus") or {}).items():
-        tuning.midterm_condition_bonus[cond] = max(
-            tuning.midterm_condition_bonus.get(cond, 0), int(bonus),
-        )
-    for cond, penalty in (sel.get("midterm_condition_penalty") or {}).items():
-        tuning.midterm_condition_penalty[cond] = max(
-            tuning.midterm_condition_penalty.get(cond, 0), int(penalty),
-        )
-    for tag, bonus in (sel.get("midterm_tag_bonus") or {}).items():
-        tuning.midterm_tag_bonus[tag] = max(tuning.midterm_tag_bonus.get(tag, 0), int(bonus))
-    for tag, penalty in (sel.get("midterm_tag_penalty") or {}).items():
-        tuning.midterm_tag_penalty[tag] = max(
-            tuning.midterm_tag_penalty.get(tag, 0), int(penalty),
-        )
+    if sel.get("triple_min_score") is not None:
+        tuning.triple_min_score = max(tuning.triple_min_score, int(sel["triple_min_score"]))
+
+    mid_b, mid_p, tri_b, tri_p = _route_condition_maps(
+        sel.get("midterm_condition_bonus"),
+        sel.get("midterm_condition_penalty"),
+    )
+    # 显式 triple_* 优先合并
+    _, _, tri_b2, tri_p2 = _route_condition_maps(
+        sel.get("triple_condition_bonus"),
+        sel.get("triple_condition_penalty"),
+    )
+    tri_b.update(tri_b2)
+    tri_p.update(tri_p2)
+    _merge_int_map(tuning.midterm_condition_bonus, mid_b)
+    _merge_int_map(tuning.midterm_condition_penalty, mid_p)
+    _merge_int_map(tuning.triple_condition_bonus, tri_b)
+    _merge_int_map(tuning.triple_condition_penalty, tri_p)
+
+    mid_tb, mid_tp, tri_tb, tri_tp = _route_tag_maps(
+        sel.get("midterm_tag_bonus"),
+        sel.get("midterm_tag_penalty"),
+    )
+    _, _, tri_tb2, tri_tp2 = _route_tag_maps(
+        sel.get("triple_tag_bonus"),
+        sel.get("triple_tag_penalty"),
+    )
+    tri_tb.update(tri_tb2)
+    tri_tp.update(tri_tp2)
+    _merge_int_map(tuning.midterm_tag_bonus, mid_tb)
+    _merge_int_map(tuning.midterm_tag_penalty, mid_tp)
+    _merge_int_map(tuning.triple_tag_bonus, tri_tb)
+    _merge_int_map(tuning.triple_tag_penalty, tri_tp)
+
+    if tuning.triple_condition_penalty or any(
+        t in TRIPLE_VOLUME_TAGS for t in tuning.triple_tag_penalty
+    ):
+        tuning.triple_min_score = max(tuning.triple_min_score, 68)
+        tuning.triple_condition_penalty = {
+            k: v for k, v in tuning.triple_condition_penalty.items()
+            if k not in TRIPLE_VOLUME_CONDITION_IDS
+        }
+        tuning.triple_tag_penalty = {
+            k: v for k, v in tuning.triple_tag_penalty.items()
+            if k not in TRIPLE_VOLUME_TAGS
+        }
+
     if sel.get("ultra_penalize_3d_gain_above") is not None:
         tuning.ultra_penalize_3d_gain_above = sel["ultra_penalize_3d_gain_above"]
     if sel.get("ultra_penalize_unsealed_above_pct") is not None:
@@ -179,30 +288,49 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
         tuning.ultra_preferred_tags = list(sel["ultra_preferred_tags"])
     for tag, bonus in (sel.get("ultra_tag_bonus") or {}).items():
         tuning.ultra_tag_bonus[tag] = max(tuning.ultra_tag_bonus.get(tag, 0), int(bonus))
+    for tag, penalty in (sel.get("ultra_tag_penalty") or {}).items():
+        tuning.ultra_tag_penalty[tag] = max(tuning.ultra_tag_penalty.get(tag, 0), int(penalty))
+    if sel.get("ultra_demote_midhigh_unsealed"):
+        tuning.ultra_demote_midhigh_unsealed = True
 
-    analytics = ai.get("analytics") or {}
+    analytics = ai.get("analytics") or ai.get("analytics_summary") or {}
     primary = analytics if analytics.get("sufficient") else analytics.get("real") or {}
-    if not primary.get("sufficient"):
-        return
+    if primary.get("sufficient"):
+        win_rate = float(primary.get("win_rate", 0))
+        if win_rate < 45:
+            tuning.ultra_min_score = max(tuning.ultra_min_score, 43)
+            tuning.ultra_tag_bonus.setdefault("强势封板", 5)
+        elif win_rate >= 58:
+            tuning.ultra_min_score = max(35, tuning.ultra_min_score - 2)
 
-    win_rate = float(primary.get("win_rate", 0))
-    if win_rate < 45:
-        tuning.ultra_min_score = max(tuning.ultra_min_score, 43)
-        tuning.ultra_tag_bonus.setdefault("强势封板", 5)
-    elif win_rate >= 58:
-        tuning.ultra_min_score = max(35, tuning.ultra_min_score - 2)
-
-    for row in primary.get("by_score", []):
-        if row.get("bucket") == "<60" and row.get("win_rate", 100) < 40:
-            tuning.ultra_min_score = max(tuning.ultra_min_score, 45)
+        for row in primary.get("by_score", []):
+            if row.get("bucket") == "<60" and row.get("win_rate", 100) < 40:
+                tuning.ultra_min_score = max(tuning.ultra_min_score, 45)
 
     midterm = analytics.get("midterm") or {}
     if midterm.get("sufficient") and float(midterm.get("win_rate", 100)) < 45:
         tuning.midterm_min_score = max(tuning.midterm_min_score, 58)
     elif midterm.get("sufficient") and float(midterm.get("win_rate", 100)) >= 55:
-        # 模拟中线表现尚可，允许 AI 建议适度放宽（但不低于默认 65）
         if sel.get("midterm_min_score") is not None:
-            tuning.midterm_min_score = max(tuning.midterm_min_score, 65)
+            tuning.midterm_min_score = max(tuning.midterm_min_score, int(sel["midterm_min_score"]))
+
+    # 根据建议文本强化已知有效因子（兜底）
+    for sug in ai.get("suggestions") or []:
+        text = str(sug)
+        if "RSI底背离" in text and "强化" in text:
+            tuning.midterm_condition_bonus["rsi_div"] = max(
+                tuning.midterm_condition_bonus.get("rsi_div", 0), 6,
+            )
+            tuning.midterm_tag_bonus["RSI底背离"] = max(
+                tuning.midterm_tag_bonus.get("RSI底背离", 0), 5,
+            )
+        if "MA60走平" in text and ("降权" in text or "偏低" in text):
+            tuning.midterm_condition_penalty["ma60_hold"] = max(
+                tuning.midterm_condition_penalty.get("ma60_hold", 0), 5,
+            )
+            tuning.midterm_tag_penalty["MA60走平/向上"] = max(
+                tuning.midterm_tag_penalty.get("MA60走平/向上", 0), 6,
+            )
 
 
 def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
@@ -223,36 +351,67 @@ def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
             "midterm_tracker" if matured >= 3 else "midterm_tracker_interim",
         )
         factor = derive_factor_tuning(summary, interim)
-        for cond, bonus in (factor.get("midterm_condition_bonus") or {}).items():
-            if int(bonus) >= 0:
-                tuning.midterm_condition_bonus[cond] = max(
-                    tuning.midterm_condition_bonus.get(cond, 0), int(bonus),
-                )
-            else:
-                tuning.midterm_condition_penalty[cond] = max(
-                    tuning.midterm_condition_penalty.get(cond, 0), abs(int(bonus)),
-                )
-        for cond, penalty in (factor.get("midterm_condition_penalty") or {}).items():
-            tuning.midterm_condition_penalty[cond] = max(
-                tuning.midterm_condition_penalty.get(cond, 0), int(penalty),
-            )
-        for tag, bonus in (factor.get("midterm_tag_bonus") or {}).items():
-            if int(bonus) >= 0:
-                tuning.midterm_tag_bonus[tag] = max(
-                    tuning.midterm_tag_bonus.get(tag, 0), int(bonus),
-                )
-            else:
-                tuning.midterm_tag_penalty[tag] = max(
-                    tuning.midterm_tag_penalty.get(tag, 0), abs(int(bonus)),
-                )
-        for tag, penalty in (factor.get("midterm_tag_penalty") or {}).items():
-            tuning.midterm_tag_penalty[tag] = max(
-                tuning.midterm_tag_penalty.get(tag, 0), int(penalty),
-            )
+        mid_b, mid_p, tri_b, tri_p = _route_condition_maps(
+            {
+                k: v for k, v in (factor.get("midterm_condition_bonus") or {}).items()
+                if int(v) >= 0
+            },
+            {
+                **(factor.get("midterm_condition_penalty") or {}),
+                **{
+                    k: abs(int(v))
+                    for k, v in (factor.get("midterm_condition_bonus") or {}).items()
+                    if int(v) < 0
+                },
+            },
+        )
+        _merge_int_map(tuning.midterm_condition_bonus, mid_b)
+        _merge_int_map(tuning.midterm_condition_penalty, mid_p)
+        _merge_int_map(tuning.triple_condition_bonus, tri_b)
+        _merge_int_map(tuning.triple_condition_penalty, tri_p)
+
+        mid_tb, mid_tp, tri_tb, tri_tp = _route_tag_maps(
+            {
+                k: v for k, v in (factor.get("midterm_tag_bonus") or {}).items()
+                if int(v) >= 0
+            },
+            {
+                **(factor.get("midterm_tag_penalty") or {}),
+                **{
+                    k: abs(int(v))
+                    for k, v in (factor.get("midterm_tag_bonus") or {}).items()
+                    if int(v) < 0
+                },
+            },
+        )
+        _merge_int_map(tuning.midterm_tag_bonus, mid_tb)
+        _merge_int_map(tuning.midterm_tag_penalty, mid_tp)
+        _merge_int_map(tuning.triple_tag_bonus, tri_tb)
+        _merge_int_map(tuning.triple_tag_penalty, tri_tp)
+
         if factor.get("midterm_min_score") is not None:
             tuning.midterm_min_score = max(
                 tuning.midterm_min_score, int(factor["midterm_min_score"]),
             )
+        if factor.get("triple_min_score") is not None:
+            tuning.triple_min_score = max(
+                tuning.triple_min_score, int(factor["triple_min_score"]),
+            )
+        # 三倍量硬筛因子样本差 → 抬高门槛（不对硬筛条件逐项扣分）
+        if tuning.triple_condition_penalty or any(
+            t in TRIPLE_VOLUME_TAGS for t in tuning.triple_tag_penalty
+        ):
+            tuning.triple_min_score = max(tuning.triple_min_score, 68)
+            tuning.notes.append("三倍量跟进偏弱，门槛≥68（优质量比突破）")
+            # 硬筛条件惩罚仅作分流标记，不参与逐项扣分
+            tuning.triple_condition_penalty = {
+                k: v for k, v in tuning.triple_condition_penalty.items()
+                if k not in TRIPLE_VOLUME_CONDITION_IDS
+            }
+            tuning.triple_tag_penalty = {
+                k: v for k, v in tuning.triple_tag_penalty.items()
+                if k not in TRIPLE_VOLUME_TAGS
+            }
         tuning.notes.extend((factor.get("notes") or [])[:4])
         if matured >= 3:
             wr = summary.get("win_rate", 0)
@@ -367,6 +526,7 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
         )
         tuning.ultra_min_score = 48
     tuning.midterm_min_score = int(max(58, min(72, tuning.midterm_min_score)))
+    tuning.triple_min_score = int(max(55, min(80, tuning.triple_min_score)))
     return tuning
 
 
@@ -417,9 +577,18 @@ def apply_ultra_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Optiona
         else:
             score -= 3
 
-    if tuning.require_ultra_tag_any and tuning.strict_tag_filter:
+    # 中高分未封板：AI 显示 75-90 档常因追涨虚高而胜率差
+    if tuning.ultra_demote_midhigh_unsealed and not sealed and 72 <= score < 90:
+        score -= 8
+        if "中高分未封板" not in tags:
+            tags = tags + ",中高分未封板" if tags else "中高分未封板"
+
+    if tuning.strict_tag_filter and tuning.require_ultra_tag_any:
         if not _tags_match_preferred(tags, tuning.require_ultra_tag_any):
             return None
+
+    if score < tuning.ultra_min_score:
+        return None
 
     item = dict(item)
     item["ultra_short_score"] = round(score, 1)
@@ -427,15 +596,65 @@ def apply_ultra_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Optiona
     return item
 
 
+def apply_triple_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Optional[dict]:
+    """对单只三倍量标的应用 AI/跟进调优。
+
+    硬筛条件（vol_3x/阳线/穿三线等）全员命中，无区分度，不逐项加减分；
+    仅用 triple_min_score 门槛过滤，并对差异化标签做微调。
+    """
+    if not tuning or not item:
+        return item
+
+    score = float(item.get("midterm_score", 0) or 0)
+    tags = str(item.get("tags") or "")
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    if item.get("condition_labels"):
+        tag_list = list(dict.fromkeys(tag_list + list(item["condition_labels"])))
+
+    # 仅对非硬筛标签微调（排除「一阳穿三线」等全员标签）
+    for tag_key, bonus in tuning.triple_tag_bonus.items():
+        if tag_key in TRIPLE_VOLUME_TAGS:
+            continue
+        if any(tag_key in t or t == tag_key for t in tag_list):
+            score += bonus
+    for tag_key, penalty in tuning.triple_tag_penalty.items():
+        if tag_key in TRIPLE_VOLUME_TAGS:
+            continue
+        if any(tag_key in t or t == tag_key for t in tag_list):
+            score -= penalty
+
+    # 量比质量：高量比加分；涨幅过大未配合结构则减分（避免尾盘追高）
+    vol_ratio = float(item.get("volume_ratio") or 0)
+    pct = float(item.get("pct_chg") or 0)
+    if vol_ratio >= 5:
+        score += 3
+    elif vol_ratio >= 4:
+        score += 1
+    if pct >= 7:
+        score -= 4
+    elif pct >= 5 and vol_ratio < 4:
+        score -= 3
+
+    if score < tuning.triple_min_score:
+        return None
+
+    item = dict(item)
+    item["midterm_score"] = round(min(score, 99.0), 1)
+    return item
+
+
 def format_tuning_summary(tuning: SelectionTuning) -> str:
-    if not tuning.notes:
+    if not tuning.notes and not tuning.sources:
         return (
             f"选股调优：超短≥{tuning.ultra_min_score} · 中线≥{tuning.midterm_min_score}"
+            f" · 三倍量≥{tuning.triple_min_score}"
             f"（暂无复盘样本，使用默认门槛）"
         )
     lines = [
-        f"选股调优：超短≥{tuning.ultra_min_score} · 中线≥{tuning.midterm_min_score}",
-        f"依据：{', '.join(tuning.sources)}",
+        f"选股调优：超短≥{tuning.ultra_min_score} · 中线≥{tuning.midterm_min_score}"
+        f" · 三倍量≥{tuning.triple_min_score}",
     ]
+    if tuning.sources:
+        lines.append(f"依据：{', '.join(tuning.sources)}")
     lines.extend(f"  · {n}" for n in tuning.notes[:6])
     return "\n".join(lines)
