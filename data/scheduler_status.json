@@ -1,0 +1,32 @@
+{
+  "morning": {
+    "phase": "morning",
+    "state": "ok",
+    "started_at": "2026-08-03 09:35:01",
+    "finished_at": "2026-08-03 09:36:52",
+    "ok": true,
+    "message": "done",
+    "log": "daily_morning_20260803_093501.log",
+    "updated_at": "2026-08-03 09:36:52"
+  },
+  "close": {
+    "phase": "close",
+    "state": "ok",
+    "started_at": "2026-08-03 15:10:01",
+    "finished_at": "2026-08-03 15:11:24",
+    "ok": true,
+    "message": "done",
+    "log": "daily_close_20260803_151001.log",
+    "updated_at": "2026-08-03 15:11:24"
+  },
+  "report": {
+    "phase": "report",
+    "state": "ok",
+    "started_at": "2026-08-03 15:25:01",
+    "finished_at": "2026-08-03 16:09:48",
+    "ok": true,
+    "message": "done",
+    "log": "daily_report_20260803_152501.log",
+    "updated_at": "2026-08-03 16:09:48"
+  }
+}
