@@ -48,6 +48,8 @@ class SelectionTuning:
     strict_tag_filter: bool = False
     # AI：中高分(约75-90)未封板时软降权，避免虚高分追涨
     ultra_demote_midhigh_unsealed: bool = False
+    # 90+ 未封板：模拟/AI 显示虚高堆分胜率差
+    ultra_demote_high_unsealed: bool = False
     midterm_ma20_chase_penalty: int = 0
     midterm_ma20_chase_ratio: float = 1.08
     midterm_penalize_ret_20d_below: Optional[float] = None
@@ -164,6 +166,43 @@ def _load_latest_sim_review_stats() -> dict:
     return state_stats
 
 
+def _load_sim_midterm_trades() -> pd.DataFrame:
+    if not SIM_STATE_FILE.exists():
+        return pd.DataFrame()
+    try:
+        state = json.loads(SIM_STATE_FILE.read_text(encoding="utf-8"))
+        trades = (state.get("midterm") or {}).get("closed_trades") or []
+    except (OSError, json.JSONDecodeError):
+        return pd.DataFrame()
+    if not trades:
+        return pd.DataFrame()
+    df = pd.DataFrame(trades)
+    if "profit_pct" not in df.columns:
+        return pd.DataFrame()
+    return df
+
+
+def _apply_sim_midterm_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None:
+    if df.empty or len(df) < 3:
+        return
+    score_col = "midterm_score" if "midterm_score" in df.columns else "score"
+    if score_col not in df.columns:
+        return
+    tuning.sources.append(f"sim_midterm(n={len(df)})")
+    for low, high, label in [(0, 65, "<65"), (65, 80, "65-80"), (80, 999, "80+")]:
+        part = df[(df[score_col] >= low) & (df[score_col] < high)]
+        if part.empty:
+            continue
+        wr = (part["profit_pct"] > 0).mean() * 100
+        avg_p = float(part["profit_pct"].mean())
+        if label == "80+" and len(part) >= 3 and wr >= 55:
+            tuning.midterm_min_score = max(tuning.midterm_min_score, 80)
+            tuning.notes.append(f"模拟中线80+胜率{wr:.0f}%，门槛≥80")
+        if label == "65-80" and len(part) >= 2 and wr < 40:
+            tuning.midterm_min_score = max(tuning.midterm_min_score, 78)
+            tuning.notes.append(f"模拟中线65-80胜率{wr:.0f}%偏弱")
+
+
 def _apply_sim_trade_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None:
     if df.empty or len(df) < 3:
         return
@@ -171,6 +210,31 @@ def _apply_sim_trade_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None
     win_rate = (df["profit_pct"] > 0).mean() * 100
     avg_profit = float(df["profit_pct"].mean())
     tuning.sources.append(f"sim_trades(n={len(df)})")
+
+    recent = df
+    if "sell_date" in df.columns:
+        recent = df.sort_values("sell_date").tail(30)
+    recent_wr = (recent["profit_pct"] > 0).mean() * 100 if len(recent) >= 8 else win_rate
+    stop_rate = (
+        recent["exit_reason"].astype(str).str.contains("止损", na=False).mean() * 100
+        if len(recent) >= 8 and "exit_reason" in recent.columns else 0
+    )
+
+    if recent_wr < 38 or stop_rate >= 60:
+        tuning.ultra_min_score = max(tuning.ultra_min_score, 48)
+        tuning.ultra_penalize_unsealed_above_pct = min(
+            tuning.ultra_penalize_unsealed_above_pct or 99, 5.0,
+        )
+        tuning.ultra_demote_midhigh_unsealed = True
+        tuning.ultra_demote_high_unsealed = True
+        tuning.strict_tag_filter = True
+        tuning.require_ultra_tag_any = [
+            "强势封板", "封板", "涨停不破开", "连板",
+        ]
+        tuning.ultra_preferred_tags = ["涨停不破开", "强势封板", "封板", "连板"]
+        tuning.notes.append(
+            f"近{len(recent)}笔胜率{recent_wr:.0f}%/止损{stop_rate:.0f}%，启用封板硬筛+门槛≥48"
+        )
 
     if win_rate < 45:
         tuning.ultra_min_score = max(tuning.ultra_min_score, 40)
@@ -193,6 +257,18 @@ def _apply_sim_trade_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None
         if row["bucket"] in ("75-90", "90+") and row["win_rate"] >= 55 and row["avg_profit"] > 1:
             tuning.ultra_tag_bonus.setdefault("涨停不破开", 5)
             tuning.notes.append(f"评分 {row['bucket']} 区间表现较好，强化同类信号权重")
+        if row["bucket"] == "90+" and row["count"] >= 5 and row["win_rate"] < 45:
+            tuning.ultra_demote_high_unsealed = True
+            tuning.ultra_penalize_unsealed_above_pct = min(
+                tuning.ultra_penalize_unsealed_above_pct or 99, 5.0,
+            )
+            tuning.ultra_preferred_tags = ["涨停不破开", "强势封板", "封板", "连板"]
+            tuning.notes.append(
+                f"评分90+胜率仅{row['win_rate']:.0f}%，抑制未封板超高分"
+            )
+        if row["bucket"] == "60-75" and row["count"] >= 5 and row["win_rate"] < 42:
+            tuning.ultra_min_score = max(tuning.ultra_min_score, 43)
+            tuning.notes.append(f"评分60-75胜率{row['win_rate']:.0f}%偏低，略抬超短门槛")
         if row["bucket"] == "75-90" and row["count"] >= 5 and row["win_rate"] < 40:
             tuning.ultra_demote_midhigh_unsealed = True
             tuning.ultra_penalize_unsealed_above_pct = min(
@@ -292,6 +368,8 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
         tuning.ultra_tag_penalty[tag] = max(tuning.ultra_tag_penalty.get(tag, 0), int(penalty))
     if sel.get("ultra_demote_midhigh_unsealed"):
         tuning.ultra_demote_midhigh_unsealed = True
+    if sel.get("ultra_demote_high_unsealed"):
+        tuning.ultra_demote_high_unsealed = True
 
     analytics = ai.get("analytics") or ai.get("analytics_summary") or {}
     primary = analytics if analytics.get("sufficient") else analytics.get("real") or {}
@@ -424,6 +502,20 @@ def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
                 f"中线中间统计胜率 {interim.get('win_rate', 0)}%"
                 f"（{interim['interim_count']} 只），因子 provisional 调优"
             )
+        # 成熟跟进：80+ 档明显优于 70-80 → 抬高门槛
+        for row in summary.get("by_score_bucket", []):
+            if row.get("key") == "80+" and row.get("count", 0) >= 8:
+                high_wr = float(row.get("win_rate", 0))
+                low_row = next(
+                    (r for r in summary.get("by_score_bucket", []) if r.get("key") == "70-80"),
+                    {},
+                )
+                low_wr = float(low_row.get("win_rate", 100))
+                if high_wr >= 55 and low_wr < 45:
+                    tuning.midterm_min_score = max(tuning.midterm_min_score, 80)
+                    tuning.notes.append(
+                        f"跟进评分80+胜率{high_wr:.0f}% vs 70-80仅{low_wr:.0f}%，门槛≥80"
+                    )
     except Exception:
         pass
 
@@ -451,6 +543,16 @@ def _apply_real_review(tuning: SelectionTuning, review: dict) -> None:
 
     for strat in review.get("by_strategy") or []:
         name = str(strat.get("strategy") or "")
+        if name not in ULTRA_SHORT_STRATEGIES:
+            wr = float(strat.get("win_rate", 100))
+            avg_p = float(strat.get("avg_profit", 0))
+            if wr < 50 and avg_p < 0 and int(strat.get("count") or 0) >= 5:
+                tuning.midterm_min_score = max(tuning.midterm_min_score, 68)
+                tuning.midterm_penalize_ret_20d_below = -6.0
+                tuning.notes.append(
+                    f"实盘「{name}」胜率 {wr}% / 均收益 {avg_p:+.2f}%，收紧中线评分"
+                )
+            continue
         if name in ULTRA_SHORT_STRATEGIES and strat.get("win_rate", 100) < 50:
             tuning.ultra_preferred_tags = ["涨停不破开", "强势封板", "封板", "连板", "高换手"]
             tuning.ultra_tag_bonus.setdefault("强势封板", 6)
@@ -502,6 +604,7 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
 
     sim_df = _load_sim_closed_trades()
     _apply_sim_trade_insights(tuning, sim_df)
+    _apply_sim_midterm_insights(tuning, _load_sim_midterm_trades())
 
     review_stats = _load_latest_sim_review_stats()
     if review_stats.get("win_rate", 100) < 45:
@@ -515,8 +618,17 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
     _apply_midterm_tracker(tuning)
 
     if for_sim:
-        tuning.strict_tag_filter = False
-        tuning.require_ultra_tag_any = None
+        sim_df = _load_sim_closed_trades()
+        if not sim_df.empty and "sell_date" in sim_df.columns:
+            recent = sim_df.sort_values("sell_date").tail(30)
+            if len(recent) >= 8 and (recent["profit_pct"] > 0).mean() < 0.38:
+                tuning.strict_tag_filter = True
+                tuning.require_ultra_tag_any = tuning.require_ultra_tag_any or [
+                    "强势封板", "封板", "涨停不破开", "连板",
+                ]
+                tuning.ultra_min_score = max(tuning.ultra_min_score, 48)
+        if not tuning.strict_tag_filter:
+            tuning.require_ultra_tag_any = None
 
     tuning.ultra_min_score = int(max(35, min(65, tuning.ultra_min_score)))
     # 实盘扫描避免 AI 把门槛抬到 55+ 导致经常空榜
@@ -525,7 +637,7 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
             f"实盘扫描超短门槛由 {tuning.ultra_min_score} 软封顶至 48（避免空榜）"
         )
         tuning.ultra_min_score = 48
-    tuning.midterm_min_score = int(max(58, min(72, tuning.midterm_min_score)))
+    tuning.midterm_min_score = int(max(58, min(82, tuning.midterm_min_score)))
     tuning.triple_min_score = int(max(55, min(80, tuning.triple_min_score)))
     return tuning
 
@@ -568,7 +680,9 @@ def apply_ultra_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Optiona
     sealed = bool(item.get("is_sealed_board"))
     chase_pct = tuning.ultra_penalize_unsealed_above_pct or tuning.ultra_penalize_pct_above
     if chase_pct is not None and pct > chase_pct and not sealed:
-        score -= 8
+        score -= 15
+        if pct >= 7.0 and tuning.strict_tag_filter:
+            return None
 
     preferred = tuning.ultra_preferred_tags or []
     if preferred:
@@ -582,6 +696,11 @@ def apply_ultra_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Optiona
         score -= 8
         if "中高分未封板" not in tags:
             tags = tags + ",中高分未封板" if tags else "中高分未封板"
+
+    if tuning.ultra_demote_high_unsealed and not sealed and score >= 88:
+        score -= 10
+        if "超高分未封板" not in tags:
+            tags = tags + ",超高分未封板" if tags else "超高分未封板"
 
     if tuning.strict_tag_filter and tuning.require_ultra_tag_any:
         if not _tags_match_preferred(tags, tuning.require_ultra_tag_any):
@@ -623,15 +742,16 @@ def apply_triple_tuning(item: dict, tuning: Optional[SelectionTuning]) -> Option
         if any(tag_key in t or t == tag_key for t in tag_list):
             score -= penalty
 
-    # 量比质量：高量比加分；涨幅过大未配合结构则减分（避免尾盘追高）
+    from quantpy.midterm_triple_volume_selector import is_triple_pct_chase_risky
+
     vol_ratio = float(item.get("volume_ratio") or 0)
     pct = float(item.get("pct_chg") or 0)
+    if is_triple_pct_chase_risky(pct):
+        return None
     if vol_ratio >= 5:
         score += 3
     elif vol_ratio >= 4:
         score += 1
-    if pct >= 7:
-        score -= 4
     elif pct >= 5 and vol_ratio < 4:
         score -= 3
 

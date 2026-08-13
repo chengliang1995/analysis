@@ -793,10 +793,12 @@ def _derive_matured_factor_tuning(summary: dict) -> Dict[str, Any]:
         if row["key"] == "<60" and row["count"] >= 2 and row["win_rate"] < 40:
             changes["midterm_min_score"] = max(changes.get("midterm_min_score") or 55, 66)
         if row["key"] == "70-80" and row["count"] >= 8 and row["win_rate"] < overall_wr - 5:
-            # 中间分档偏弱时，更依赖强确认标签而非堆分
+            changes["midterm_min_score"] = max(changes.get("midterm_min_score") or 65, 80)
             changes["notes"].append(
-                f"评分70-80档胜率 {row['win_rate']}% 偏低，偏好强止跌确认而非堆分"
+                f"评分70-80档胜率 {row['win_rate']}% 偏低，门槛≥80"
             )
+        if row["key"] == "80+" and row["count"] >= 8 and row["win_rate"] >= 55:
+            changes["midterm_min_score"] = max(changes.get("midterm_min_score") or 65, 80)
 
     return changes
 

@@ -1,8 +1,7 @@
 """
 模拟盘中线账户（15 万额度）
-- 记录中线选股结果
-- 按推荐自动模拟建仓
-- 中线持仓复盘
+- 选股策略：三倍量观察池（缩量站稳 MA5 买点），不扫全市场突破
+- 记录选股结果、按观察池买点自动模拟建仓、中线持仓复盘
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ class MidtermSimConfig:
     stop_loss_pct: float = -8.0
     take_profit_pct: float = 15.0
     max_hold_days: int = 30
-    min_score: int = 55
+    min_score: int = 60
     max_new_per_run: int = 2
     t_plus_one: bool = True
 
@@ -130,7 +129,7 @@ def record_midterm_picks(
     recommendations: List[dict],
     *,
     show_progress: bool = False,
-    source: str = "midterm_scan",
+    source: str = "triple_volume",
 ) -> List[dict]:
     """将中线推荐写入选股记录（不去重当日同代码）。"""
     mt = ensure_midterm_state(engine.state)
@@ -171,6 +170,121 @@ def record_midterm_picks(
     return logged
 
 
+def clear_midterm_sim_selections(
+    engine: SimReplayEngine,
+    *,
+    close_positions: bool = True,
+    show_progress: bool = False,
+) -> dict:
+    """清除模拟中线选股记录；策略切换时可平掉当前持仓。"""
+    mt = ensure_midterm_state(engine.state)
+    cleared_picks = len(mt.get("pick_log", []))
+    mt["pick_log"] = []
+    mt["last_record_date"] = ""
+    mt["last_reviews"] = []
+
+    closed: List[dict] = []
+    if close_positions and mt.get("positions"):
+        positions = list(mt["positions"])
+        codes = [p["code"] for p in positions]
+        quotes = get_realtime_quotes(codes)
+        price_map: Dict[str, float] = {}
+        if not quotes.empty:
+            for _, row in quotes.iterrows():
+                price_map[str(row["code"]).zfill(6)] = float(row["close"])
+        today = _today()
+        for p in positions:
+            code = str(p["code"]).zfill(6)
+            sell_price = price_map.get(code, float(p["buy_price"]))
+            profit_pct = (
+                (sell_price - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0
+            )
+            profit_amount = (sell_price - p["buy_price"]) * p["quantity"]
+            trade = {
+                "code": code,
+                "name": p["name"],
+                "buy_date": p["buy_date"],
+                "buy_price": p["buy_price"],
+                "sell_date": today,
+                "sell_price": round(sell_price, 2),
+                "quantity": p["quantity"],
+                "profit_pct": round(profit_pct, 2),
+                "profit_amount": round(profit_amount, 2),
+                "hold_days": _hold_days(p["buy_date"], today),
+                "exit_reason": "策略切换清仓",
+                "midterm_score": p.get("midterm_score", 0),
+            }
+            mt["cash"] = float(mt.get("cash", 0)) + sell_price * p["quantity"]
+            closed.append(trade)
+            _progress(
+                f"  [模拟中线] 清仓 {p['name']}({code}) @{sell_price:.2f} {profit_pct:+.1f}%",
+                show_progress,
+            )
+        mt["positions"] = []
+
+    mt["last_buy_date"] = ""
+    mt["updated_at"] = datetime.now().isoformat()
+    if closed:
+        mt.setdefault("closed_trades", [])
+        mt["closed_trades"].extend(closed)
+    engine._save_state()
+    _progress(
+        f"  [模拟中线] 已清除选股 {cleared_picks} 条，平仓 {len(closed)} 只",
+        show_progress,
+    )
+    return {
+        "cleared_picks": cleared_picks,
+        "closed_positions": closed,
+        "summary": enrich_midterm_sim(engine.state),
+    }
+
+
+def _apply_today_buy_prices(
+    recommendations: List[dict],
+    *,
+    ref_date: Optional[str] = None,
+) -> tuple[List[dict], List[dict]]:
+    """买入价仅用当日行情；拒绝非今日信号价或缺失行情。"""
+    ref_date = _norm_date(ref_date or _today())
+    codes = [
+        str(r.get("code", "")).zfill(6)
+        for r in recommendations
+        if str(r.get("code", "")).zfill(6) not in ("", "000000")
+    ]
+    price_map: Dict[str, float] = {}
+    if codes:
+        quotes = get_realtime_quotes(codes)
+        if not quotes.empty:
+            for _, row in quotes.iterrows():
+                price_map[str(row["code"]).zfill(6)] = float(row["close"])
+
+    out: List[dict] = []
+    skipped: List[dict] = []
+    for rec in recommendations:
+        code = str(rec.get("code", "")).zfill(6)
+        if not code or code == "000000":
+            skipped.append({"code": code, "reason": "无效代码"})
+            continue
+        sig_date = _norm_date(rec.get("buy_signal_date") or rec.get("signal_date"))
+        if sig_date and sig_date != ref_date:
+            skipped.append({"code": code, "reason": f"信号日{sig_date}非买入日{ref_date}"})
+            continue
+        buy_price = price_map.get(code, 0.0)
+        if buy_price <= 0:
+            skipped.append({"code": code, "reason": "无当日行情"})
+            continue
+        updated = dict(rec)
+        hist_px = float(rec.get("price") or 0)
+        updated["price"] = round(buy_price, 2)
+        if hist_px > 0 and abs(hist_px - buy_price) > 0.009:
+            updated["tags"] = (
+                f"{rec.get('tags', '')},当日价{buy_price:.2f}"
+                f"(信号价{hist_px:.2f})"
+            ).strip(",")
+        out.append(updated)
+    return out, skipped
+
+
 def run_midterm_sim_buy(
     engine: SimReplayEngine,
     recommendations: List[dict],
@@ -206,8 +320,11 @@ def run_midterm_sim_buy(
         _progress("  [模拟中线] 持仓已满，仅记录选股", show_progress)
         return {"bought": [], "skipped": [], "message": "持仓已满"}
 
+    priced_recs, price_skipped = _apply_today_buy_prices(recommendations, ref_date=today)
+    skipped.extend(price_skipped)
+
     candidates = sorted(
-        recommendations,
+        priced_recs,
         key=lambda x: float(x.get("midterm_score") or 0),
         reverse=True,
     )[:top_n]
@@ -220,8 +337,10 @@ def run_midterm_sim_buy(
             skipped.append({"code": code, "reason": "已持仓或无效"})
             continue
         score = float(rec.get("midterm_score") or 0)
-        if score < cfg.min_score:
-            skipped.append({"code": code, "reason": f"评分{score:.0f}<{cfg.min_score}"})
+        from quantpy.selection_tuning import build_selection_tuning
+        min_score = max(cfg.min_score, build_selection_tuning().triple_min_score)
+        if score < min_score:
+            skipped.append({"code": code, "reason": f"评分{score:.0f}<{min_score}"})
             continue
         buy_price = float(rec.get("price") or 0)
         if buy_price <= 0:
@@ -421,74 +540,94 @@ def run_sim_midterm_select(
     industry: Optional[str] = None,
     performance: Optional[str] = None,
     use_cache: bool = False,
-    prefilter: int = 500,
+    prefilter: int = 800,
 ) -> dict:
     """
-    模拟盘中线选股：全市场扫描（或读缓存）→ 记录 → 15万账户建仓 → 复盘。
-    不依赖实盘持仓。
+    模拟盘中线选股：仅从三倍量观察池读取买点（缩量站稳 MA5），不扫突破。
     """
-    from quantpy.midterm_portfolio_advisor import (
-        MidtermPortfolioAdvisor,
-        load_latest_midterm_advice,
+    from quantpy.triple_volume_watchlist import (
+        get_buy_signal_recommendations,
+        sync_and_evaluate_watchlist,
     )
 
+    del industry, performance, use_cache, prefilter
     try:
         _progress("=" * 50, show_progress)
-        _progress("模拟中线选股（15万账户）", show_progress)
+        _progress("模拟中线选股（三倍量观察池 · 15万账户）", show_progress)
         ensure_midterm_state(engine.state)
         held = _sim_held_codes(engine)
 
-        recommendations: List[dict] = []
-        select_stats: dict = {}
+        watch_result = sync_and_evaluate_watchlist(show_progress=show_progress)
+        buy_recs = get_buy_signal_recommendations(today_only=True)
+        buy_recs, price_skipped = _apply_today_buy_prices(buy_recs)
+        buy_recs = [r for r in buy_recs if str(r.get("code", "")).zfill(6) not in held]
 
-        if use_cache:
-            cached = load_latest_midterm_advice()
-            recommendations = list(cached.get("recommendations") or [])
-            select_stats = dict(cached.get("select_stats") or {})
-            if recommendations:
-                _progress(f"  使用最近中线报告推荐 {len(recommendations)} 只", show_progress)
-            else:
-                _progress("  缓存无推荐，改为全市场扫描…", show_progress)
+        summary = watch_result.get("summary") or {}
+        watching_n = int(summary.get("watching_count") or 0)
+        signal_n = int(summary.get("buy_signal_count") or 0)
 
-        if not recommendations:
-            _progress(f"  全市场中线扫描（初筛 {prefilter} 只）…", show_progress)
-            advisor = MidtermPortfolioAdvisor()
-            df, select_stats = advisor.recommend_stocks(
-                exclude_codes=sorted(held),
-                top_n=20,
-                prefilter=prefilter,
-                show_progress=show_progress,
-                industry=industry,
-                performance=performance,
-                early_stop_pass=0,
+        closed = check_midterm_exits(engine, show_progress=show_progress)
+        logged: List[dict] = []
+        buy_result: dict = {"bought": [], "skipped": [], "message": "观察池暂无可用买点"}
+
+        if buy_recs:
+            _progress(
+                f"  今日观察池买点 {len(buy_recs)} 只（池中信号 {signal_n} · 观察中 {watching_n}）",
+                show_progress,
             )
-            recommendations = df.to_dict("records") if not df.empty else []
-
-        if not recommendations:
-            _progress("  无符合条件的推荐标的", show_progress)
-            return {
-                "ok": False,
-                "message": "无推荐标的",
-                "recommendations": [],
-                "select_stats": select_stats,
-                "summary": enrich_midterm_sim(engine.state),
+            logged = record_midterm_picks(
+                engine,
+                buy_recs,
+                show_progress=show_progress,
+                source="triple_volume_watchlist",
+            )
+            buy_result = run_midterm_sim_buy(
+                engine, buy_recs, show_progress=show_progress, force=force,
+            )
+            if price_skipped:
+                buy_result.setdefault("skipped", []).extend(price_skipped)
+        else:
+            skip_hint = f"（过滤 {len(price_skipped)} 只非今日/无行情）" if price_skipped else ""
+            _progress(
+                f"  今日暂无买点{skip_hint}（信号 {signal_n} · 观察中 {watching_n}）",
+                show_progress,
+            )
+            buy_result = {
+                "bought": [],
+                "skipped": price_skipped,
+                "message": "今日无观察池买点",
             }
 
-        result = apply_midterm_recommendations_to_sim(
-            engine,
-            recommendations,
-            show_progress=show_progress,
-            force=force,
-        )
-        result["ok"] = True
-        result["recommendations"] = recommendations[:20]
-        result["select_stats"] = select_stats
-        result["message"] = (
-            f"推荐 {len(recommendations)} 只，记录 {result.get('pick_logged', 0)}，"
-            f"买入 {len(result.get('bought', []))} 只"
-        )
-        _progress(f"  完成：{result['message']}", show_progress)
-        return result
+        reviews = run_midterm_sim_review(engine, show_progress=show_progress)
+
+        buy_n = len(buy_result.get("bought", []))
+        ok = bool(buy_recs or buy_n or watching_n)
+
+        if buy_n:
+            message = f"观察池选取 {len(buy_recs)} 只，买入 {buy_n} 只"
+        elif buy_recs:
+            message = f"观察池 {len(buy_recs)} 只买点均未成交"
+        elif watching_n:
+            message = f"观察中 {watching_n} 只，暂无缩量站稳MA5买点"
+        else:
+            message = "观察池为空，请先运行三倍量选股入池"
+
+        _progress(f"  完成：{message}", show_progress)
+        return {
+            "ok": ok,
+            "message": message,
+            "strategy": "triple_volume_watchlist",
+            "buy_recommendations": buy_recs,
+            "recommendations": buy_recs,
+            "watchlist": watch_result,
+            "select_stats": {"strategy": "triple_volume_watchlist", "source": "watchlist"},
+            "closed_today": closed,
+            "pick_logged": len(logged),
+            "bought": buy_result.get("bought", []),
+            "skipped": buy_result.get("skipped", []),
+            "reviews": reviews,
+            "summary": enrich_midterm_sim(engine.state),
+        }
     except Exception as exc:
         import traceback
 
@@ -509,12 +648,15 @@ def apply_midterm_recommendations_to_sim(
     *,
     show_progress: bool = False,
     force: bool = False,
+    source: str = "triple_volume_buy",
 ) -> dict:
-    """中线分析后：检查卖出 → 记录选股 → 模拟买入 → 复盘。"""
+    """观察池买点或外部推荐：检查卖出 → 记录选股 → 模拟买入 → 复盘。"""
     _progress("[模拟中线] 15万账户处理推荐…", show_progress)
     ensure_midterm_state(engine.state)
     closed = check_midterm_exits(engine, show_progress=show_progress)
-    logged = record_midterm_picks(engine, recommendations, show_progress=show_progress)
+    logged = record_midterm_picks(
+        engine, recommendations, show_progress=show_progress, source=source,
+    )
     buy_result = run_midterm_sim_buy(
         engine, recommendations, show_progress=show_progress, force=force,
     )
@@ -597,5 +739,6 @@ def enrich_midterm_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) ->
         "last_record_date": mt.get("last_record_date", ""),
         "last_buy_date": mt.get("last_buy_date", ""),
         "config": asdict(cfg),
+        "strategy": "triple_volume",
         "updated_at": mt.get("updated_at", ""),
     }

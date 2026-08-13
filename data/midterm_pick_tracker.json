@@ -2937,13 +2937,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-04",
+      "mature_price": 76.55,
+      "return_pct": -3.95,
+      "max_return_pct": 15.28,
+      "is_win": false,
+      "evaluated_at": "2026-08-04T15:37:02.621390",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-21",
@@ -2983,13 +2984,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-04",
+      "mature_price": 4.77,
+      "return_pct": -10.84,
+      "max_return_pct": 0.0,
+      "is_win": false,
+      "evaluated_at": "2026-08-04T15:37:11.543185",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-21",
@@ -3029,13 +3031,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-04",
+      "mature_price": 12.12,
+      "return_pct": 4.03,
+      "max_return_pct": 5.58,
+      "is_win": true,
+      "evaluated_at": "2026-08-04T15:37:20.420796",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-21",
@@ -3075,13 +3078,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-04",
+      "mature_price": 38.77,
+      "return_pct": -2.86,
+      "max_return_pct": 1.23,
+      "is_win": false,
+      "evaluated_at": "2026-08-04T15:37:29.367570",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-21",
@@ -3121,13 +3125,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-04",
+      "mature_price": 18.76,
+      "return_pct": 38.35,
+      "max_return_pct": 53.83,
+      "is_win": true,
+      "evaluated_at": "2026-08-04T15:37:38.395962",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-21",
@@ -3167,13 +3172,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-04",
+      "mature_price": 12.6,
+      "return_pct": -0.08,
+      "max_return_pct": 7.06,
+      "is_win": false,
+      "evaluated_at": "2026-08-04T15:37:47.075283",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-21",
@@ -3213,13 +3219,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-04",
+      "mature_price": 38.9,
+      "return_pct": -2.73,
+      "max_return_pct": 1.88,
+      "is_win": false,
+      "evaluated_at": "2026-08-04T15:37:55.867752",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-22",
@@ -3259,13 +3266,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 59.5,
+      "return_pct": 5.76,
+      "max_return_pct": 15.45,
+      "is_win": true,
+      "evaluated_at": "2026-08-05T13:55:02.381521",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-22",
@@ -3305,13 +3313,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 10.13,
+      "return_pct": 8.92,
+      "max_return_pct": 15.27,
+      "is_win": true,
+      "evaluated_at": "2026-08-05T13:55:10.344613",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-22",
@@ -3351,13 +3360,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 5.86,
+      "return_pct": 12.48,
+      "max_return_pct": 15.36,
+      "is_win": true,
+      "evaluated_at": "2026-08-05T13:55:14.893922",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-22",
@@ -3397,13 +3407,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 30.15,
+      "return_pct": 6.73,
+      "max_return_pct": 21.56,
+      "is_win": true,
+      "evaluated_at": "2026-08-05T13:55:23.211288",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-22",
@@ -3443,13 +3454,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 91.09,
+      "return_pct": -22.23,
+      "max_return_pct": 4.87,
+      "is_win": false,
+      "evaluated_at": "2026-08-05T13:55:31.629319",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-22",
@@ -3489,13 +3501,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 11.18,
+      "return_pct": 12.59,
+      "max_return_pct": 14.7,
+      "is_win": true,
+      "evaluated_at": "2026-08-05T13:55:36.177629",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-22",
@@ -3535,13 +3548,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 14.07,
+      "return_pct": 10.18,
+      "max_return_pct": 16.05,
+      "is_win": true,
+      "evaluated_at": "2026-08-05T13:55:44.295564",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-22",
@@ -3581,13 +3595,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "半导体",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 58.91,
+      "return_pct": -22.6,
+      "max_return_pct": 0.91,
+      "is_win": false,
+      "evaluated_at": "2026-08-05T13:55:52.511808",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-22",
@@ -3627,13 +3642,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "IT服务Ⅱ",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 54.68,
+      "return_pct": 7.26,
+      "max_return_pct": 11.06,
+      "is_win": true,
+      "evaluated_at": "2026-08-05T13:55:56.924729",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-22",
@@ -3673,13 +3689,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "IT服务Ⅱ",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-05",
+      "mature_price": 26.25,
+      "return_pct": -4.68,
+      "max_return_pct": 2.29,
+      "is_win": false,
+      "evaluated_at": "2026-08-05T13:56:05.076675",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-23",
@@ -3719,13 +3736,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "电网设备",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 3.47,
+      "return_pct": -5.19,
+      "max_return_pct": 0.82,
+      "is_win": false,
+      "evaluated_at": "2026-08-06T15:35:26.658998",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-23",
@@ -3765,13 +3783,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "软件开发",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 20.31,
+      "return_pct": 67.3,
+      "max_return_pct": 70.92,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:35:34.574791",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-23",
@@ -3811,13 +3830,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "医疗服务",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 21.15,
+      "return_pct": 12.74,
+      "max_return_pct": 27.93,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:35:42.585034",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-23",
@@ -3857,13 +3877,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "燃气Ⅱ",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 9.26,
+      "return_pct": 6.44,
+      "max_return_pct": 6.44,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:35:50.451536",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-23",
@@ -3903,13 +3924,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "环境治理",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 13.98,
+      "return_pct": -1.27,
+      "max_return_pct": 8.05,
+      "is_win": false,
+      "evaluated_at": "2026-08-06T15:35:58.423555",
+      "is_positive": false
     },
     {
       "pick_date": "2026-07-23",
@@ -3949,13 +3971,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "水泥",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 3.25,
+      "return_pct": 8.7,
+      "max_return_pct": 9.03,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:36:06.277081",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-23",
@@ -3995,13 +4018,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "电网设备",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 8.56,
+      "return_pct": 4.14,
+      "max_return_pct": 10.46,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:36:14.175215",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-23",
@@ -4041,13 +4065,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "电网设备",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 6.65,
+      "return_pct": 4.72,
+      "max_return_pct": 18.11,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:36:22.027076",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-23",
@@ -4087,13 +4112,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "电网设备",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 7.34,
+      "return_pct": 7.62,
+      "max_return_pct": 8.06,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:36:29.765787",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-23",
@@ -4133,13 +4159,14 @@
       "pe": null,
       "profit_yoy": null,
       "industry": "水泥",
-      "status": "tracking",
-      "mature_date": "",
-      "mature_price": null,
-      "return_pct": null,
-      "max_return_pct": null,
-      "is_win": null,
-      "evaluated_at": ""
+      "status": "matured",
+      "mature_date": "2026-08-06",
+      "mature_price": 14.09,
+      "return_pct": 14.65,
+      "max_return_pct": 23.35,
+      "is_win": true,
+      "evaluated_at": "2026-08-06T15:36:37.655853",
+      "is_positive": true
     },
     {
       "pick_date": "2026-07-27",
@@ -4195,6 +4222,127 @@
       "pe": 17.52,
       "profit_yoy": -8.7,
       "industry": "",
+      "status": "matured",
+      "mature_date": "2026-08-10",
+      "mature_price": 2.87,
+      "return_pct": 3.61,
+      "max_return_pct": 4.33,
+      "is_win": true,
+      "evaluated_at": "2026-08-10T15:36:45.345186",
+      "is_positive": true
+    },
+    {
+      "pick_date": "2026-08-10",
+      "rank": 1,
+      "code": "002032",
+      "name": "苏 泊 尔",
+      "pick_price": 41.48,
+      "midterm_score": 120.0,
+      "conditions": [
+        "cap_range",
+        "price_cap",
+        "liquidity",
+        "not_freefall",
+        "near_ma60",
+        "price_new_low",
+        "diff_div",
+        "obv_div",
+        "diff_below_zero",
+        "vol_shrink",
+        "stop_confirm"
+      ],
+      "condition_labels": [
+        "市值150-1000亿",
+        "股价<100元",
+        "成交额≥5000万",
+        "拒绝20/60日深跌",
+        "靠近MA60支撑带",
+        "股价创阶段新低",
+        "DIFF底背离",
+        "OBV资金底背离",
+        "DIFF零轴下",
+        "缩量地量",
+        "止跌确认(金叉/绿柱缩/RSI背离)"
+      ],
+      "tags": "DIFF底背离,OBV底背离,阶段新低,缩量地量,MA60向下,贴近MA60,绿柱缩短",
+      "tag_list": [
+        "DIFF底背离",
+        "OBV底背离",
+        "阶段新低",
+        "缩量地量",
+        "MA60向下",
+        "贴近MA60",
+        "绿柱缩短"
+      ],
+      "trend": "下跌趋势底背离反转",
+      "hold_style": "MA60仍向下，仅作轻仓反转博弈，须强止跌+严格止损",
+      "rsi": 43.3,
+      "ret_20d": -2.77,
+      "ma60_trend": "down",
+      "bottom_divergence": true,
+      "pe": 20.08,
+      "profit_yoy": -2.19,
+      "industry": "",
+      "status": "tracking",
+      "mature_date": "",
+      "mature_price": null,
+      "return_pct": null,
+      "max_return_pct": null,
+      "is_win": null,
+      "evaluated_at": ""
+    },
+    {
+      "pick_date": "2026-08-13",
+      "rank": 1,
+      "code": "600873",
+      "name": "梅花生物",
+      "pick_price": 7.92,
+      "midterm_score": 98.0,
+      "conditions": [
+        "cap_range",
+        "price_cap",
+        "liquidity",
+        "not_freefall",
+        "near_ma60",
+        "price_new_low",
+        "diff_div",
+        "obv_div",
+        "diff_below_zero",
+        "vol_shrink",
+        "stop_confirm"
+      ],
+      "condition_labels": [
+        "市值150-1000亿",
+        "股价<100元",
+        "成交额≥5000万",
+        "拒绝20/60日深跌",
+        "靠近MA60支撑带",
+        "股价创阶段新低",
+        "DIFF底背离",
+        "OBV资金底背离",
+        "DIFF零轴下",
+        "缩量地量",
+        "止跌确认(金叉/绿柱缩/RSI背离)"
+      ],
+      "tags": "DIFF底背离,OBV底背离,阶段新低,缩量地量,MA60向下,RSI回调区,绿柱缩短",
+      "tag_list": [
+        "DIFF底背离",
+        "OBV底背离",
+        "阶段新低",
+        "缩量地量",
+        "MA60向下",
+        "RSI回调区",
+        "绿柱缩短"
+      ],
+      "trend": "下跌趋势底背离反转",
+      "hold_style": "MA60仍向下，仅作轻仓反转博弈，须强止跌+严格止损",
+      "rsi": 41.1,
+      "ret_20d": -8.55,
+      "ma60_trend": "down",
+      "bottom_divergence": true,
+      "pe": 49.17,
+      "profit_yoy": -3.55,
+      "industry": "化学制品",
       "status": "tracking",
       "mature_date": "",
       "mature_price": null,
@@ -4278,93 +4426,170 @@
       "codes": [
         "600688"
       ]
+    },
+    {
+      "date": "2026-08-10",
+      "count": 1,
+      "codes": [
+        "002032"
+      ]
+    },
+    {
+      "date": "2026-08-13",
+      "count": 1,
+      "codes": [
+        "600873"
+      ]
     }
   ],
-  "last_record_date": "2026-07-27",
-  "last_evaluated": "2026-08-03",
+  "last_record_date": "2026-08-13",
+  "last_evaluated": "2026-08-13",
   "summary": {
-    "total_records": 81,
-    "tracking_count": 28,
-    "matured_count": 53,
-    "win_count": 24,
-    "win_rate": 45.3,
-    "positive_rate": 66.0,
-    "avg_return": 2.35,
-    "avg_max_return": 10.28,
+    "total_records": 83,
+    "tracking_count": 2,
+    "matured_count": 81,
+    "win_count": 42,
+    "win_rate": 51.9,
+    "positive_rate": 65.4,
+    "avg_return": 3.51,
+    "avg_max_return": 11.54,
     "win_threshold_pct": 3.0,
     "follow_trading_days": 10,
     "by_condition": [
       {
         "key": "diff_div",
-        "count": 53,
-        "win_rate": 45.3,
-        "positive_rate": 66.0,
-        "avg_return": 2.35,
+        "count": 54,
+        "win_rate": 46.3,
+        "positive_rate": 66.7,
+        "avg_return": 2.37,
         "win_threshold_pct": 3.0,
         "label": "DIFF底背离"
       },
       {
         "key": "obv_div",
-        "count": 53,
-        "win_rate": 45.3,
-        "positive_rate": 66.0,
-        "avg_return": 2.35,
+        "count": 54,
+        "win_rate": 46.3,
+        "positive_rate": 66.7,
+        "avg_return": 2.37,
         "win_threshold_pct": 3.0,
         "label": "OBV资金底背离"
       },
       {
         "key": "cap_range",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
         "win_threshold_pct": 3.0,
         "label": "市值150-1000亿"
       },
       {
         "key": "price_cap",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
         "win_threshold_pct": 3.0,
         "label": "股价<100元"
       },
       {
         "key": "liquidity",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
         "win_threshold_pct": 3.0,
         "label": "成交额≥5000万"
       },
       {
         "key": "price_new_low",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
         "win_threshold_pct": 3.0,
         "label": "股价创阶段新低"
       },
       {
         "key": "diff_below_zero",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
         "win_threshold_pct": 3.0,
         "label": "DIFF零轴下"
       },
       {
         "key": "vol_shrink",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
         "win_threshold_pct": 3.0,
         "label": "缩量地量"
+      },
+      {
+        "key": "non_st",
+        "count": 27,
+        "win_rate": 63.0,
+        "positive_rate": 63.0,
+        "avg_return": 5.78,
+        "win_threshold_pct": 3.0,
+        "label": "non_st"
+      },
+      {
+        "key": "vol_3x",
+        "count": 27,
+        "win_rate": 63.0,
+        "positive_rate": 63.0,
+        "avg_return": 5.78,
+        "win_threshold_pct": 3.0,
+        "label": "vol_3x"
+      },
+      {
+        "key": "yang_line",
+        "count": 27,
+        "win_rate": 63.0,
+        "positive_rate": 63.0,
+        "avg_return": 5.78,
+        "win_threshold_pct": 3.0,
+        "label": "yang_line"
+      },
+      {
+        "key": "cross_ma5",
+        "count": 27,
+        "win_rate": 63.0,
+        "positive_rate": 63.0,
+        "avg_return": 5.78,
+        "win_threshold_pct": 3.0,
+        "label": "cross_ma5"
+      },
+      {
+        "key": "cross_ma10",
+        "count": 27,
+        "win_rate": 63.0,
+        "positive_rate": 63.0,
+        "avg_return": 5.78,
+        "win_threshold_pct": 3.0,
+        "label": "cross_ma10"
+      },
+      {
+        "key": "cross_ma20",
+        "count": 27,
+        "win_rate": 63.0,
+        "positive_rate": 63.0,
+        "avg_return": 5.78,
+        "win_threshold_pct": 3.0,
+        "label": "cross_ma20"
+      },
+      {
+        "key": "ma60_hold",
+        "count": 14,
+        "win_rate": 35.7,
+        "positive_rate": 50.0,
+        "avg_return": -1.85,
+        "win_threshold_pct": 3.0,
+        "label": "MA60走平/向上(软筛)"
       },
       {
         "key": "rsi_div",
@@ -4376,15 +4601,6 @@
         "label": "RSI底背离"
       },
       {
-        "key": "ma60_hold",
-        "count": 13,
-        "win_rate": 30.8,
-        "positive_rate": 46.2,
-        "avg_return": -2.27,
-        "win_threshold_pct": 3.0,
-        "label": "MA60走平/向上(软筛)"
-      },
-      {
         "key": "entry_confirm",
         "count": 1,
         "win_rate": 100.0,
@@ -4392,260 +4608,6 @@
         "avg_return": 3.96,
         "win_threshold_pct": 3.0,
         "label": "MACD金叉确认"
-      }
-    ],
-    "by_tag": [
-      {
-        "key": "DIFF底背离",
-        "count": 53,
-        "win_rate": 45.3,
-        "positive_rate": 66.0,
-        "avg_return": 2.35,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "OBV底背离",
-        "count": 53,
-        "win_rate": 45.3,
-        "positive_rate": 66.0,
-        "avg_return": 2.35,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "阶段新低",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "缩量地量",
-        "count": 51,
-        "win_rate": 45.1,
-        "positive_rate": 66.7,
-        "avg_return": 2.37,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "MA60向下",
-        "count": 39,
-        "win_rate": 51.3,
-        "positive_rate": 74.4,
-        "avg_return": 4.1,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "等金叉确认",
-        "count": 38,
-        "win_rate": 39.5,
-        "positive_rate": 63.2,
-        "avg_return": 2.58,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "RSI底背离",
-        "count": 13,
-        "win_rate": 46.2,
-        "positive_rate": 84.6,
-        "avg_return": 5.8,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "MA60走平/向上",
-        "count": 13,
-        "win_rate": 30.8,
-        "positive_rate": 46.2,
-        "avg_return": -2.27,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "绿柱缩短",
-        "count": 12,
-        "win_rate": 58.3,
-        "positive_rate": 75.0,
-        "avg_return": 1.6,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "MACD金叉",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.96,
-        "win_threshold_pct": 3.0
-      }
-    ],
-    "by_score_bucket": [
-      {
-        "key": "70-80",
-        "count": 23,
-        "win_rate": 39.1,
-        "positive_rate": 60.9,
-        "avg_return": 1.97,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "60-70",
-        "count": 21,
-        "win_rate": 47.6,
-        "positive_rate": 66.7,
-        "avg_return": 3.25,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "80+",
-        "count": 9,
-        "win_rate": 55.6,
-        "positive_rate": 77.8,
-        "avg_return": 1.19,
-        "win_threshold_pct": 3.0
-      }
-    ],
-    "by_ma60_trend": [
-      {
-        "key": "down",
-        "count": 38,
-        "win_rate": 52.6,
-        "positive_rate": 76.3,
-        "avg_return": 4.33,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "flat",
-        "count": 11,
-        "win_rate": 27.3,
-        "positive_rate": 45.5,
-        "avg_return": -2.67,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "up",
-        "count": 3,
-        "win_rate": 33.3,
-        "positive_rate": 33.3,
-        "avg_return": -2.08,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "unknown",
-        "count": 1,
-        "win_rate": 0.0,
-        "positive_rate": 0.0,
-        "avg_return": -4.58,
-        "win_threshold_pct": 3.0
-      }
-    ],
-    "factor_insights": [
-      "因子「MA60走平/向上(软筛)」胜率 30.8% 偏低（13 笔），建议降权或提高门槛",
-      "评分 70-80：23 笔，胜率 39.1%，均收益 +1.97%",
-      "评分 60-70：21 笔，胜率 47.6%，均收益 +3.25%",
-      "评分 80+：9 笔，胜率 55.6%，均收益 +1.19%",
-      "MA60向下组胜率 52.6%（38 笔），均收益 +4.33%，宜在强止跌确认下保留",
-      "MA60走平组胜率仅 27.3%（11 笔），宜降权并要求强确认"
-    ],
-    "last_batch_date": "2026-07-27",
-    "updated_at": "2026-08-03T15:38:53.219867"
-  },
-  "interim_summary": {
-    "interim_count": 28,
-    "tracking_count": 28,
-    "matured_count": 0,
-    "win_rate": 50.0,
-    "positive_rate": 60.7,
-    "avg_return": 1.51,
-    "win_threshold_pct": 3.0,
-    "follow_trading_days": 10,
-    "by_condition": [
-      {
-        "key": "non_st",
-        "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
-        "win_threshold_pct": 3.0,
-        "label": "non_st"
-      },
-      {
-        "key": "vol_3x",
-        "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
-        "win_threshold_pct": 3.0,
-        "label": "vol_3x"
-      },
-      {
-        "key": "yang_line",
-        "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
-        "win_threshold_pct": 3.0,
-        "label": "yang_line"
-      },
-      {
-        "key": "cross_ma5",
-        "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
-        "win_threshold_pct": 3.0,
-        "label": "cross_ma5"
-      },
-      {
-        "key": "cross_ma10",
-        "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
-        "win_threshold_pct": 3.0,
-        "label": "cross_ma10"
-      },
-      {
-        "key": "cross_ma20",
-        "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
-        "win_threshold_pct": 3.0,
-        "label": "cross_ma20"
-      },
-      {
-        "key": "cap_range",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "市值150-1000亿"
-      },
-      {
-        "key": "price_cap",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "股价<100元"
-      },
-      {
-        "key": "liquidity",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "成交额≥5000万"
-      },
-      {
-        "key": "ma60_hold",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "MA60走平/向上(软筛)"
       },
       {
         "key": "not_freefall",
@@ -4666,51 +4628,6 @@
         "label": "靠近MA60支撑带"
       },
       {
-        "key": "price_new_low",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "股价创阶段新低"
-      },
-      {
-        "key": "diff_div",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "DIFF底背离"
-      },
-      {
-        "key": "obv_div",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "OBV资金底背离"
-      },
-      {
-        "key": "diff_below_zero",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "DIFF零轴下"
-      },
-      {
-        "key": "vol_shrink",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0,
-        "label": "缩量地量"
-      },
-      {
         "key": "stop_confirm",
         "count": 1,
         "win_rate": 100.0,
@@ -4722,19 +4639,91 @@
     ],
     "by_tag": [
       {
+        "key": "DIFF底背离",
+        "count": 54,
+        "win_rate": 46.3,
+        "positive_rate": 66.7,
+        "avg_return": 2.37,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "OBV底背离",
+        "count": 54,
+        "win_rate": 46.3,
+        "positive_rate": 66.7,
+        "avg_return": 2.37,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "阶段新低",
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "缩量地量",
+        "count": 52,
+        "win_rate": 46.2,
+        "positive_rate": 67.3,
+        "avg_return": 2.4,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "MA60向下",
+        "count": 39,
+        "win_rate": 51.3,
+        "positive_rate": 74.4,
+        "avg_return": 4.1,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "等金叉确认",
+        "count": 38,
+        "win_rate": 39.5,
+        "positive_rate": 63.2,
+        "avg_return": 2.58,
+        "win_threshold_pct": 3.0
+      },
+      {
         "key": "一阳穿三线",
         "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
+        "win_rate": 63.0,
+        "positive_rate": 63.0,
+        "avg_return": 5.78,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "绿柱缩短",
+        "count": 13,
+        "win_rate": 61.5,
+        "positive_rate": 76.9,
+        "avg_return": 1.75,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "RSI底背离",
+        "count": 13,
+        "win_rate": 46.2,
+        "positive_rate": 84.6,
+        "avg_return": 5.8,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "MA60走平/向上",
+        "count": 13,
+        "win_rate": 30.8,
+        "positive_rate": 46.2,
+        "avg_return": -2.27,
         "win_threshold_pct": 3.0
       },
       {
         "key": "涨+10.0%",
         "count": 7,
-        "win_rate": 71.4,
-        "positive_rate": 85.7,
-        "avg_return": 8.3,
+        "win_rate": 100.0,
+        "positive_rate": 100.0,
+        "avg_return": 13.45,
         "win_threshold_pct": 3.0
       },
       {
@@ -4742,7 +4731,7 @@
         "count": 2,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 8.76,
+        "avg_return": 8.31,
         "win_threshold_pct": 3.0
       },
       {
@@ -4750,7 +4739,31 @@
         "count": 2,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 7.42,
+        "avg_return": 10.59,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "涨+8.8%",
+        "count": 2,
+        "win_rate": 50.0,
+        "positive_rate": 50.0,
+        "avg_return": 1.65,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "涨+7.0%",
+        "count": 2,
+        "win_rate": 50.0,
+        "positive_rate": 50.0,
+        "avg_return": 2.0,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "量17.4倍",
+        "count": 2,
+        "win_rate": 50.0,
+        "positive_rate": 50.0,
+        "avg_return": -7.67,
         "win_threshold_pct": 3.0
       },
       {
@@ -4758,31 +4771,15 @@
         "count": 2,
         "win_rate": 50.0,
         "positive_rate": 50.0,
-        "avg_return": 1.39,
+        "avg_return": -0.24,
         "win_threshold_pct": 3.0
       },
       {
-        "key": "涨+8.8%",
-        "count": 2,
-        "win_rate": 0.0,
-        "positive_rate": 50.0,
-        "avg_return": -2.45,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "涨+7.0%",
-        "count": 2,
-        "win_rate": 0.0,
-        "positive_rate": 0.0,
-        "avg_return": -2.22,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "量17.4倍",
-        "count": 2,
-        "win_rate": 0.0,
-        "positive_rate": 50.0,
-        "avg_return": -15.08,
+        "key": "MACD金叉",
+        "count": 1,
+        "win_rate": 100.0,
+        "positive_rate": 100.0,
+        "avg_return": 3.96,
         "win_threshold_pct": 3.0
       },
       {
@@ -4790,7 +4787,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 3.61,
+        "avg_return": 4.03,
         "win_threshold_pct": 3.0
       },
       {
@@ -4798,7 +4795,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 31.86,
+        "avg_return": 38.35,
         "win_threshold_pct": 3.0
       },
       {
@@ -4806,7 +4803,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 5.21,
+        "avg_return": 5.76,
         "win_threshold_pct": 3.0
       },
       {
@@ -4814,7 +4811,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 5.21,
+        "avg_return": 5.76,
         "win_threshold_pct": 3.0
       },
       {
@@ -4822,7 +4819,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 7.74,
+        "avg_return": 8.92,
         "win_threshold_pct": 3.0
       },
       {
@@ -4830,7 +4827,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 7.74,
+        "avg_return": 8.92,
         "win_threshold_pct": 3.0
       },
       {
@@ -4838,7 +4835,15 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 8.83,
+        "avg_return": 12.48,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "量27.5倍",
+        "count": 1,
+        "win_rate": 100.0,
+        "positive_rate": 100.0,
+        "avg_return": 6.73,
         "win_threshold_pct": 3.0
       },
       {
@@ -4846,7 +4851,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 13.9,
+        "avg_return": 12.59,
         "win_threshold_pct": 3.0
       },
       {
@@ -4854,7 +4859,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 5.87,
+        "avg_return": 10.18,
         "win_threshold_pct": 3.0
       },
       {
@@ -4862,7 +4867,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 40.77,
+        "avg_return": 67.3,
         "win_threshold_pct": 3.0
       },
       {
@@ -4870,7 +4875,23 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 40.77,
+        "avg_return": 67.3,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "量45.7倍",
+        "count": 1,
+        "win_rate": 100.0,
+        "positive_rate": 100.0,
+        "avg_return": 12.74,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "量39.8倍",
+        "count": 1,
+        "win_rate": 100.0,
+        "positive_rate": 100.0,
+        "avg_return": 6.44,
         "win_threshold_pct": 3.0
       },
       {
@@ -4878,7 +4899,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 6.02,
+        "avg_return": 8.7,
         "win_threshold_pct": 3.0
       },
       {
@@ -4886,7 +4907,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 7.06,
+        "avg_return": 4.14,
         "win_threshold_pct": 3.0
       },
       {
@@ -4894,7 +4915,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 6.61,
+        "avg_return": 4.72,
         "win_threshold_pct": 3.0
       },
       {
@@ -4902,7 +4923,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 6.16,
+        "avg_return": 7.62,
         "win_threshold_pct": 3.0
       },
       {
@@ -4910,39 +4931,7 @@
         "count": 1,
         "win_rate": 100.0,
         "positive_rate": 100.0,
-        "avg_return": 7.4,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "DIFF底背离",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "OBV底背离",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "阶段新低",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "缩量地量",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
+        "avg_return": 14.65,
         "win_threshold_pct": 3.0
       },
       {
@@ -4962,19 +4951,11 @@
         "win_threshold_pct": 3.0
       },
       {
-        "key": "绿柱缩短",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
-        "win_threshold_pct": 3.0
-      },
-      {
         "key": "量19.6倍",
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -7.28,
+        "avg_return": -3.95,
         "win_threshold_pct": 3.0
       },
       {
@@ -4982,7 +4963,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -12.15,
+        "avg_return": -10.84,
         "win_threshold_pct": 3.0
       },
       {
@@ -4990,7 +4971,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -12.15,
+        "avg_return": -10.84,
         "win_threshold_pct": 3.0
       },
       {
@@ -4998,7 +4979,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -4.33,
+        "avg_return": -2.86,
         "win_threshold_pct": 3.0
       },
       {
@@ -5006,23 +4987,23 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -4.33,
+        "avg_return": -2.86,
         "win_threshold_pct": 3.0
       },
       {
         "key": "量7.9倍",
         "count": 1,
         "win_rate": 0.0,
-        "positive_rate": 100.0,
-        "avg_return": 0.71,
+        "positive_rate": 0.0,
+        "avg_return": -0.08,
         "win_threshold_pct": 3.0
       },
       {
         "key": "涨+7.9%",
         "count": 1,
         "win_rate": 0.0,
-        "positive_rate": 100.0,
-        "avg_return": 0.71,
+        "positive_rate": 0.0,
+        "avg_return": -0.08,
         "win_threshold_pct": 3.0
       },
       {
@@ -5030,15 +5011,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -3.28,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "量27.5倍",
-        "count": 1,
-        "win_rate": 0.0,
-        "positive_rate": 0.0,
-        "avg_return": -1.17,
+        "avg_return": -2.73,
         "win_threshold_pct": 3.0
       },
       {
@@ -5046,7 +5019,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -29.6,
+        "avg_return": -22.23,
         "win_threshold_pct": 3.0
       },
       {
@@ -5054,7 +5027,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -29.6,
+        "avg_return": -22.23,
         "win_threshold_pct": 3.0
       },
       {
@@ -5062,7 +5035,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -32.55,
+        "avg_return": -22.6,
         "win_threshold_pct": 3.0
       },
       {
@@ -5070,7 +5043,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -13.29,
+        "avg_return": -4.68,
         "win_threshold_pct": 3.0
       },
       {
@@ -5078,7 +5051,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -13.29,
+        "avg_return": -4.68,
         "win_threshold_pct": 3.0
       },
       {
@@ -5086,23 +5059,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -3.83,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "量45.7倍",
-        "count": 1,
-        "win_rate": 0.0,
-        "positive_rate": 100.0,
-        "avg_return": 1.39,
-        "win_threshold_pct": 3.0
-      },
-      {
-        "key": "量39.8倍",
-        "count": 1,
-        "win_rate": 0.0,
-        "positive_rate": 0.0,
-        "avg_return": -1.61,
+        "avg_return": -5.19,
         "win_threshold_pct": 3.0
       },
       {
@@ -5110,7 +5067,7 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -7.91,
+        "avg_return": -1.27,
         "win_threshold_pct": 3.0
       },
       {
@@ -5118,44 +5075,102 @@
         "count": 1,
         "win_rate": 0.0,
         "positive_rate": 0.0,
-        "avg_return": -7.91,
+        "avg_return": -1.27,
         "win_threshold_pct": 3.0
       }
     ],
     "by_score_bucket": [
       {
         "key": "80+",
-        "count": 28,
-        "win_rate": 50.0,
-        "positive_rate": 60.7,
-        "avg_return": 1.51,
+        "count": 37,
+        "win_rate": 62.2,
+        "positive_rate": 67.6,
+        "avg_return": 4.61,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "70-80",
+        "count": 23,
+        "win_rate": 39.1,
+        "positive_rate": 60.9,
+        "avg_return": 1.97,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "60-70",
+        "count": 21,
+        "win_rate": 47.6,
+        "positive_rate": 66.7,
+        "avg_return": 3.25,
         "win_threshold_pct": 3.0
       }
     ],
     "by_ma60_trend": [
       {
+        "key": "down",
+        "count": 38,
+        "win_rate": 52.6,
+        "positive_rate": 76.3,
+        "avg_return": 4.33,
+        "win_threshold_pct": 3.0
+      },
+      {
         "key": "unknown",
-        "count": 27,
-        "win_rate": 48.1,
-        "positive_rate": 59.3,
-        "avg_return": 1.43,
+        "count": 28,
+        "win_rate": 60.7,
+        "positive_rate": 60.7,
+        "avg_return": 5.41,
         "win_threshold_pct": 3.0
       },
       {
         "key": "flat",
-        "count": 1,
-        "win_rate": 100.0,
-        "positive_rate": 100.0,
-        "avg_return": 3.61,
+        "count": 12,
+        "win_rate": 33.3,
+        "positive_rate": 50.0,
+        "avg_return": -2.15,
+        "win_threshold_pct": 3.0
+      },
+      {
+        "key": "up",
+        "count": 3,
+        "win_rate": 33.3,
+        "positive_rate": 33.3,
+        "avg_return": -2.08,
         "win_threshold_pct": 3.0
       }
     ],
     "factor_insights": [
-      "【中间统计·28只】胜率(≥3.0%) 50.0%，均收益 +1.51%",
-      "标签「涨+10.0%」跟进胜率 71.4%（7 笔）",
-      "评分 80+：28 笔，胜率 50.0%，均收益 +1.51%"
+      "因子「non_st」胜率 63.0%（27 笔），均收益 +5.78%，建议强化",
+      "因子「vol_3x」胜率 63.0%（27 笔），均收益 +5.78%，建议强化",
+      "因子「yang_line」胜率 63.0%（27 笔），均收益 +5.78%，建议强化",
+      "因子「cross_ma5」胜率 63.0%（27 笔），均收益 +5.78%，建议强化",
+      "因子「cross_ma10」胜率 63.0%（27 笔），均收益 +5.78%，建议强化",
+      "因子「cross_ma20」胜率 63.0%（27 笔），均收益 +5.78%，建议强化",
+      "因子「MA60走平/向上(软筛)」胜率 35.7% 偏低（14 笔），建议降权或提高门槛",
+      "评分 80+：37 笔，胜率 62.2%，均收益 +4.61%",
+      "评分 70-80：23 笔，胜率 39.1%，均收益 +1.97%",
+      "评分 60-70：21 笔，胜率 47.6%，均收益 +3.25%",
+      "MA60向下组胜率 52.6%（38 笔），均收益 +4.33%，宜在强止跌确认下保留",
+      "MA60走平组胜率仅 33.3%（12 笔），宜降权并要求强确认"
     ],
+    "last_batch_date": "2026-08-13",
+    "updated_at": "2026-08-13T15:32:53.937569"
+  },
+  "interim_summary": {
+    "interim_count": 1,
+    "tracking_count": 2,
+    "matured_count": 0,
+    "win_rate": 0.0,
+    "positive_rate": 0.0,
+    "avg_return": 0.0,
+    "win_threshold_pct": 3.0,
+    "follow_trading_days": 10,
+    "by_condition": [],
+    "by_tag": [],
+    "by_score_bucket": [],
+    "by_ma60_trend": [],
+    "factor_insights": [],
     "provisional": true
   },
-  "interim_computed_at": "2026-08-03"
+  "interim_computed_at": "2026-08-13"
 }

@@ -390,6 +390,28 @@ class AILearningOptimizer:
                 )
             if row.get("bucket") == "<60" and row.get("win_rate", 100) < 40:
                 changes["ultra_min_score"] = max(changes.get("ultra_min_score", min_score), 45)
+            if (
+                row.get("bucket") == "90+"
+                and int(row.get("count") or 0) >= 5
+                and float(row.get("win_rate") or 0) < 45
+            ):
+                changes["ultra_demote_high_unsealed"] = True
+                changes["ultra_penalize_unsealed_above_pct"] = min(
+                    float(changes.get("ultra_penalize_unsealed_above_pct") or 99), 5.0,
+                )
+                changes["ultra_preferred_tags"] = ["涨停不破开", "强势封板", "封板", "连板"]
+                changes.setdefault("ultra_tag_bonus", {})
+                changes["ultra_tag_bonus"]["强势封板"] = max(
+                    changes["ultra_tag_bonus"].get("强势封板", 0), 6,
+                )
+            if (
+                row.get("bucket") == "60-75"
+                and int(row.get("count") or 0) >= 5
+                and float(row.get("win_rate") or 0) < 42
+            ):
+                changes["ultra_min_score"] = max(
+                    changes.get("ultra_min_score", min_score), 43,
+                )
             # 中高分虚高：75-90 胜率差 → 抑制未封板追涨
             if (
                 row.get("bucket") == "75-90"
@@ -440,17 +462,28 @@ class AILearningOptimizer:
         avg_profit = float(midterm_df["profit_pct"].mean())
         if win_rate < 45 or avg_profit < -1:
             changes["midterm_min_score"] = 58
-        score_col = "score" if "score" in midterm_df.columns else None
-        if score_col:
-            for low, high, label in [(0, 55, "<55"), (55, 70, "55-70"), (70, 999, "70+")]:
-                part = midterm_df[(midterm_df[score_col] >= low) & (midterm_df[score_col] < high)]
+        score_col = "midterm_score" if "midterm_score" in midterm_df.columns else "score"
+        if score_col in midterm_df.columns:
+            for low, high, label in [(0, 65, "<65"), (65, 80, "65-80"), (80, 999, "80+")]:
+                part = midterm_df[
+                    (midterm_df[score_col] >= low) & (midterm_df[score_col] < high)
+                ]
                 if part.empty:
                     continue
                 wr = (part["profit_pct"] > 0).mean() * 100
-                if label == "<55" and len(part) >= 2 and wr < 40:
-                    changes["midterm_min_score"] = max(changes.get("midterm_min_score", 55), 60)
-                if label in ("55-70", "70+") and wr >= 55 and float(part["profit_pct"].mean()) > 1:
-                    changes["midterm_min_score"] = max(55, changes.get("midterm_min_score", 55) - 2)
+                avg_p = float(part["profit_pct"].mean())
+                if label == "<65" and len(part) >= 2 and wr < 40:
+                    changes["midterm_min_score"] = max(
+                        changes.get("midterm_min_score", 55), 68,
+                    )
+                if label == "80+" and len(part) >= 3 and wr >= 55 and avg_p > 1:
+                    changes["midterm_min_score"] = max(
+                        changes.get("midterm_min_score", 65), 80,
+                    )
+                if label == "65-80" and len(part) >= 2 and wr < 40:
+                    changes["midterm_min_score"] = max(
+                        changes.get("midterm_min_score", 65), 78,
+                    )
 
     def _clamp_deltas(self, config: SimConfig, deltas: Dict[str, float]) -> Dict[str, float]:
         clamped: Dict[str, float] = {}

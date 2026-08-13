@@ -363,7 +363,7 @@
 
     <div class="toolbar hidden" id="toolbar-sim" data-toolbar="sim">
       <button type="button" data-action="sim" data-force="true">超短模拟选股</button>
-      <button type="button" data-action="sim-midterm-select">中线模拟选股</button>
+      <button type="button" data-action="sim-midterm-select">观察池模拟选股</button>
       <button type="button" data-action="sim-midterm">模拟中线复盘</button>
       <button type="button" data-action="sim-review">模拟复盘</button>
       <button type="button" data-action="sim-backtest" class="secondary">模拟回测(20日)</button>
@@ -432,7 +432,7 @@
         </section>
         <section class="panel" style="margin-bottom:20px" id="triple-volume-watch-panel">
           <div class="panel-head">
-            <h2 style="font-size:0.95rem">三倍量观察池<span class="drill-hint">每日选股入池 · 5~10日 · 站稳MA5 · 缩量买入</span></h2>
+            <h2 style="font-size:0.95rem">三倍量观察池<span class="drill-hint">突破日入池 · 5日内 · 缩量至突破前 · 站稳MA5</span></h2>
             <span class="badge" id="triple-volume-watch-badge">—</span>
           </div>
           <div class="rec-conditions" id="triple-volume-watch-rules"></div>
@@ -675,9 +675,8 @@
       <section class="panel" style="margin-bottom:20px">
         <div class="panel-head">
           <h2>中线模拟持仓</h2>
-          <span class="badge" id="sim-mid-badge">15万 · 最多5仓</span>
-          <button type="button" class="secondary" data-action="sim-midterm-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">中线模拟选股</button>
-          <button type="button" class="secondary" data-action="sim-midterm-select" data-cache="true" style="padding:4px 10px;font-size:0.75rem" title="使用最近一次中线分析报告中的推荐">用缓存推荐</button>
+          <span class="badge" id="sim-mid-badge">15万 · 三倍量 · 最多5仓</span>
+          <button type="button" class="secondary" data-action="sim-midterm-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">观察池模拟选股</button>
         </div>
         <div class="stats" id="sim-mid-stats"></div>
         <div class="table-wrap" id="sim-mid-table"></div>
@@ -745,7 +744,7 @@
       sector: "板块推荐扫描中…",
       "sim-backtest": "模拟回测中…",
       "sim-midterm": "模拟中线复盘中…",
-      "sim-midterm-select": "中线模拟选股中（约 1～3 分钟）…",
+      "sim-midterm-select": "观察池模拟选股中（评估观察池买点）…",
       "ai-learn": "AI 策略学习中…",
       "midterm-track": "中线跟进评估中…",
     };

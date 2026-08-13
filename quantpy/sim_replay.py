@@ -37,11 +37,11 @@ class SimConfig:
     stop_loss_pct: float = -3.0
     take_profit_pct: float = 8.0
     max_hold_days: int = 3
-    min_score: int = 40
-    max_open_gap_pct: float = 7.0
-    min_open_gap_pct: float = 0.5
-    buy_premium_pct: float = 0.5  # 买点区间上沿：开盘价 +0.5%
-    max_intraday_chase_pct: float = 2.0  # 现价相对开盘最大可追高%
+    min_score: int = 48
+    max_open_gap_pct: float = 6.5
+    min_open_gap_pct: float = 0.7
+    buy_premium_pct: float = 0.4  # 买点区间上沿：开盘价 +0.4%
+    max_intraday_chase_pct: float = 1.5  # 现价相对开盘最大可追高%
     max_chase_above_zone_pct: float = 0.3  # 可略高于买点上沿的容忍%
     top_prefilter: int = 200
     t_plus_one: bool = True  # A股 T+1：买入当日不可卖出
@@ -225,6 +225,18 @@ class MorningSelector:
         if blocked:
             return False, blocked, 0.0, {}
 
+        if pre_close > 0 and open_px > 0:
+            gap_pct_chk = (open_px - pre_close) / pre_close * 100
+            intraday_pct_chk = (price - open_px) / open_px * 100 if open_px > 0 else 0.0
+            if gap_pct_chk > self.config.max_open_gap_pct:
+                return False, f"高开过大{gap_pct_chk:.1f}%", 0.0, {}
+            if gap_pct_chk < self.config.min_open_gap_pct:
+                return False, f"低开/平开{gap_pct_chk:.1f}%", 0.0, {}
+            if intraday_pct_chk > 5.0:
+                return False, "开盘至今急拉", 0.0, {}
+            if intraday_pct_chk > self.config.max_intraday_chase_pct:
+                return False, f"日内已拉升{intraday_pct_chk:.1f}%", 0.0, {}
+
         zone_low, zone_high, chase_cap = self._buy_zone(open_px)
         if price > chase_cap:
             return False, f"扫描价{price:.2f}超买点{zone_high:.2f}", 0.0, {}
@@ -263,13 +275,17 @@ class MorningSelector:
         refs["buy_zone"] = refs.get("buy_zone") or f"{zone_low}-{zone_high}"
         refs["buy_zone_low"] = zone_low
         refs["buy_zone_high"] = zone_high
+        gap_pct = (open_px - pre_close) / pre_close * 100 if pre_close > 0 and open_px > 0 else 0.0
+        intraday_pct = (price - open_px) / open_px * 100 if open_px > 0 else 0.0
+        refs["gap_pct"] = round(gap_pct, 2)
+        refs["intraday_pct"] = round(intraday_pct, 2)
 
         meta = {
             **refs,
             "open_price": round(open_px, 2),
             "live_price": round(price, 2),
             "pre_close": round(pre_close, 2) if pre_close > 0 else 0,
-            "intraday_pct": 0.0,
+            "intraday_pct": round(intraday_pct, 2),
             "buy_price_suggest": round(buy_price, 2),
             "morning_bonus": 4.0,
             "morning_tags": ["扫描价买入", f"买点{zone_low}-{zone_high}"],
@@ -453,6 +469,22 @@ class MorningSelector:
         }
         return True, "", round(buy_price, 2), meta
 
+    @staticmethod
+    def _sim_ultra_quality_ok(item: dict) -> Tuple[bool, str]:
+        """模拟超短：须封板类或涨停不破开，排除仅「当日强势」未封板。"""
+        tags = str(item.get("tags") or "")
+        if bool(item.get("is_sealed_board")):
+            return True, ""
+        if any(k in tags for k in ("强势封板", "封板")):
+            return True, ""
+        if bool(item.get("has_limit_hold")) or "涨停不破开" in tags:
+            return True, ""
+        if "连板" in tags and float(item.get("pct_chg", 0) or 0) >= 9.0:
+            return True, ""
+        if "当日强势" in tags and not bool(item.get("is_sealed_board")):
+            return False, "未封板仅当日强势"
+        return False, "无封板/不破开信号"
+
     def _morning_filters(
         self,
         item: dict,
@@ -466,6 +498,10 @@ class MorningSelector:
             ok, reason, buy_price, meta = self._evaluate_live_buy(item, quote)
         if not ok and relaxed:
             ok, reason, buy_price, meta = self._evaluate_relaxed_buy(item, quote)
+        if ok:
+            q_ok, q_reason = self._sim_ultra_quality_ok(item)
+            if not q_ok:
+                ok, reason = False, q_reason
         if ok:
             item.update(meta)
             if meta.get("morning_tags"):
@@ -502,6 +538,7 @@ class MorningSelector:
             max_workers=8,
             show_progress=show_progress,
             tuning=tuning,
+            allow_soft_min=False,
         )
         if picks.empty:
             return pd.DataFrame()
@@ -556,10 +593,41 @@ class SimReplayEngine:
             try:
                 state = json.loads(SIM_STATE_FILE.read_text(encoding="utf-8"))
                 ensure_midterm_state(state)
+                self._upgrade_sim_config(state)
                 return state
             except json.JSONDecodeError:
                 pass
         return self._default_state()
+
+    def _upgrade_sim_config(self, state: dict) -> None:
+        """将旧版偏松参数升级到当前默认（仅抬严、不自动放宽）。"""
+        cfg = state.get("config") or {}
+        defaults = asdict(SimConfig())
+        upgrades = {
+            "min_score": lambda v: max(int(v or 0), defaults["min_score"]),
+            "max_open_gap_pct": lambda v: min(float(v or 99), defaults["max_open_gap_pct"]),
+            "min_open_gap_pct": lambda v: max(float(v or 0), defaults["min_open_gap_pct"]),
+            "buy_premium_pct": lambda v: min(float(v or 99), defaults["buy_premium_pct"]),
+            "max_intraday_chase_pct": lambda v: min(float(v or 99), defaults["max_intraday_chase_pct"]),
+        }
+        changed = False
+        for key, fn in upgrades.items():
+            old = cfg.get(key, defaults[key])
+            new = fn(old)
+            if new != old:
+                cfg[key] = new
+                changed = True
+        if changed:
+            state["config"] = cfg
+            merged = {**defaults, **cfg}
+            self.config = SimConfig(**merged)
+            self.selector = MorningSelector(self.config)
+            try:
+                SIM_STATE_FILE.write_text(
+                    json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+            except OSError:
+                pass
 
     def _default_state(self) -> dict:
         state = {
@@ -645,11 +713,29 @@ class SimReplayEngine:
             cached = load_ultra_short_scan_cache()
             if not cached.empty:
                 pool_n = max(self.config.max_positions * 3, 8)
-                picks = cached.head(pool_n).copy()
-                if "rank" not in picks.columns:
-                    picks["rank"] = range(1, len(picks) + 1)
+                raw_cached = cached.head(pool_n).copy()
+                cache_codes = [str(c).zfill(6) for c in raw_cached["code"].astype(str)]
+                cache_quotes = get_realtime_quotes(cache_codes)
+                cache_map = (
+                    cache_quotes.set_index("code") if not cache_quotes.empty else pd.DataFrame()
+                )
+                filtered_rows = []
+                for _, row in raw_cached.iterrows():
+                    code = str(row["code"]).zfill(6)
+                    item = row.to_dict()
+                    q = cache_map.loc[code] if code in cache_map.index else None
+                    ok, reason, _bonus = self.selector._morning_filters(
+                        item, q, relaxed=relaxed,
+                    )
+                    if ok:
+                        item["final_score"] = float(
+                            item.get("final_score")
+                            or item.get("ultra_short_score", 0)
+                        )
+                        filtered_rows.append(item)
+                picks = pd.DataFrame(filtered_rows) if filtered_rows else pd.DataFrame()
                 if show_progress:
-                    print(f"扫描无结果，回退今日超短缓存 {len(picks)} 只")
+                    print(f"扫描无结果，回退超短缓存并过滤后 {len(picks)} 只")
             elif not relaxed:
                 if show_progress:
                     print("尝试放宽买点条件重新扫描...")
@@ -681,6 +767,10 @@ class SimReplayEngine:
                 ok, reason, buy_price, meta = self.selector._evaluate_live_buy(item, q)
             if not ok and relaxed:
                 ok, reason, buy_price, meta = self.selector._evaluate_relaxed_buy(item, q)
+            if ok:
+                q_ok, q_reason = self.selector._sim_ultra_quality_ok(item)
+                if not q_ok:
+                    ok, reason = False, q_reason
             if not ok:
                 skipped_buy.append(f"{name}({code}): {reason}")
                 continue
@@ -727,6 +817,7 @@ class SimReplayEngine:
                 "stop_loss_ref": stop_loss,
                 "take_profit_ref": take_profit,
                 "buy_zone": zone,
+                "is_sealed_board": bool(row.get("is_sealed_board")),
             })
             self.state["cash"] = float(self.state["cash"]) - cost
             self.state["positions"].append(pos_dict)
@@ -859,6 +950,8 @@ class SimReplayEngine:
             "stop_loss_ref": p.get("stop_loss_ref", p.get("stop_loss")),
             "take_profit_ref": p.get("take_profit_ref", p.get("take_profit")),
             "buy_zone": p.get("buy_zone", ""),
+            "tags": p.get("tags", ""),
+            "is_sealed_board": bool(p.get("is_sealed_board")),
         })
         self.state["closed_trades"].append(rec)
         return trade

@@ -1,6 +1,6 @@
 """
-三倍量「一阳穿三线」观察池：每日选股命中自动入池，5~10 个交易日内
-站稳 MA5 且明显缩量时提示买入。
+三倍量「一阳穿三线」观察池：突破日仅入池（不买入），5 个交易日内
+缩量至突破前水平且站稳 MA5 时触发买入信号。
 """
 
 from __future__ import annotations
@@ -18,11 +18,12 @@ from quantpy.midterm_triple_volume_selector import _align_volume_unit
 from quantpy.paths import MIDTERM_OUTPUT_DIR, TRIPLE_VOLUME_WATCHLIST_FILE
 from quantpy.stock_data import get_stock_hist
 
-WATCH_MIN_DAYS = 5
-WATCH_MAX_DAYS = 10
-MA5_HOLD_DAYS = 3
+WATCH_MIN_DAYS = 1
+WATCH_MAX_DAYS = 5
+MA5_HOLD_DAYS = 2
 MA5_TOLERANCE = 0.005
-VOLUME_SHRINK_RATIO = 0.60
+# 当日量相对突破前量的上限（1.0 = 须缩至突破前及以下，略放 5% 容差对齐单位）
+PRE_VOLUME_MAX_RATIO = 1.05
 MAX_ITEMS = 200
 # 同步近期选股报告的日历日窗口（覆盖观察期 + 缓冲）
 INGEST_LOOKBACK_DAYS = 20
@@ -85,7 +86,9 @@ def _watch_snapshot(rec: dict, pick_date: str) -> dict:
         "pick_date": pick_date,
         "pick_price": float(rec.get("price") or 0),
         "pick_volume": int(rec.get("today_volume") or 0),
+        "pre_pick_volume": int(rec.get("yesterday_volume") or 0),
         "volume_ratio": float(rec.get("volume_ratio") or 0),
+        "midterm_score": float(rec.get("midterm_score") or 0),
         "ma5_at_pick": float(rec.get("ma5") or 0),
         "industry": rec.get("industry", ""),
         "status": "watching",
@@ -303,17 +306,30 @@ def _check_ma5_hold(hist: pd.DataFrame) -> tuple[bool, float, float]:
     return True, curr_close, curr_ma5
 
 
-def _check_volume_shrink(hist: pd.DataFrame, pick_volume: float) -> tuple[bool, float]:
-    if pick_volume <= 0:
+def _resolve_pre_pick_volume(item: dict) -> float:
+    """突破前一日成交量（缩量对比基准）。"""
+    pre = float(item.get("pre_pick_volume") or 0)
+    if pre > 0:
+        return pre
+    pick_vol = float(item.get("pick_volume") or 0)
+    vr = float(item.get("volume_ratio") or 0)
+    if pick_vol > 0 and vr > 0:
+        return pick_vol / vr
+    return 0.0
+
+
+def _check_volume_shrink(hist: pd.DataFrame, pre_pick_volume: float) -> tuple[bool, float]:
+    """当日量须缩至突破前水平（≤ pre_pick_volume）。"""
+    if pre_pick_volume <= 0:
         return False, 0.0
     volume = pd.to_numeric(hist.get("volume", 0), errors="coerce").fillna(0)
-    if len(volume) < 2:
+    if len(volume) < 1:
         return False, 0.0
     today_vol = float(volume.iloc[-1])
-    ref = float(volume.iloc[-2]) if float(volume.iloc[-2]) > 0 else pick_volume
-    today_vol = _align_volume_unit(today_vol, ref)
-    ratio = today_vol / pick_volume
-    return ratio <= VOLUME_SHRINK_RATIO, round(ratio, 3)
+    today_vol = _align_volume_unit(today_vol, pre_pick_volume)
+    ratio = today_vol / pre_pick_volume
+    ok = ratio <= PRE_VOLUME_MAX_RATIO
+    return ok, round(ratio, 3)
 
 
 def _evaluate_item(item: dict, ref_date: str) -> dict:
@@ -326,14 +342,24 @@ def _evaluate_item(item: dict, ref_date: str) -> dict:
     item["last_check_date"] = ref_date
 
     if item.get("status") == "buy_signal":
-        return _ensure_settled(item, ref_date)
+        if days <= WATCH_MAX_DAYS:
+            item = dict(item)
+            item["status"] = "watching"
+            item.pop("buy_signal_date", None)
+            item.pop("buy_signal_price", None)
+            item.pop("completed_at", None)
+            item.pop("settle_price", None)
+            item.pop("return_pct", None)
+            item.pop("is_win", None)
+        else:
+            return _ensure_settled(item, ref_date)
 
     if item.get("status") == "expired":
         return _ensure_settled(item, ref_date)
 
     if days > WATCH_MAX_DAYS:
         item["status"] = "expired"
-        item["buy_reason"] = f"观察期满（>{WATCH_MAX_DAYS}交易日）未触发买入"
+        item["buy_reason"] = f"观察期满（>{WATCH_MAX_DAYS}交易日）未触发缩量站稳MA5买点"
         item["completed_at"] = ref_date
         hist = get_stock_hist(code, days=40, patch_live=True)
         settle = _hist_close_on_or_before(hist, ref_date)
@@ -346,7 +372,7 @@ def _evaluate_item(item: dict, ref_date: str) -> dict:
 
     if days < WATCH_MIN_DAYS:
         item["status"] = "watching"
-        item["buy_reason"] = f"观察中（{days}/{WATCH_MIN_DAYS}交易日，待站稳MA5+缩量）"
+        item["buy_reason"] = f"突破日入池（第{days}日），5日内等缩量站稳MA5"
         return item
 
     hist = get_stock_hist(code, days=40, patch_live=True)
@@ -355,7 +381,10 @@ def _evaluate_item(item: dict, ref_date: str) -> dict:
         return item
 
     ma5_ok, price, ma5 = _check_ma5_hold(hist)
-    shrink_ok, vol_ratio = _check_volume_shrink(hist, float(item.get("pick_volume") or 0))
+    pre_vol = _resolve_pre_pick_volume(item)
+    if pre_vol > 0 and not item.get("pre_pick_volume"):
+        item["pre_pick_volume"] = int(pre_vol)
+    shrink_ok, vol_ratio = _check_volume_shrink(hist, pre_vol)
     item["last_price"] = round(price, 2)
     item["last_ma5"] = round(ma5, 2)
     item["last_volume_ratio"] = vol_ratio
@@ -369,8 +398,8 @@ def _evaluate_item(item: dict, ref_date: str) -> dict:
         item["completed_at"] = ref_date
         item = _settle_return(item, price)
         item["buy_reason"] = (
-            f"站稳MA5（近{MA5_HOLD_DAYS}日）+ 缩量至突破量{vol_ratio:.0%}，"
-            f"建议关注买入（相对突破价 {item.get('return_pct', 0):+.2f}%）"
+            f"站稳MA5（近{MA5_HOLD_DAYS}日）+ 缩量至突破前量{vol_ratio:.0%}，"
+            f"触发买入（相对突破价 {item.get('return_pct', 0):+.2f}%）"
         )
     else:
         item["status"] = "watching"
@@ -378,7 +407,7 @@ def _evaluate_item(item: dict, ref_date: str) -> dict:
         if not ma5_ok:
             parts.append("未站稳MA5")
         if not shrink_ok:
-            parts.append(f"量能未缩（{vol_ratio:.0%} vs 突破日）")
+            parts.append(f"量能未缩至突破前（{vol_ratio:.0%} vs 突破前）")
         item["buy_reason"] = f"观察中（第{days}日）：{' · '.join(parts)}"
 
     return item
@@ -520,12 +549,59 @@ def load_watchlist_summary(*, evaluate: bool = False) -> dict:
         "completed": completed,
         "recent_alerts": (state.get("buy_alerts") or [])[:15],
         "rules": {
-            "watch_days": f"{WATCH_MIN_DAYS}-{WATCH_MAX_DAYS}交易日",
+            "watch_days": f"突破后{WATCH_MAX_DAYS}交易日内",
             "ma5_hold": f"近{MA5_HOLD_DAYS}日收盘站稳MA5",
-            "volume_shrink": f"当日量≤突破日{VOLUME_SHRINK_RATIO:.0%}",
+            "volume_shrink": f"当日量≤突破前量×{PRE_VOLUME_MAX_RATIO:.0%}",
             "win_rule": f"结束观察后相对突破价收益>{WIN_THRESHOLD_PCT:g}% 记胜",
+            "buy_rule": "突破日不入池买入，仅观察池触发买点",
         },
     }
+
+
+def watch_item_to_buy_recommendation(item: dict, *, ref_price: Optional[float] = None) -> dict:
+    """将观察池买入信号转为推荐条目；ref_price 为当日成交价，缺省用 last_price。"""
+    price = float(ref_price if ref_price is not None else (item.get("last_price") or 0))
+    if price <= 0:
+        price = float(item.get("buy_signal_price") or 0)
+    pick_date = str(item.get("pick_date") or "")
+    signal_date = str(item.get("buy_signal_date") or "")
+    return {
+        "code": str(item.get("code", "")).zfill(6),
+        "name": str(item.get("name", "")),
+        "price": round(price, 2),
+        "midterm_score": float(item.get("midterm_score") or 80),
+        "reason": str(item.get("buy_reason") or "观察池：缩量站稳MA5")[:200],
+        "tags": f"观察池买入,突破{pick_date},信号{signal_date},缩量站稳MA5",
+        "industry": item.get("industry", ""),
+        "pick_date": pick_date,
+        "buy_signal_date": signal_date,
+        "breakout_price": float(item.get("pick_price") or 0),
+        "volume_ratio": item.get("volume_ratio"),
+    }
+
+
+def get_buy_signal_recommendations(
+    *,
+    ref_date: Optional[str] = None,
+    today_only: bool = True,
+) -> List[dict]:
+    """返回观察池已触发的买入信号（非突破日标的）。"""
+    ref_date = ref_date or _today()
+    state = _load_state()
+    out: List[dict] = []
+    for item in state.get("items", []):
+        if item.get("status") != "buy_signal":
+            continue
+        sig_date = str(item.get("buy_signal_date") or "")[:10]
+        if today_only and sig_date != ref_date:
+            continue
+        # 推荐价用 last_price（最近评估价）；模拟买入会再拉当日行情覆盖
+        price = float(item.get("last_price") or item.get("buy_signal_price") or 0)
+        if price <= 0:
+            continue
+        out.append(watch_item_to_buy_recommendation(item, ref_price=price))
+    out.sort(key=lambda x: float(x.get("midterm_score") or 0), reverse=True)
+    return out
 
 
 def run_watchlist_cycle(

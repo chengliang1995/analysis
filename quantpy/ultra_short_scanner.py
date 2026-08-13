@@ -161,7 +161,7 @@ class UltraShortScanner:
       strength_factor = 18
       tags.append("封板")
     elif is_strong:
-      strength_factor = 12
+      strength_factor = 6
       tags.append("当日强势")
 
     return {
@@ -413,6 +413,7 @@ class UltraShortScanner:
     min_score: int = 35,
     show_progress: bool = True,
     tuning: Optional[object] = None,
+    allow_soft_min: bool = True,
   ) -> pd.DataFrame:
     """
     全市场超短扫描。
@@ -502,8 +503,8 @@ class UltraShortScanner:
         except Exception:
           pass
 
-    # 门槛过高时空结果，逐步放宽到 40/35
-    if not results and raw_hits:
+    # 门槛过高时空结果，逐步放宽（模拟盘默认禁止，避免低质量凑数）
+    if allow_soft_min and not results and raw_hits:
       for soft in (max(40, min_score - 10), 40, 35):
         if soft >= min_score:
           continue

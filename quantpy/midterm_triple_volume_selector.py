@@ -33,6 +33,10 @@ from quantpy.stock_data import (
 OUTPUT_DIR = MIDTERM_OUTPUT_DIR
 DAILY_CLOSE_DIR = CACHE_DIR / "daily_close"
 TRIPLE_VOLUME_RATIO = 3.0
+# 跟进统计：当日涨 7–9% 三倍量胜率约 44%；≥11% 档均值转负 → 硬过滤
+TRIPLE_PCT_WEAK_LOW = 7.0
+TRIPLE_PCT_WEAK_HIGH = 9.0
+TRIPLE_PCT_EXTREME = 11.0
 # 量比软预筛（同单位手/手），再拉 K 线做硬筛 3 倍 + 一阳穿三线
 VOL_PREFILTER_RATIO = 2.5
 SELECT_WINDOW_START = dt_time(14, 45)
@@ -58,6 +62,15 @@ _CONDITION_LABELS = {c["id"]: c["label"] for c in TRIPLE_VOLUME_SELECT_CONDITION
 
 def get_triple_volume_select_conditions() -> List[dict]:
     return list(TRIPLE_VOLUME_SELECT_CONDITIONS)
+
+
+def is_triple_pct_chase_risky(pct: float) -> bool:
+    """三倍量当日涨幅风险区：7–9% 跟进偏弱，≥11% 易冲高回落。"""
+    if pct <= 0:
+        return False
+    if TRIPLE_PCT_WEAK_LOW <= pct < TRIPLE_PCT_WEAK_HIGH:
+        return True
+    return pct >= TRIPLE_PCT_EXTREME
 
 
 def _is_st_or_delist_name(name: str) -> bool:
@@ -220,13 +233,14 @@ def _evaluate_triple_volume(
     else:
         pct_chg = 0.0
 
+    if is_triple_pct_chase_risky(pct_chg):
+        return None
+
     score = 60.0
     score += min(25.0, max(0.0, (vol_ratio - TRIPLE_VOLUME_RATIO) * 4.0))
-    # 涨幅仅温和加分，大涨追高减分（与 AI「避免急拉追高」一致）
+    # 涨幅温和加分；5–7% 略减分；7–9% 与 ≥11% 已在上方硬过滤
     if 0 < pct_chg < 5:
         score += min(6.0, pct_chg * 1.2)
-    elif pct_chg >= 7:
-        score -= 5.0
     elif pct_chg >= 5:
         score -= 2.0
     if curr_close > curr_ma5 > curr_ma10 > curr_ma20:
@@ -252,8 +266,8 @@ def _evaluate_triple_volume(
         "ma20": round(curr_ma20, 2),
         "midterm_score": round(min(score, 99.0), 1),
         "trend": "三倍量突破",
-        "hold_style": "放量突破均线，可中线跟踪",
-        "entry_hint": "尾盘确认后关注次日延续性，勿盲目追高",
+        "hold_style": "突破日仅入观察池，5日内缩量站稳MA5再买",
+        "entry_hint": "勿在突破日上穿当天追价，等缩量至突破前并站稳5日线",
         "conditions": conditions,
         "condition_labels": [_CONDITION_LABELS[c] for c in conditions],
         "tags": tags,

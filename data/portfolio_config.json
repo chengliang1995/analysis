@@ -1,7 +1,7 @@
 {
   "ultra_short_capital": 22850,
-  "midterm_capital": 142637.9,
-  "total_capital": 165487.9,
+  "midterm_capital": 145000,
+  "total_capital": 167850,
   "initial_ultra_short_capital": 20000.0,
   "initial_midterm_capital": 150000.0,
   "journal_closed_synced": true,
@@ -9,20 +9,47 @@
     {
       "code": "002472",
       "name": "双环传动",
-      "quantity": 1800,
-      "cost_price": 41.7767,
-      "buy_date": "2026-07-13",
+      "quantity": 700,
+      "cost_price": 63.9,
+      "buy_date": "2026-08-13",
       "strategy": "手动",
-      "note": ""
+      "note": "中线"
     },
     {
-      "code": "688353",
-      "name": "华盛锂电",
-      "quantity": 260,
-      "cost_price": 87.19,
-      "buy_date": "2026-07-02",
+      "code": "300059",
+      "name": "东方财富",
+      "quantity": 1600,
+      "cost_price": 19.944,
+      "buy_date": "2026-08-13",
       "strategy": "手动",
-      "note": ""
+      "note": "中线"
+    },
+    {
+      "code": "02208",
+      "name": "金风科技",
+      "quantity": 2000,
+      "cost_price": 9.44,
+      "buy_date": "2026-08-13",
+      "strategy": "手动",
+      "note": "港股中线"
+    },
+    {
+      "code": "002326",
+      "name": "永太科技",
+      "quantity": 1000,
+      "cost_price": 19.533,
+      "buy_date": "2026-08-13",
+      "strategy": "手动",
+      "note": "中线"
+    },
+    {
+      "code": "603659",
+      "name": "璞泰来",
+      "quantity": 800,
+      "cost_price": 24.46,
+      "buy_date": "2026-08-13",
+      "strategy": "手动",
+      "note": "中线"
     }
   ],
   "closed_positions": [
