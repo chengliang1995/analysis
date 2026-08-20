@@ -23,33 +23,16 @@ import pandas as pd
 from flask import Flask, jsonify, render_template, request
 from flask.json.provider import DefaultJSONProvider
 
-from quantpy.json_util import df_to_records_safe, sanitize_for_json
+from quantpy.json_util import sanitize_for_json
 
 from quantpy import __version__ as APP_VERSION
-from quantpy.paths import OUTPUT_DIR, LOG_DIR, DATA_DIR, PROJECT_ROOT, REPORT_DIR, RETENTION_DAYS, TEMPLATES_DIR
+from quantpy.paths import LOG_DIR, OUTPUT_DIR, PROJECT_ROOT, REPORT_DIR, RETENTION_DAYS, STATIC_DIR, TEMPLATES_DIR
 from quantpy.portfolio import PortfolioManager
 from quantpy.retention import prune_retention_files
 from quantpy.sim_replay import SimReplayEngine
-from quantpy.sim_midterm import (
-    apply_midterm_recommendations_to_sim,
-    enrich_midterm_sim,
-    run_sim_midterm_select,
-)
-from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
-from quantpy.midterm_portfolio_advisor import (
-    MidtermPortfolioAdvisor,
-    build_daily_midterm_operations,
-    ensure_daily_midterm_operations,
-    format_midterm_report_markdown,
-    load_latest_midterm_advice,
-    run_midterm_advice,
-)
-from quantpy.midterm_triple_volume_selector import (
-    load_latest_triple_volume_advice,
-    run_triple_volume_select,
-)
-from quantpy.triple_volume_watchlist import load_watchlist_summary, sync_and_evaluate_watchlist
-from quantpy.midterm_pick_tracker import load_tracker_summary, run_midterm_tracker_cycle
+from quantpy.sim_midterm import enrich_midterm_sim, run_sim_midterm_select
+from quantpy.ai_learning_optimizer import run_ai_learning
+from quantpy.midterm_portfolio_advisor import MidtermPortfolioAdvisor
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import (
     fetch_board_list,
@@ -61,13 +44,21 @@ from quantpy.stock_data import (
     lookup_instrument_by_name,
     price_step_for_code,
 )
-from quantpy.sector_recommender import load_latest_sector, run_sector_recommendations
+from quantpy.sector_recommender import run_sector_recommendations
 from quantpy.real_portfolio_reviewer import (
     load_latest_real_review,
     run_real_portfolio_review,
 )
 from quantpy.stock_pnl_history import get_stock_pnl_history
 from quantpy.trade_journal import TradeJournal
+from quantpy.web_dashboard import (
+    get_dashboard_data,
+    get_sim_data,
+    get_trades_data,
+    load_latest_report_content,
+    load_latest_report_meta,
+    refresh_holdings_quotes,
+)
 
 BASE_DIR = PROJECT_ROOT
 
@@ -80,7 +71,11 @@ class SafeJSONProvider(DefaultJSONProvider):
         return json.dumps(sanitize_for_json(obj), **kwargs)
 
 
-app = Flask(__name__, template_folder=str(TEMPLATES_DIR))
+app = Flask(
+    __name__,
+    template_folder=str(TEMPLATES_DIR),
+    static_folder=str(STATIC_DIR),
+)
 app.json = SafeJSONProvider(app)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
@@ -91,557 +86,6 @@ def _no_cache(response):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
     return response
-
-
-def _ultra_short_records(df: pd.DataFrame, top_n: int = 10) -> list[dict]:
-    if df is None or df.empty:
-        return []
-    cols = [
-        "code", "name", "ultra_short_score", "pct_chg", "turnover",
-        "consecutive_boards", "strength_factor", "is_sealed_board",
-        "is_strong_today", "hold_no_sell", "tags",
-        "scan_price", "buy_price_ref", "sell_price_ref",
-        "stop_loss_ref", "take_profit_ref", "buy_zone",
-    ]
-    available = [c for c in cols if c in df.columns]
-    rows = df.head(top_n)[available].copy()
-    if "code" in rows.columns:
-        rows["code"] = rows["code"].astype(str).str.zfill(6)
-    return df_to_records_safe(rows)
-
-
-def load_cached_ultra_short(top_n: int = 10) -> list[dict]:
-    from quantpy.daily_advisor import load_ultra_short_scan_cache
-
-    df = load_ultra_short_scan_cache()
-    if not df.empty:
-        return _ultra_short_records(df, top_n=top_n)
-
-    # 回退：日报 JSON 摘要（定时任务 report 阶段产出）
-    summary_files = sorted(REPORT_DIR.glob("daily_summary_*.json"), reverse=True)
-    if summary_files:
-        try:
-            summary = json.loads(summary_files[0].read_text(encoding="utf-8"))
-            top = summary.get("ultra_short_top10") or []
-            if top:
-                return top[:top_n]
-        except (OSError, json.JSONDecodeError):
-            pass
-    return []
-
-
-def load_latest_report_meta() -> dict:
-    files = sorted(REPORT_DIR.glob("daily_report_*.md"), reverse=True)
-    if not files:
-        return {"name": "", "path": "", "updated_at": ""}
-    path = files[0]
-    return {
-        "name": path.name,
-        "path": str(path.relative_to(BASE_DIR)).replace("\\", "/"),
-        "updated_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
-def load_latest_report_content() -> dict:
-    files = sorted(REPORT_DIR.glob("daily_report_*.md"), reverse=True)
-    if not files:
-        return {"name": "", "content": ""}
-    path = files[0]
-    return {"name": path.name, "content": path.read_text(encoding="utf-8")}
-
-
-def _file_mtime_meta(path: Path) -> dict:
-    if not path.exists():
-        return {"path": "", "updated_at": ""}
-    return {
-        "path": str(path.relative_to(BASE_DIR)).replace("\\", "/"),
-        "updated_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
-def load_scheduler_status() -> dict:
-    """读取计划任务状态：优先 data/scheduler_status.json，回退日志解析。"""
-    phases = {
-        "morning": "早盘 9:35",
-        "triple-volume": "三倍量 14:45",
-        "close": "收盘 15:10",
-        "report": "日报 15:25",
-    }
-    marker_path = DATA_DIR / "scheduler_status.json"
-    markers: dict = {}
-    if marker_path.exists():
-        try:
-            markers = json.loads(marker_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            markers = {}
-
-    status: dict = {}
-    for phase, label in phases.items():
-        marker = markers.get(phase) if isinstance(markers, dict) else None
-        if isinstance(marker, dict) and marker.get("state"):
-            state = str(marker.get("state") or "")
-            started = str(marker.get("started_at") or "")
-            finished = str(marker.get("finished_at") or "")
-            last_run = finished or started
-            if state == "running":
-                status[phase] = {
-                    "label": label,
-                    "last_run": started or last_run,
-                    "ok": False,
-                    "running": True,
-                    "state": "running",
-                    "log": str(marker.get("log") or ""),
-                    "message": str(marker.get("message") or "运行中"),
-                }
-                continue
-            if state == "ok":
-                status[phase] = {
-                    "label": label,
-                    "last_run": last_run,
-                    "ok": True,
-                    "running": False,
-                    "state": "ok",
-                    "log": str(marker.get("log") or ""),
-                    "message": str(marker.get("message") or ""),
-                }
-                continue
-            if state == "fail":
-                status[phase] = {
-                    "label": label,
-                    "last_run": last_run,
-                    "ok": False,
-                    "running": False,
-                    "state": "fail",
-                    "log": str(marker.get("log") or ""),
-                    "message": str(marker.get("message") or "失败"),
-                }
-                continue
-
-        logs = sorted(LOG_DIR.glob(f"daily_{phase}_*.log"), reverse=True)
-        if not logs:
-            status[phase] = {
-                "label": label,
-                "last_run": "",
-                "ok": False,
-                "running": False,
-                "state": "idle",
-                "log": "",
-                "message": "尚未执行",
-            }
-            continue
-        path = logs[0]
-        text = ""
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            pass
-        started = "Start " in text
-        done = f"Done {phase}" in text or "Done " in text
-        has_body = len(text.strip()) > 120
-        success_hint = (
-            "报告已保存" in text
-            or "扫描完成" in text
-            or "完成，共" in text
-            or "观察池评估" in text
-        )
-        running = started and not done and has_body
-        ok = bool(done and (has_body or success_hint)) or (success_hint and done)
-        # 仅有 Start、几乎无正文 → 失败（常见于任务被立刻杀掉）
-        if started and not done and not has_body:
-            ok = False
-            running = False
-        status[phase] = {
-            "label": label,
-            "last_run": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-            "ok": ok,
-            "running": running,
-            "state": "running" if running else ("ok" if ok else "fail"),
-            "log": path.name,
-            "message": "运行中" if running else ("" if ok else "未完成"),
-        }
-    return status
-
-
-def load_data_freshness() -> dict:
-    """各模块缓存文件的最近更新时间（与定时任务产出对齐）。"""
-    today = datetime.now().strftime("%Y%m%d")
-    ultra_path = OUTPUT_DIR / f"ultra_short_{today}.csv"
-    if not ultra_path.exists():
-        ultra_files = sorted(OUTPUT_DIR.glob("ultra_short_*.csv"), reverse=True)
-        ultra_path = ultra_files[0] if ultra_files else ultra_path
-    midterm_files = sorted((OUTPUT_DIR / "midterm").glob("midterm_*.json"), reverse=True)
-    tv_files = sorted((OUTPUT_DIR / "midterm").glob("triple_volume_*.json"), reverse=True)
-    return {
-        "ultra_short": _file_mtime_meta(ultra_path),
-        "midterm": _file_mtime_meta(midterm_files[0]) if midterm_files else {"path": "", "updated_at": ""},
-        "triple_volume": _file_mtime_meta(tv_files[0]) if tv_files else {"path": "", "updated_at": ""},
-        "report": load_latest_report_meta(),
-    }
-
-
-def _resolve_midterm(portfolio_stats: dict) -> dict:
-    """仪表盘用：优先读定时任务/手动分析落盘的缓存。"""
-    cached = load_latest_midterm_advice()
-    if cached.get("reviews") or cached.get("recommendations"):
-        return cached
-    if not portfolio_stats.get("has_data"):
-        return {}
-    try:
-        return MidtermPortfolioAdvisor().run_quick_advice(portfolio_stats)
-    except Exception:
-        return {}
-
-
-def _enrich_portfolio_with_midterm(
-    portfolio_stats: dict,
-    midterm: dict,
-    level_alerts: Optional[dict] = None,
-) -> dict:
-    stats = dict(portfolio_stats)
-    positions = list(stats.get("positions", []))
-    review_map = {r["code"]: r for r in midterm.get("reviews", []) if r.get("ok")}
-    alert_map = {
-        str(a["code"]).zfill(6): a
-        for a in (level_alerts or {}).get("alerts", [])
-    }
-    for p in positions:
-        code = str(p["code"]).zfill(6)
-        r = review_map.get(code, {})
-        p["midterm_trend"] = r.get("trend", "")
-        p["midterm_score"] = r.get("midterm_score", "")
-        p["midterm_action"] = r.get("action", "")
-        p["midterm_rsi"] = r.get("rsi", "")
-        p["midterm_support"] = r.get("support", "")
-        p["midterm_resistance"] = r.get("resistance", "")
-        alert = alert_map.get(code)
-        if alert:
-            p["level_alert"] = alert
-            p["level_alert_label"] = alert.get("alert_label", "")
-            p["level_alert_signal"] = alert.get("signal_label", "")
-    stats["positions"] = positions
-    daily_ops = ensure_daily_midterm_operations(midterm, stats, level_alerts)
-    if daily_ops:
-        midterm = dict(midterm)
-        midterm["daily_operations"] = daily_ops
-    stats["midterm"] = midterm
-    stats["midterm_daily_operations"] = daily_ops
-    return stats
-
-
-def get_suggestions(
-    portfolio_stats: Optional[dict] = None,
-    midterm: Optional[dict] = None,
-    level_alerts: Optional[dict] = None,
-) -> dict:
-    pm = PortfolioManager()
-    ultra = load_cached_ultra_short(top_n=10)
-    if portfolio_stats is None:
-        portfolio_stats = pm.analyze() if pm.list_positions() else {}
-    if midterm is None:
-        midterm = _resolve_midterm(portfolio_stats)
-
-    portfolio_actions = pm.generate_action_suggestions(
-        ultra_short=ultra,
-        midterm_advice=midterm if midterm else None,
-    )
-    portfolio_summary = pm.generate_suggestions() if pm.list_positions() else []
-
-    journal = TradeJournal()
-    learn = journal.generate_suggestions(days=30)
-
-    ai_learn: list[str] = []
-    ai_meta = load_latest_ai_learning()
-    if ai_meta.get("suggestions"):
-        ai_learn = list(ai_meta["suggestions"][:8])
-        if ai_meta.get("param_changes"):
-            ai_learn.append(
-                "模拟参数: "
-                + ", ".join(f"{k} {v}" for k, v in ai_meta["param_changes"].items())
-            )
-        if ai_meta.get("selection_changes"):
-            sel = ai_meta["selection_changes"]
-            parts = []
-            if sel.get("ultra_min_score") is not None:
-                parts.append(f"超短≥{sel['ultra_min_score']}")
-            if sel.get("midterm_min_score") is not None:
-                parts.append(f"中线≥{sel['midterm_min_score']}")
-            if sel.get("ultra_preferred_tags"):
-                parts.append("偏好" + "/".join(sel["ultra_preferred_tags"][:2]))
-            if parts:
-                ai_learn.append("选股参数: " + " · ".join(parts))
-
-    tracker_payload = load_tracker_summary(evaluate=False)
-    midterm_tracker_learn = list(tracker_payload.get("suggestions") or [])[:6]
-
-    midterm_review = [r.get("summary", "") for r in midterm.get("reviews", []) if r.get("ok")][:6]
-    midterm_optimize = list(midterm.get("optimize_suggestions", []))[:5]
-    midterm_daily = list((midterm.get("daily_operations") or {}).get("lines", []))[:8]
-    midterm_recommend = [
-        f"【推荐】{r['name']}({r['code']}) 评分{r['midterm_score']} · {r.get('reason', '')}"
-        for r in midterm.get("recommendations", [])[:5]
-    ]
-    ultra_recommend = []
-    for u in ultra[:5]:
-        buy_ref = u.get("buy_price_ref") or u.get("scan_price") or u.get("price")
-        stop_ref = u.get("stop_loss_ref")
-        take_ref = u.get("take_profit_ref")
-        ref_parts = [f"买{buy_ref}"] if buy_ref else []
-        if stop_ref:
-            ref_parts.append(f"止损{stop_ref}")
-        if take_ref:
-            ref_parts.append(f"止盈{take_ref}")
-        ref_txt = " · ".join(ref_parts)
-        ultra_recommend.append(
-            f"【超短】{u.get('name')}({u.get('code')}) 评分{u.get('ultra_short_score')} "
-            f"{ref_txt} · {u.get('tags', '')[:40]}"
-        )
-
-    real_review = load_latest_real_review()
-    real_review_suggestions = list(real_review.get("optimization_suggestions", []))[:8]
-
-    if level_alerts is None:
-        level_alerts = scan_midterm_level_alerts(
-            portfolio_stats,
-            midterm.get("reviews") if midterm else None,
-        )
-    level_alert_msgs = list(level_alerts.get("messages", []))[:10]
-
-    all_suggestions: list[str] = []
-    seen: set[str] = set()
-    for s in (
-        level_alert_msgs + portfolio_actions + portfolio_summary
-        + midterm_daily + midterm_review
-        + midterm_optimize + midterm_recommend + ultra_recommend
-        + midterm_tracker_learn + real_review_suggestions + learn + ai_learn
-    ):
-        if s and s not in seen:
-            seen.add(s)
-            all_suggestions.append(s)
-
-    return {
-        "portfolio_actions": portfolio_actions,
-        "portfolio_summary": portfolio_summary,
-        "midterm_review": midterm_review,
-        "midterm_daily": midterm_daily,
-        "midterm_optimize": midterm_optimize,
-        "midterm_recommend": midterm_recommend,
-        "ultra_recommend": ultra_recommend,
-        "midterm_tracker": midterm_tracker_learn,
-        "real_review": real_review_suggestions,
-        "level_alerts": level_alert_msgs,
-        "learn": learn,
-        "ai_learn": ai_learn,
-        "all": all_suggestions,
-    }
-
-
-def get_trades_data(days: int = 30) -> dict:
-    journal = TradeJournal()
-    df = journal.list_trades(days=days)
-    stats = journal.analyze(days=days)
-    return {
-        "trades": df_to_records_safe(df),
-        "stats": stats,
-    }
-
-
-def _enrich_sim_portfolio(
-    engine: SimReplayEngine,
-    quotes_df: Optional[pd.DataFrame] = None,
-) -> dict:
-    positions = list(engine.state.get("positions", []))
-    if quotes_df is not None and not quotes_df.empty:
-        qmap = quotes_df.copy()
-        qmap["code"] = qmap["code"].astype(str).str.zfill(6)
-        qmap = qmap.set_index("code")
-    elif positions:
-        quotes = get_realtime_quotes([p["code"] for p in positions])
-        qmap = quotes.set_index("code") if quotes is not None and not quotes.empty else None
-    else:
-        qmap = None
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    enriched = []
-    total_market_value = 0.0
-    for p in positions:
-        code = str(p["code"]).zfill(6)
-        current = float(qmap.loc[code, "close"]) if qmap is not None and code in qmap.index else p["buy_price"]
-        cost_amount = p["buy_price"] * p["quantity"]
-        market_value = current * p["quantity"]
-        total_market_value += market_value
-        profit_pct = (current - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0.0
-        sellable = engine._is_sellable(p["buy_date"], today)
-        enriched.append({
-            **p,
-            "current_price": round(current, 2),
-            "sell_price_ref": round(current, 2),
-            "market_value": round(market_value, 2),
-            "profit_amount": round(market_value - cost_amount, 2),
-            "profit_pct": round(profit_pct, 2),
-            "weight_pct": 0.0,
-            "sellable_today": sellable,
-            "t_plus_one_locked": engine.config.t_plus_one and not sellable,
-        })
-
-    cash = float(engine.state.get("cash", 0))
-    equity = cash + total_market_value
-    if enriched:
-        for row in enriched:
-            row["weight_pct"] = round(row["market_value"] / equity * 100, 2) if equity > 0 else 0.0
-
-    initial = float(engine.state.get("initial_capital", engine.config.capital))
-    closed = list(engine.state.get("closed_trades", []))
-    closed.sort(key=lambda x: x.get("sell_date", ""), reverse=True)
-
-    return {
-        "has_data": True,
-        "bucket": "ultra_short",
-        "initial_capital": initial,
-        "cash": round(cash, 2),
-        "market_value": round(total_market_value, 2),
-        "equity": round(equity, 2),
-        "total_return_pct": round((equity - initial) / initial * 100, 2) if initial else 0.0,
-        "closed_count": len(closed),
-        "trading_day_count": engine.state.get("trading_day_count", 0),
-        "position_count": len(enriched),
-        "positions": enriched,
-        "closed_trades": closed[:10],
-        "config": {
-            "t_plus_one": engine.config.t_plus_one,
-            "stop_loss_pct": engine.config.stop_loss_pct,
-            "take_profit_pct": engine.config.take_profit_pct,
-            "max_hold_days": engine.config.max_hold_days,
-            "min_score": engine.config.min_score,
-            "max_positions": engine.config.max_positions,
-            "buy_premium_pct": engine.config.buy_premium_pct,
-            "price_mode": "扫描价",
-        },
-        "updated_at": engine.state.get("updated_at", ""),
-        "ai_learning": load_latest_ai_learning(),
-        "midterm": enrich_midterm_sim(engine.state, quotes_df=quotes_df),
-    }
-
-
-def _collect_holding_codes() -> list[str]:
-    pm = PortfolioManager()
-    sim_engine = SimReplayEngine()
-    sim_engine.reload_state()
-    codes = {
-        str(p.code).zfill(6) for p in pm.list_positions()
-    } | {
-        str(p["code"]).zfill(6) for p in sim_engine.state.get("positions", [])
-    } | {
-        str(p["code"]).zfill(6)
-        for p in sim_engine.state.get("midterm", {}).get("positions", [])
-    }
-    return sorted(codes)
-
-
-def refresh_holdings_quotes() -> tuple[dict, dict, str]:
-    """仅刷新实盘 + 模拟盘持仓行情（不扫全市场、不重跑中线分析）。"""
-    codes = _collect_holding_codes()
-    quotes = get_realtime_quotes(codes, verbose=False) if codes else pd.DataFrame()
-
-    pm = PortfolioManager()
-    portfolio_stats = pm.analyze(spot_df=quotes if not quotes.empty else None)
-
-    sim_engine = SimReplayEngine()
-    sim_engine.reload_state()
-    sim_data = _enrich_sim_portfolio(
-        sim_engine,
-        quotes_df=quotes if not quotes.empty else None,
-    )
-
-    n_real = len(portfolio_stats.get("positions", []))
-    n_sim = sim_data.get("position_count", 0)
-    if not codes:
-        log = "暂无持仓，未请求行情"
-    else:
-        log = f"已刷新 {len(codes)} 只持仓行情（实盘 {n_real} · 模拟 {n_sim}）"
-    return portfolio_stats, sim_data, log
-
-
-def get_portfolio_data(
-    portfolio_stats: Optional[dict] = None,
-    midterm: Optional[dict] = None,
-    level_alerts: Optional[dict] = None,
-) -> dict:
-    if portfolio_stats is None:
-        portfolio_stats = PortfolioManager().analyze()
-    if midterm is None:
-        midterm = _resolve_midterm(portfolio_stats)
-    if level_alerts is None:
-        level_alerts = scan_midterm_level_alerts(
-            portfolio_stats,
-            midterm.get("reviews") if midterm else None,
-        )
-    return _enrich_portfolio_with_midterm(portfolio_stats, midterm, level_alerts)
-
-
-def get_sim_data() -> dict:
-    engine = SimReplayEngine()
-    engine.reload_state()
-    return _enrich_sim_portfolio(engine)
-
-
-def get_dashboard_data(
-    portfolio_stats: Optional[dict] = None,
-    sim_data: Optional[dict] = None,
-    midterm: Optional[dict] = None,
-) -> dict:
-    if portfolio_stats is None:
-        portfolio_stats = PortfolioManager().analyze()
-    if sim_data is None:
-        sim_data = get_sim_data()
-    if midterm is None:
-        midterm = _resolve_midterm(portfolio_stats)
-    level_alerts = scan_midterm_level_alerts(
-        portfolio_stats,
-        midterm.get("reviews") if midterm else None,
-    )
-    sug = get_suggestions(
-        portfolio_stats=portfolio_stats,
-        midterm=midterm,
-        level_alerts=level_alerts,
-    )
-    review = load_latest_real_review()
-    try:
-        # 仪表盘只读缓存摘要，避免每次刷新都拉 K 线评估
-        midterm_tracker = load_tracker_summary(evaluate=False)
-    except Exception:
-        midterm_tracker = {
-            "summary": {},
-            "tracking": [],
-            "matured_recent": [],
-            "suggestions": [],
-        }
-    return {
-        "portfolio": get_portfolio_data(
-            portfolio_stats=portfolio_stats,
-            midterm=midterm,
-            level_alerts=level_alerts,
-        ),
-        "sim": sim_data,
-        "ultra_short": load_cached_ultra_short(),
-        "suggestions": sug["all"],
-        "suggestion_groups": sug,
-        "trades": get_trades_data(),
-        "portfolio_review": {
-            "has_data": bool(review.get("has_data")),
-            "summary": review.get("summary", {}),
-            "trade_reviews": review.get("trade_reviews", [])[:15],
-            "generated_at": review.get("generated_at", ""),
-        },
-        "level_alerts": level_alerts,
-        "report": load_latest_report_meta(),
-        "sector": load_latest_sector(),
-        "midterm_tracker": midterm_tracker,
-        "triple_volume": load_latest_triple_volume_advice(),
-        "triple_volume_watchlist": load_watchlist_summary(evaluate=False),
-        "scheduler": load_scheduler_status(),
-        "data_freshness": load_data_freshness(),
-        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
 
 
 def _today_log_path() -> Path:
@@ -1137,22 +581,24 @@ def api_action(action: str):
                 sim_data=sim_data,
             )
         elif action == "report":
-            from quantpy.daily_advisor import generate_daily_report
+            from quantpy.orchestration import run_action_report
 
-            path, log = _run_quiet(
-                generate_daily_report,
+            result, log = _run_quiet(
+                run_action_report,
                 top_prefilter=200,
                 min_score=35,
                 days=30,
+                include_watchlist=True,
+                action="report",
             )
-            if path is None:
+            if not isinstance(result, dict) or not result.get("ok"):
                 return jsonify({
                     "ok": False,
-                    "message": "日报生成失败，请查看日志",
+                    "message": (result or {}).get("message") or "日报生成失败，请查看日志",
                     "log": log.strip(),
                     "data": get_dashboard_data(),
                 }), 500
-            message = "日报已生成"
+            message = result.get("message") or "日报已生成"
             extra["report"] = load_latest_report_meta()
             extra["report_content"] = load_latest_report_content()
         elif action == "sim":
@@ -1178,181 +624,109 @@ def api_action(action: str):
             message = f"AI 策略学习完成（第 {round_no} 轮）"
             extra["ai_learning"] = result
         elif action == "midterm":
-            pm_stats = PortfolioManager().analyze()
-            if not pm_stats.get("has_data"):
-                return jsonify({"ok": False, "message": "暂无实盘持仓"}), 400
+            from quantpy.orchestration import run_action_midterm
+
             industry = str(request.args.get("industry") or "").strip() or None
             performance = str(request.args.get("performance") or "").strip() or None
             result, log = _run_quiet(
-                run_midterm_advice,
-                pm_stats,
-                show_progress=True,
+                run_action_midterm,
                 full=True,
                 industry=industry,
                 performance=performance,
-                action="midterm",
-            )
-            if not isinstance(result, dict):
-                return jsonify({
-                    "ok": False,
-                    "message": "中线分析失败，请查看运行日志",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            alerts = scan_midterm_level_alerts(
-                pm_stats, result.get("reviews"), save=True,
-            )
-            if isinstance(result, dict):
-                result = dict(result)
-                result["daily_operations"] = build_daily_midterm_operations(
-                    pm_stats,
-                    result.get("reviews", []),
-                    optimization=result.get("optimization"),
-                    recommendations=result.get("recommendations"),
-                    level_alerts=alerts,
-                )
-                result["markdown"] = format_midterm_report_markdown(result)
-            alert_n = alerts.get("alert_count", 0)
-            rec_n = len(result.get("recommendations", []))
-            select_stats = result.get("select_stats") or {}
-            filter_bits = []
-            if industry:
-                filter_bits.append(f"行业={industry}")
-            if performance:
-                from quantpy.midterm_portfolio_advisor import PERFORMANCE_FILTER_OPTIONS
-                filter_bits.append(
-                    PERFORMANCE_FILTER_OPTIONS.get(performance, performance)
-                )
-            scan_bit = (
-                f"初筛{select_stats.get('prefilter_count', 0)}"
-                f"→技术{select_stats.get('scored_pass', 0)}"
-            )
-            message = (
-                f"中线分析完成：复盘 {len(result.get('reviews', []))} 只，推荐 {rec_n} 只（{scan_bit}）"
-                + (f"（{' · '.join(filter_bits)}）" if filter_bits else "")
-                + (f"，{alert_n} 条价位提醒" if alert_n else "")
-            )
-            if select_stats.get("fallback_used"):
-                message += "；筛选无匹配已回退"
-            sim_engine = SimReplayEngine()
-            sim_engine.reload_state()
-            sim_mt, sim_log = _run_quiet(
-                apply_midterm_recommendations_to_sim,
-                sim_engine,
-                result.get("recommendations", []),
+                apply_to_sim=True,
                 show_progress=True,
                 action="midterm",
             )
-            log = (log + "\n" + sim_log).strip()
-            if isinstance(sim_mt, dict):
-                bought_n = len(sim_mt.get("bought", []))
-                logged_n = sim_mt.get("pick_logged", 0)
-                if logged_n:
-                    message += f"；模拟记录选股 {logged_n}"
-                if bought_n:
-                    message += f"，买入 {bought_n} 只"
-                extra["sim_midterm"] = sim_mt
-            extra["midterm"] = result
+            if not isinstance(result, dict) or not result.get("ok"):
+                return jsonify({
+                    "ok": False,
+                    "message": (result or {}).get("message") or "中线分析失败，请查看运行日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500 if (result or {}).get("message") != "暂无实盘持仓" else 400
+            message = result.get("message") or "中线分析完成"
+            payload = result.get("payload") or {}
+            midterm_result = payload.get("midterm") or {}
+            alerts = payload.get("level_alerts") or {}
+            pm_stats = payload.get("portfolio_stats")
+            if payload.get("sim_midterm"):
+                extra["sim_midterm"] = payload["sim_midterm"]
+            extra["midterm"] = midterm_result
             extra["level_alerts"] = alerts
-            extra["midterm_content"] = {
+            extra["midterm_content"] = payload.get("midterm_content") or {
                 "name": "实盘中线分析报告",
-                "content": result.get("markdown") or format_midterm_report_markdown(result),
+                "content": midterm_result.get("markdown") or "",
             }
             prefetched_dashboard = get_dashboard_data(
                 portfolio_stats=pm_stats,
-                midterm=result,
+                midterm=midterm_result,
             )
             prefetched_dashboard["level_alerts"] = alerts
         elif action == "midterm-track":
-            result, log = _run_quiet(
-                run_midterm_tracker_cycle,
-                None,
-                show_progress=True,
-            )
-            summary = result.get("summary") or {}
-            message = (
-                f"中线跟进更新：跟踪 {summary.get('tracking_count', 0)} 只，"
-                f"成熟 {summary.get('matured_count', 0)} 只，"
-                f"胜率 {summary.get('win_rate', 0)}%"
-            )
-            try:
-                from quantpy.midterm_pick_tracker import derive_factor_tuning
-                from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
+            from quantpy.orchestration import run_action_midterm_track
 
-                factor = derive_factor_tuning(summary, summary.get("interim"))
-                tuning = build_selection_tuning()
-                notes = (factor.get("notes") or [])[:3]
-                if notes:
-                    message += "；策略已按跟进调优：" + "；".join(notes)
-                else:
-                    message += f"；{format_tuning_summary(tuning).splitlines()[0]}"
-                extra["selection_tuning"] = {
-                    "midterm_min_score": tuning.midterm_min_score,
-                    "condition_bonus": tuning.midterm_condition_bonus,
-                    "condition_penalty": tuning.midterm_condition_penalty,
-                    "tag_bonus": tuning.midterm_tag_bonus,
-                    "tag_penalty": tuning.midterm_tag_penalty,
-                    "notes": tuning.notes[:6],
-                }
-            except Exception:
-                pass
-            extra["midterm_tracker"] = result
-        elif action == "midterm-triple-volume":
-            pm = PortfolioManager()
-            held = [str(p.code).zfill(6) for p in pm.list_positions()]
             result, log = _run_quiet(
-                run_triple_volume_select,
-                exclude_codes=held,
+                run_action_midterm_track,
                 show_progress=True,
-                force=force,
-                action="midterm-triple-volume",
+                action="midterm-track",
             )
-            if not isinstance(result, dict):
+            if not isinstance(result, dict) or not result.get("ok"):
                 return jsonify({
                     "ok": False,
-                    "message": "三倍量选股失败，请查看运行日志",
+                    "message": (result or {}).get("message") or "中线跟进失败",
                     "log": log.strip(),
                     "data": get_dashboard_data(),
                 }), 500
-            rec_n = len(result.get("recommendations", []))
-            select_stats = result.get("select_stats") or {}
-            wl_added = 0
-            if isinstance(result.get("watchlist"), dict):
-                wl_added = int((result["watchlist"].get("record") or {}).get("added") or 0)
-            message = (
-                f"三倍量选股完成：命中 {rec_n} 只"
-                f"（量比{select_stats.get('vol_prefilter_count', select_stats.get('prefilter_count', 0))}"
-                f"→K线{select_stats.get('hist_scan_count', select_stats.get('prefilter_count', 0))}"
-                f"→命中{select_stats.get('scored_pass', 0)}）"
+            message = result.get("message") or ""
+            payload = result.get("payload") or {}
+            if payload.get("selection_tuning"):
+                extra["selection_tuning"] = payload["selection_tuning"]
+            extra["midterm_tracker"] = payload.get("midterm_tracker")
+        elif action == "midterm-triple-volume":
+            from quantpy.orchestration import run_action_triple_volume
+
+            result, log = _run_quiet(
+                run_action_triple_volume,
+                force=force,
+                show_progress=True,
+                action="midterm-triple-volume",
             )
-            if wl_added:
-                message += f"；观察池新增 {wl_added} 只"
-            extra["triple_volume"] = result
+            if not isinstance(result, dict) or not result.get("ok"):
+                return jsonify({
+                    "ok": False,
+                    "message": (result or {}).get("message") or "三倍量选股失败，请查看运行日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
+            message = result.get("message") or ""
+            payload = result.get("payload") or {}
+            tv = payload.get("triple_volume") or {}
+            extra["triple_volume"] = tv
             extra["triple_volume_content"] = {
                 "name": "三倍量选股报告",
-                "content": result.get("markdown") or "",
+                "content": tv.get("markdown") or "",
             }
-            if result.get("watchlist"):
-                extra["triple_volume_watchlist"] = result["watchlist"]
+            if tv.get("watchlist"):
+                extra["triple_volume_watchlist"] = tv["watchlist"]
         elif action == "triple-volume-watch":
+            from quantpy.orchestration import run_action_triple_watch
+
             result, log = _run_quiet(
-                sync_and_evaluate_watchlist,
+                run_action_triple_watch,
                 show_progress=True,
                 action="triple-volume-watch",
             )
-            wl = result if isinstance(result, dict) and "summary" in result else load_watchlist_summary(evaluate=False)
-            eval_part = (result or {}).get("eval") if isinstance(result, dict) else {}
-            buy_n = int((eval_part or {}).get("new_buy_signals") or 0)
-            added_n = int((result or {}).get("record", {}).get("added") or 0) if isinstance(result, dict) else 0
-            message = (
-                f"观察池评估完成：同步入池 {added_n} 只，新增买入提示 {buy_n} 条"
-                f"（观察中 {wl.get('summary', {}).get('watching_count', 0)} · "
-                f"买入信号 {wl.get('summary', {}).get('buy_signal_count', 0)} · "
-                f"已结束 {wl.get('summary', {}).get('completed_count', 0)} · "
-                f"胜率 {wl.get('summary', {}).get('win_rate', 0)}%）"
-            )
-            extra["triple_volume_watchlist"] = wl
-            extra["watch_eval"] = eval_part or result
+            if not isinstance(result, dict) or not result.get("ok"):
+                return jsonify({
+                    "ok": False,
+                    "message": (result or {}).get("message") or "观察池评估失败",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
+            message = result.get("message") or ""
+            payload = result.get("payload") or {}
+            extra["triple_volume_watchlist"] = payload.get("triple_volume_watchlist")
+            extra["watch_eval"] = payload.get("watch_eval")
         elif action == "alerts":
             pm_stats = PortfolioManager().analyze()
             if not pm_stats.get("has_data"):
@@ -1446,12 +820,24 @@ def api_action(action: str):
                     "content": result["markdown"],
                 }
         elif action == "scan":
-            from quantpy.daily_advisor import run_ultra_short_scan
+            from quantpy.orchestration import run_action_ultra_scan
 
-            df, log = _run_quiet(run_ultra_short_scan, top_prefilter=200, min_score=35)
-            count = len(df) if df is not None and not df.empty else 0
-            message = f"超短扫描完成，命中 {count} 只"
-            extra["ultra_short"] = _ultra_short_records(df) if count else []
+            result, log = _run_quiet(
+                run_action_ultra_scan,
+                top_prefilter=200,
+                min_score=35,
+                action="scan",
+            )
+            if not isinstance(result, dict) or not result.get("ok"):
+                return jsonify({
+                    "ok": False,
+                    "message": (result or {}).get("message") or "超短扫描失败",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
+            message = result.get("message") or ""
+            payload = result.get("payload") or {}
+            extra["ultra_short"] = payload.get("ultra_short") or []
         elif action == "sector":
             board_type = str(request.args.get("type") or "concept").strip().lower()
             if board_type not in ("concept", "industry"):

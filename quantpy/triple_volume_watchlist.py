@@ -30,6 +30,8 @@ INGEST_LOOKBACK_DAYS = 20
 # 观察结束胜率：结算价相对突破价收益超过 5% 记为赢
 WIN_THRESHOLD_PCT = 5.0
 COMPLETED_STATUSES = frozenset({"buy_signal", "expired"})
+# 买入提示列表仅展示信号日当天且仍满足条件的标的
+BUY_PROMPT_SAME_DAY_ONLY = True
 
 
 def _default_state() -> dict:
@@ -332,6 +334,96 @@ def _check_volume_shrink(hist: pd.DataFrame, pre_pick_volume: float) -> tuple[bo
     return ok, round(ratio, 3)
 
 
+def _is_valid_buy_prompt(item: dict, ref_date: str) -> bool:
+    """买入提示列表：须为今日信号且缩量站稳 MA5 仍成立。"""
+    if item.get("status") != "buy_signal":
+        return False
+    sig_date = str(item.get("buy_signal_date") or "")[:10]
+    if BUY_PROMPT_SAME_DAY_ONLY and sig_date != ref_date:
+        return False
+    if not item.get("ma5_hold_ok") or not item.get("volume_shrink_ok"):
+        return False
+    days = int(item.get("days_watched") or 0)
+    if days > WATCH_MAX_DAYS:
+        return False
+    price = float(item.get("buy_signal_price") or item.get("last_price") or 0)
+    return price > 0
+
+
+def _invalidate_buy_prompt(item: dict, ref_date: str, *, reason: str) -> dict:
+    """将失效买点移出买入提示（保留观察或归档为已过期）。"""
+    item = dict(item)
+    days = int(item.get("days_watched") or 0)
+    if days > WATCH_MAX_DAYS:
+        item["status"] = "expired"
+        item["completed_at"] = item.get("completed_at") or ref_date
+        if item.get("last_price"):
+            item = _settle_return(item, float(item["last_price"]))
+    else:
+        item["status"] = "watching"
+    item.pop("buy_signal_date", None)
+    item.pop("buy_signal_price", None)
+    if item.get("status") == "watching":
+        item.pop("completed_at", None)
+        item.pop("settle_price", None)
+        item.pop("return_pct", None)
+        item.pop("is_win", None)
+    item["buy_reason"] = reason
+    item["last_check_date"] = ref_date
+    return item
+
+
+def _cleanup_buy_prompts(items: List[dict], ref_date: str) -> tuple[List[dict], int]:
+    """清除不满足条件的买入提示，返回 (更新列表, 清除数量)。"""
+    out: List[dict] = []
+    removed = 0
+    for raw in items:
+        item = dict(raw)
+        if item.get("status") != "buy_signal":
+            out.append(item)
+            continue
+        if _is_valid_buy_prompt(item, ref_date):
+            out.append(item)
+            continue
+        sig = str(item.get("buy_signal_date") or "")[:10]
+        parts: List[str] = []
+        if BUY_PROMPT_SAME_DAY_ONLY and sig and sig != ref_date:
+            parts.append(f"信号日{sig}非今日")
+        if not item.get("ma5_hold_ok"):
+            parts.append("已破MA5")
+        if not item.get("volume_shrink_ok"):
+            parts.append("量能未缩至突破前")
+        if int(item.get("days_watched") or 0) > WATCH_MAX_DAYS:
+            parts.append("观察期满")
+        reason = "买点已清除：" + (" · ".join(parts) if parts else "条件不再满足")
+        out.append(_invalidate_buy_prompt(item, ref_date, reason=reason))
+        removed += 1
+    return out, removed
+
+
+def _rebuild_buy_alerts(items: List[dict], ref_date: str) -> List[dict]:
+    """买入提示列表仅保留当前有效信号。"""
+    alerts: List[dict] = []
+    for item in items:
+        if not _is_valid_buy_prompt(item, ref_date):
+            continue
+        alerts.append({
+            "code": item["code"],
+            "name": item["name"],
+            "pick_date": item.get("pick_date"),
+            "signal_date": str(item.get("buy_signal_date") or ref_date)[:10],
+            "price": item.get("buy_signal_price"),
+            "pick_price": item.get("pick_price"),
+            "volume_ratio": item.get("last_volume_ratio"),
+            "reason": item.get("buy_reason", ""),
+        })
+    alerts.sort(
+        key=lambda x: (str(x.get("signal_date") or ""), str(x.get("code") or "")),
+        reverse=True,
+    )
+    return alerts[:50]
+
+
 def _evaluate_item(item: dict, ref_date: str) -> dict:
     code = item["code"]
     pick_date = item["pick_date"]
@@ -342,17 +434,20 @@ def _evaluate_item(item: dict, ref_date: str) -> dict:
     item["last_check_date"] = ref_date
 
     if item.get("status") == "buy_signal":
-        if days <= WATCH_MAX_DAYS:
-            item = dict(item)
-            item["status"] = "watching"
-            item.pop("buy_signal_date", None)
-            item.pop("buy_signal_price", None)
-            item.pop("completed_at", None)
-            item.pop("settle_price", None)
-            item.pop("return_pct", None)
-            item.pop("is_win", None)
-        else:
-            return _ensure_settled(item, ref_date)
+        if days > WATCH_MAX_DAYS:
+            item = _ensure_settled(dict(item), ref_date)
+            item["status"] = "expired"
+            item["completed_at"] = item.get("completed_at") or ref_date
+            item["buy_reason"] = f"观察期满（>{WATCH_MAX_DAYS}日），历史买点已清除"
+            return item
+        item = dict(item)
+        item["status"] = "watching"
+        item.pop("buy_signal_date", None)
+        item.pop("buy_signal_price", None)
+        item.pop("completed_at", None)
+        item.pop("settle_price", None)
+        item.pop("return_pct", None)
+        item.pop("is_win", None)
 
     if item.get("status") == "expired":
         return _ensure_settled(item, ref_date)
@@ -450,10 +545,12 @@ def evaluate_watchlist(*, show_progress: bool = False) -> dict:
             watching_count += 1
         updated.append(item)
 
-    alerts = state.get("buy_alerts", [])
-    if new_alerts:
-        alerts = new_alerts + alerts
-    alerts = alerts[:50]
+    updated, cleared = _cleanup_buy_prompts(updated, ref_date)
+    buy_count = sum(1 for i in updated if _is_valid_buy_prompt(i, ref_date))
+    watching_count = sum(1 for i in updated if i.get("status") == "watching")
+    expired_count = sum(1 for i in updated if i.get("status") == "expired")
+
+    alerts = _rebuild_buy_alerts(updated, ref_date)
 
     state["items"] = _trim_items(updated)
     state["buy_alerts"] = alerts
@@ -463,28 +560,32 @@ def evaluate_watchlist(*, show_progress: bool = False) -> dict:
 
     if show_progress:
         summary = state["summary"]
+        clear_note = f" · 清除失效买点 {cleared}" if cleared else ""
         print(
-            f"  观察池评估：买入信号 {buy_count} · 观察中 {watching_count} · 已过期 {expired_count}"
+            f"  观察池评估：有效买入提示 {buy_count} · 观察中 {watching_count} · 已过期 {expired_count}"
+            f"{clear_note}"
             f" · 已结束胜率 {summary.get('win_rate', 0)}%"
             f"（{summary.get('settled_count', 0)} 只结算 · 均收益 {summary.get('avg_return', 0):+.2f}%）"
         )
-        for a in new_alerts[:5]:
-            print(f"    ★ {a['name']}({a['code']}) {a['reason']}")
+        for a in alerts[:5]:
+            print(f"    ★ {a['name']}({a['code']}) {a.get('reason', '')}")
 
     return {
         "evaluated": len(updated),
         "buy_signals": buy_count,
         "new_buy_signals": len(new_alerts),
+        "cleared_buy_prompts": cleared,
         "watching": watching_count,
         "expired": expired_count,
-        "alerts": new_alerts,
+        "alerts": alerts[:15],
     }
 
 
 def _compute_summary(state: dict) -> dict:
     items = state.get("items", [])
+    ref_date = _today()
     watching = [i for i in items if i.get("status") == "watching"]
-    buy_signal = [i for i in items if i.get("status") == "buy_signal"]
+    buy_signal = [i for i in items if _is_valid_buy_prompt(i, ref_date)]
     expired = [i for i in items if i.get("status") == "expired"]
     completed = [i for i in items if i.get("status") in COMPLETED_STATUSES]
     settled = [i for i in completed if i.get("return_pct") is not None]
@@ -523,9 +624,20 @@ def load_watchlist_summary(*, evaluate: bool = False) -> dict:
     if evaluate:
         evaluate_watchlist(show_progress=False)
     state = _load_state()
+    ref_date = _today()
     items = state.get("items", [])
+    # 加载时同步清除历史失效买点，避免买入提示列表堆积
+    cleaned, cleared = _cleanup_buy_prompts(items, ref_date)
+    if cleared:
+        state["items"] = _trim_items(cleaned)
+        state["buy_alerts"] = _rebuild_buy_alerts(cleaned, ref_date)
+        state["summary"] = _compute_summary(state)
+        state["last_evaluated"] = ref_date
+        _save_state(state)
+        items = cleaned
+
     watching = [i for i in items if i.get("status") == "watching"]
-    buy_signals = [i for i in items if i.get("status") == "buy_signal"]
+    buy_signals = [i for i in items if _is_valid_buy_prompt(i, ref_date)]
     expired = [i for i in items if i.get("status") == "expired"]
     completed = sorted(
         [i for i in items if i.get("status") in COMPLETED_STATUSES],
@@ -547,13 +659,13 @@ def load_watchlist_summary(*, evaluate: bool = False) -> dict:
         "buy_signals": buy_signals,
         "expired": expired,
         "completed": completed,
-        "recent_alerts": (state.get("buy_alerts") or [])[:15],
+        "recent_alerts": _rebuild_buy_alerts(items, ref_date)[:15],
         "rules": {
             "watch_days": f"突破后{WATCH_MAX_DAYS}交易日内",
             "ma5_hold": f"近{MA5_HOLD_DAYS}日收盘站稳MA5",
             "volume_shrink": f"当日量≤突破前量×{PRE_VOLUME_MAX_RATIO:.0%}",
             "win_rule": f"结束观察后相对突破价收益>{WIN_THRESHOLD_PCT:g}% 记胜",
-            "buy_rule": "突破日不入池买入，仅观察池触发买点",
+            "buy_rule": "仅今日触发且仍满足缩量+MA5的买点入列表，失效自动清除",
         },
     }
 
@@ -590,10 +702,7 @@ def get_buy_signal_recommendations(
     state = _load_state()
     out: List[dict] = []
     for item in state.get("items", []):
-        if item.get("status") != "buy_signal":
-            continue
-        sig_date = str(item.get("buy_signal_date") or "")[:10]
-        if today_only and sig_date != ref_date:
+        if not _is_valid_buy_prompt(item, ref_date):
             continue
         # 推荐价用 last_price（最近评估价）；模拟买入会再拉当日行情覆盖
         price = float(item.get("last_price") or item.get("buy_signal_price") or 0)

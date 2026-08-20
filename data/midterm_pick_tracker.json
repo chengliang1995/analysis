@@ -4350,6 +4350,67 @@
       "max_return_pct": null,
       "is_win": null,
       "evaluated_at": ""
+    },
+    {
+      "pick_date": "2026-08-17",
+      "rank": 1,
+      "code": "601186",
+      "name": "中国铁建",
+      "pick_price": 6.04,
+      "midterm_score": 118.0,
+      "conditions": [
+        "cap_range",
+        "price_cap",
+        "liquidity",
+        "not_freefall",
+        "near_ma60",
+        "price_new_low",
+        "diff_div",
+        "obv_div",
+        "diff_below_zero",
+        "vol_shrink",
+        "stop_confirm"
+      ],
+      "condition_labels": [
+        "市值150-1000亿",
+        "股价<100元",
+        "成交额≥5000万",
+        "拒绝20/60日深跌",
+        "靠近MA60支撑带",
+        "股价创阶段新低",
+        "DIFF底背离",
+        "OBV资金底背离",
+        "DIFF零轴下",
+        "缩量地量",
+        "止跌确认(金叉/绿柱缩/RSI背离)"
+      ],
+      "tags": "DIFF底背离,OBV底背离,阶段新低,缩量地量,MA60向下,贴近MA60,RSI回调区,绿柱缩短",
+      "tag_list": [
+        "DIFF底背离",
+        "OBV底背离",
+        "阶段新低",
+        "缩量地量",
+        "MA60向下",
+        "贴近MA60",
+        "RSI回调区",
+        "绿柱缩短"
+      ],
+      "trend": "下跌趋势底背离反转",
+      "hold_style": "MA60仍向下，仅作轻仓反转博弈，须强止跌+严格止损",
+      "rsi": 34.7,
+      "ret_20d": -6.79,
+      "ma60_trend": "down",
+      "bottom_divergence": true,
+      "pe": 4.98,
+      "profit_yoy": -11.84,
+      "industry": "",
+      "status": "tracking",
+      "mature_date": "",
+      "mature_price": null,
+      "return_pct": null,
+      "max_return_pct": null,
+      "is_win": null,
+      "evaluated_at": ""
     }
   ],
   "daily_batches": [
@@ -4440,13 +4501,20 @@
       "codes": [
         "600873"
       ]
+    },
+    {
+      "date": "2026-08-17",
+      "count": 1,
+      "codes": [
+        "601186"
+      ]
     }
   ],
-  "last_record_date": "2026-08-13",
-  "last_evaluated": "2026-08-13",
+  "last_record_date": "2026-08-17",
+  "last_evaluated": "2026-08-19",
   "summary": {
-    "total_records": 83,
-    "tracking_count": 2,
+    "total_records": 84,
+    "tracking_count": 3,
     "matured_count": 81,
     "win_count": 42,
     "win_rate": 51.9,
@@ -5153,12 +5221,12 @@
       "MA60向下组胜率 52.6%（38 笔），均收益 +4.33%，宜在强止跌确认下保留",
       "MA60走平组胜率仅 33.3%（12 笔），宜降权并要求强确认"
     ],
-    "last_batch_date": "2026-08-13",
-    "updated_at": "2026-08-13T15:32:53.937569"
+    "last_batch_date": "2026-08-17",
+    "updated_at": "2026-08-19T15:43:20.344865"
   },
   "interim_summary": {
-    "interim_count": 1,
-    "tracking_count": 2,
+    "interim_count": 3,
+    "tracking_count": 3,
     "matured_count": 0,
     "win_rate": 0.0,
     "positive_rate": 0.0,
@@ -5172,5 +5240,5 @@
     "factor_insights": [],
     "provisional": true
   },
-  "interim_computed_at": "2026-08-13"
+  "interim_computed_at": "2026-08-20"
 }

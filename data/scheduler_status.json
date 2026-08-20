@@ -1,41 +1,41 @@
 ﻿{
     "close":  {
                   "message":  "done",
-                  "updated_at":  "2026-08-13 15:11:27",
-                  "started_at":  "2026-08-13 15:10:01",
+                  "updated_at":  "2026-08-20 15:12:02",
+                  "started_at":  "2026-08-20 15:10:01",
                   "state":  "ok",
-                  "log":  "daily_close_20260813_151001.log",
+                  "log":  "daily_close_20260820_151001.log",
                   "ok":  true,
-                  "finished_at":  "2026-08-13 15:11:27",
+                  "finished_at":  "2026-08-20 15:12:02",
                   "phase":  "close"
               },
     "triple-volume":  {
                           "message":  "done",
-                          "updated_at":  "2026-08-13 14:57:36",
-                          "started_at":  "2026-08-13 14:45:01",
+                          "updated_at":  "2026-08-20 15:03:40",
+                          "started_at":  "2026-08-20 14:45:01",
                           "state":  "ok",
-                          "log":  "daily_triple-volume_20260813_144501.log",
+                          "log":  "daily_triple-volume_20260820_144501.log",
                           "ok":  true,
-                          "finished_at":  "2026-08-13 14:57:36",
+                          "finished_at":  "2026-08-20 15:03:40",
                           "phase":  "triple-volume"
                       },
     "morning":  {
                     "message":  "done",
-                    "updated_at":  "2026-08-13 09:37:13",
-                    "started_at":  "2026-08-13 09:35:02",
+                    "updated_at":  "2026-08-20 09:37:20",
+                    "started_at":  "2026-08-20 09:35:02",
                     "state":  "ok",
-                    "log":  "daily_morning_20260813_093502.log",
+                    "log":  "daily_morning_20260820_093502.log",
                     "ok":  true,
-                    "finished_at":  "2026-08-13 09:37:13",
+                    "finished_at":  "2026-08-20 09:37:20",
                     "phase":  "morning"
                 },
     "report":  {
-                   "updated_at":  "2026-08-13 15:25:01",
-                   "log":  "daily_report_20260813_152501.log",
+                   "updated_at":  "2026-08-20 15:25:01",
+                   "log":  "daily_report_20260820_152501.log",
                    "finished_at":  null,
                    "state":  "running",
                    "ok":  false,
-                   "started_at":  "2026-08-13 15:25:01",
+                   "started_at":  "2026-08-20 15:25:01",
                    "phase":  "report",
                    "message":  "started"
                }

@@ -1,14 +1,24 @@
 # 注册 Windows 计划任务（A 股交易日自动执行）
-# 可在当前用户下运行（无需管理员）
+# 相位定义单一数据源：scripts/phases.json
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Runner = Join-Path $ProjectRoot "scripts\daily_runner.ps1"
+$PhasesFile = Join-Path $ProjectRoot "scripts\phases.json"
 $TaskPrefix = "QuantPyStock"
 
 if (-not (Test-Path $Runner)) {
     Write-Error "找不到脚本: $Runner"
     exit 1
+}
+if (-not (Test-Path $PhasesFile)) {
+    Write-Error "找不到相位定义: $PhasesFile"
+    exit 1
+}
+
+$phasesCfg = Get-Content $PhasesFile -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($phasesCfg.task_prefix) {
+    $TaskPrefix = [string]$phasesCfg.task_prefix
 }
 
 function Register-QuantPhase {
@@ -39,20 +49,21 @@ function Register-QuantPhase {
 }
 
 Write-Host "项目目录: $ProjectRoot"
+Write-Host "相位定义: $PhasesFile"
 Write-Host "注册计划任务..."
 Write-Host ""
 
-# 早盘 9:35 - 刷新 + 模拟选股
-Register-QuantPhase -Name "Morning" -Phase "morning" -Time "09:35" -TimeoutHours 1
-
-# 尾盘 14:45 - 三倍量选股（此前常未注册导致「未运行」）
-Register-QuantPhase -Name "TripleVolume" -Phase "triple-volume" -Time "14:45" -TimeoutHours 2
-
-# 收盘 15:10 - 采集收盘 + 模拟卖出
-Register-QuantPhase -Name "Close" -Phase "close" -Time "15:10" -TimeoutHours 1
-
-# 收盘 15:25 - 完整日报 + 观察池（常跑 30~50 分钟）
-Register-QuantPhase -Name "Report" -Phase "report" -Time "15:25" -TimeoutHours 2
+foreach ($p in $phasesCfg.phases) {
+    $id = [string]$p.id
+    $name = if ($p.task_name) { [string]$p.task_name } else { $id }
+    $time = [string]$p.time
+    $timeout = if ($null -ne $p.timeout_hours) { [int]$p.timeout_hours } else { 2 }
+    if (-not $id -or -not $time) {
+        Write-Warning "跳过无效相位条目"
+        continue
+    }
+    Register-QuantPhase -Name $name -Phase $id -Time $time -TimeoutHours $timeout
+}
 
 Write-Host ""
 Write-Host "当前任务:"

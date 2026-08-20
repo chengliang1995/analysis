@@ -39,7 +39,7 @@ from quantpy.sim_replay import (
 from quantpy.report_format import format_markdown_table, truncate_display
 from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
 from quantpy.midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
-from quantpy.midterm_triple_volume_selector import run_triple_volume_select
+from quantpy.midterm_portfolio_advisor import run_midterm_advice
 from quantpy.triple_volume_watchlist import sync_and_evaluate_watchlist
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.real_portfolio_reviewer import load_latest_real_review, run_real_portfolio_review
@@ -245,6 +245,7 @@ def generate_daily_report(
     days: int = 30,
     top_prefilter: int = 300,
     min_score: int = 35,
+    include_watchlist: bool = True,
 ) -> Path:
     _ensure_dirs()
     today = datetime.now().strftime("%Y-%m-%d")
@@ -270,13 +271,16 @@ def generate_daily_report(
     print("实盘中线分析（复盘 / 优化 / 推荐）")
     print("=" * 60)
     midterm = run_midterm_advice(portfolio_stats, show_progress=True)
-    print("\n" + "=" * 60)
-    print("三倍量观察池（每日选股入池 · 站稳MA5 + 缩量买入）")
-    print("=" * 60)
-    watch_payload = sync_and_evaluate_watchlist(show_progress=True)
-    watch_eval = watch_payload.get("eval") or {}
-    for i, a in enumerate(watch_eval.get("alerts", [])[:5], 1):
-        print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
+    watch_payload: dict = {}
+    watch_eval: dict = {}
+    if include_watchlist:
+        print("\n" + "=" * 60)
+        print("三倍量观察池（每日选股入池 · 站稳MA5 + 缩量买入）")
+        print("=" * 60)
+        watch_payload = sync_and_evaluate_watchlist(show_progress=True)
+        watch_eval = watch_payload.get("eval") or {}
+        for i, a in enumerate(watch_eval.get("alerts", [])[:5], 1):
+            print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
     for i, s in enumerate(midterm.get("review_summaries", []), 1):
         print(f"  复盘 {i}. {s}")
     for i, s in enumerate(midterm.get("optimize_suggestions", []), 1):
@@ -627,9 +631,10 @@ def main() -> None:
         choices=[
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
             "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn",
-            "midterm", "midterm-triple-volume", "triple-volume-watch", "review", "alerts", "web",
+            "midterm", "midterm-track", "midterm-triple-volume", "triple-volume-watch",
+            "review", "alerts", "web",
         ],
-        help="sim=模拟复盘, midterm=实盘中线分析, midterm-triple-volume=三倍量选股, triple-volume-watch=观察池评估, review=实盘操作复盘",
+        help="sim=模拟复盘, midterm=实盘中线分析, midterm-track=中线跟进, midterm-triple-volume=三倍量选股, triple-volume-watch=观察池评估, review=实盘操作复盘",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -643,16 +648,32 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    def _cli_exit(result: dict) -> None:
+        if not result.get("ok"):
+            print(result.get("message") or "操作失败")
+            sys.exit(1)
+
     try:
         if args.command == "report":
-            generate_daily_report(
+            from quantpy.orchestration import run_action_report
+
+            # 日报内已含观察池评估；定时 report 相位勿再单独跑 triple-volume-watch
+            _cli_exit(run_action_report(
                 days=args.days,
                 top_prefilter=args.prefilter,
                 min_score=args.min_score,
-            )
+                include_watchlist=True,
+            ))
         elif args.command == "scan":
+            from quantpy.orchestration import run_action_ultra_scan
+
             _ensure_dirs()
-            run_ultra_short_scan(top_prefilter=args.prefilter, min_score=args.min_score)
+            result = run_action_ultra_scan(
+                top_prefilter=args.prefilter,
+                min_score=args.min_score,
+            )
+            print(result.get("message") or "")
+            _cli_exit(result)
         elif args.command == "learn":
             stats, suggestions = run_learning_report(days=args.days)
             print("【绩效】" if stats.get("has_data") else "【暂无数据】")
@@ -692,38 +713,37 @@ def main() -> None:
         elif args.command == "ai-learn":
             run_ai_learning(show_progress=True, auto_apply=True)
         elif args.command == "midterm":
-            stats = show_portfolio(init=args.init)
-            if stats.get("has_data"):
-                run_midterm_advice(stats, show_progress=True)
-        elif args.command == "midterm-triple-volume":
-            from quantpy.portfolio import PortfolioManager
+            from quantpy.orchestration import run_action_midterm
 
-            pm = PortfolioManager()
-            held = [str(p.code).zfill(6) for p in pm.list_positions()]
-            run_triple_volume_select(
-                exclude_codes=held,
-                show_progress=True,
-                force=args.force,
-            )
+            show_portfolio(init=args.init)
+            # CLI / Web 均显式传 full；默认与历史一致为全市场选股
+            result = run_action_midterm(full=True, show_progress=True)
+            print(result.get("message") or "")
+            _cli_exit(result)
+        elif args.command == "midterm-track":
+            from quantpy.orchestration import run_action_midterm_track
+
+            result = run_action_midterm_track(show_progress=True)
+            print(result.get("message") or "")
+            _cli_exit(result)
+        elif args.command == "midterm-triple-volume":
+            from quantpy.orchestration import run_action_triple_volume
+
+            result = run_action_triple_volume(force=args.force, show_progress=True)
+            print(result.get("message") or "")
+            _cli_exit(result)
         elif args.command == "triple-volume-watch":
+            from quantpy.orchestration import run_action_triple_watch
+
             print("=" * 60)
             print("三倍量观察池评估")
             print("=" * 60)
-            payload = sync_and_evaluate_watchlist(show_progress=True)
-            result = payload.get("eval") or {}
-            added = int((payload.get("record") or {}).get("added") or 0)
-            if added:
-                print(f"\n已从每日选股同步入池 {added} 只")
-            if not result.get("evaluated"):
-                print("\n观察池为空。请先运行三倍量选股。")
-            else:
-                print(
-                    f"\n评估 {result['evaluated']} 只："
-                    f"买入信号 {result['buy_signals']} · "
-                    f"观察中 {result['watching']} · 已过期 {result['expired']}"
-                )
-                for i, a in enumerate(result.get("alerts", []), 1):
-                    print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
+            result = run_action_triple_watch(show_progress=True)
+            print(result.get("message") or "")
+            eval_part = (result.get("payload") or {}).get("watch_eval") or {}
+            for i, a in enumerate((eval_part.get("alerts") or [])[:10], 1):
+                print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
+            _cli_exit(result)
         elif args.command == "review":
             print("=" * 60)
             print("实盘操作复盘（买卖点分析）")

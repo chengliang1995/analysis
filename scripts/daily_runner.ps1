@@ -120,8 +120,8 @@ try {
             Invoke-Step "Sim status" @("sim-status")
         }
         "report" {
+            # report 内已含观察池评估（orchestration / generate_daily_report），勿再跑 triple-volume-watch
             Invoke-Step "Daily report" @("report", "--prefilter", "300", "--min-score", "35")
-            Invoke-Step "Triple volume watchlist" @("triple-volume-watch")
             Invoke-Step "Portfolio" @("portfolio")
         }
         "triple-volume" {
