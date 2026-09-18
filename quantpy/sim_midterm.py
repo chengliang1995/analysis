@@ -742,3 +742,449 @@ def enrich_midterm_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) ->
         "strategy": "triple_volume",
         "updated_at": mt.get("updated_at", ""),
     }
+
+
+# ---------------------------------------------------------------------------
+# MA20 突破 + MA5 回踩 · 模拟账户（20 万）
+# ---------------------------------------------------------------------------
+
+DEFAULT_MA20_SIM_CAPITAL = 200_000.0
+
+
+@dataclass
+class MidtermMa20SimConfig:
+    capital: float = DEFAULT_MA20_SIM_CAPITAL
+    max_positions: int = 5
+    max_single_weight_pct: float = 25.0
+    stop_loss_pct: float = -8.0
+    principal_withdraw_pct: float = 25.0  # 获利达此比例撤出本金
+    principal_withdraw_min: float = 20.0
+    max_hold_days: int = 45
+    min_score: int = 62
+    max_new_per_run: int = 2
+    t_plus_one: bool = True
+
+
+def default_midterm_ma20_state() -> dict:
+    cfg = MidtermMa20SimConfig()
+    return {
+        "config": asdict(cfg),
+        "initial_capital": cfg.capital,
+        "cash": cfg.capital,
+        "positions": [],
+        "closed_trades": [],
+        "pick_log": [],
+        "last_scan": [],
+        "last_record_date": "",
+        "last_buy_date": "",
+        "last_reviews": [],
+        "updated_at": "",
+        "strategy": "ma20_pullback",
+    }
+
+
+def ensure_midterm_ma20_state(state: dict) -> dict:
+    if "midterm_ma20" not in state or not isinstance(state.get("midterm_ma20"), dict):
+        state["midterm_ma20"] = default_midterm_ma20_state()
+        return state["midterm_ma20"]
+    mt = state["midterm_ma20"]
+    defaults = default_midterm_ma20_state()
+    for key, val in defaults.items():
+        if key not in mt:
+            mt[key] = val
+    if "config" not in mt:
+        mt["config"] = defaults["config"]
+    return mt
+
+
+def _ma20_sim_held_codes(engine: SimReplayEngine) -> set[str]:
+    mt = ensure_midterm_ma20_state(engine.state)
+    held = {str(p["code"]).zfill(6) for p in mt.get("positions", [])}
+    held |= _sim_held_codes(engine)
+    return held
+
+
+def check_ma20_sim_exits(engine: SimReplayEngine, show_progress: bool = False) -> List[dict]:
+    """MA20 策略出场：撤本金 / 5日下穿10日线 / 止损 / 到期。"""
+    from quantpy.midterm_ma20_pullback_selector import check_ma20_trend_exit
+    from quantpy.stock_data import get_stock_hist
+
+    mt = ensure_midterm_ma20_state(engine.state)
+    positions = mt.get("positions", [])
+    if not positions:
+        return []
+
+    cfg = MidtermMa20SimConfig(**{**asdict(MidtermMa20SimConfig()), **mt.get("config", {})})
+    codes = [p["code"] for p in positions]
+    quotes = get_realtime_quotes(codes)
+    if quotes.empty:
+        return []
+
+    qmap = quotes.set_index("code")
+    today = _today()
+    closed: List[dict] = []
+    remain = []
+
+    for p in positions:
+        code = str(p["code"]).zfill(6)
+        if code not in qmap.index:
+            remain.append(p)
+            continue
+        q = qmap.loc[code]
+        price = float(q["close"])
+        low = float(q.get("low", price))
+        buy_date = _norm_date(p["buy_date"])
+        hold = _hold_days(buy_date, today)
+        qty = int(p["quantity"])
+        buy_price = float(p["buy_price"])
+        profit_pct = (price - buy_price) / buy_price * 100 if buy_price else 0
+
+        if not _is_sellable(buy_date, cfg, today):
+            remain.append(p)
+            continue
+
+        sell_price = None
+        reason = ""
+        partial_qty = 0
+
+        if low <= p.get("stop_loss", buy_price * 0.92):
+            sell_price = p.get("stop_loss", buy_price * 0.92)
+            reason = f"止损({cfg.stop_loss_pct}%)"
+        elif hold >= cfg.max_hold_days:
+            sell_price = price
+            reason = f"持仓{cfg.max_hold_days}日到期"
+        else:
+            hist = get_stock_hist(code, days=30)
+            trend_exit, trend_reason = check_ma20_trend_exit(hist)
+            if trend_exit:
+                sell_price = price
+                reason = trend_reason or "5日下穿10日线"
+            elif (
+                profit_pct >= cfg.principal_withdraw_min
+                and not p.get("principal_withdrawn")
+            ):
+                cost = buy_price * qty
+                sell_qty = int(cost / price / 100) * 100
+                if sell_qty <= 0:
+                    sell_qty = qty
+                if sell_qty >= qty:
+                    sell_price = price
+                    reason = f"获利{profit_pct:.1f}%撤出本金(清仓)"
+                else:
+                    partial_qty = sell_qty
+                    sell_price = price
+                    reason = f"获利{profit_pct:.1f}%撤出本金(留{qty - sell_qty}股)"
+
+        if sell_price is None:
+            remain.append(p)
+            continue
+
+        if partial_qty > 0 and partial_qty < qty:
+            proceeds = sell_price * partial_qty
+            profit_amount = (sell_price - buy_price) * partial_qty
+            trade = {
+                "code": code,
+                "name": p["name"],
+                "buy_date": p["buy_date"],
+                "buy_price": buy_price,
+                "sell_date": today,
+                "sell_price": round(float(sell_price), 2),
+                "quantity": partial_qty,
+                "profit_pct": round((sell_price - buy_price) / buy_price * 100, 2),
+                "profit_amount": round(profit_amount, 2),
+                "hold_days": hold,
+                "exit_reason": reason,
+                "midterm_score": p.get("midterm_score", 0),
+                "strategy": "ma20_pullback",
+            }
+            closed.append(trade)
+            mt["cash"] = round(float(mt.get("cash", 0)) + proceeds, 2)
+            p = {**p, "quantity": qty - partial_qty, "principal_withdrawn": True}
+            remain.append(p)
+            _progress(
+                f"  [MA20模拟] 部分卖出 {p['name']}({code}) {partial_qty}股 @{sell_price:.2f} {reason}",
+                show_progress,
+            )
+            continue
+
+        profit_amount = (sell_price - buy_price) * qty
+        trade = {
+            "code": code,
+            "name": p["name"],
+            "buy_date": p["buy_date"],
+            "buy_price": buy_price,
+            "sell_date": today,
+            "sell_price": round(float(sell_price), 2),
+            "quantity": qty,
+            "profit_pct": round((sell_price - buy_price) / buy_price * 100, 2),
+            "profit_amount": round(profit_amount, 2),
+            "hold_days": hold,
+            "exit_reason": reason,
+            "midterm_score": p.get("midterm_score", 0),
+            "strategy": "ma20_pullback",
+        }
+        closed.append(trade)
+        mt["cash"] = round(float(mt.get("cash", 0)) + sell_price * qty, 2)
+        _progress(
+            f"  [MA20模拟] 卖出 {p['name']}({code}) @{sell_price:.2f} {reason}",
+            show_progress,
+        )
+
+    mt["positions"] = remain
+    if closed:
+        mt.setdefault("closed_trades", []).extend(closed)
+    mt["updated_at"] = datetime.now().isoformat()
+    engine._save_state()
+    return closed
+
+
+def run_ma20_sim_buy(
+    engine: SimReplayEngine,
+    recommendations: List[dict],
+    *,
+    show_progress: bool = False,
+    force: bool = False,
+) -> dict:
+    """MA20 回踩模拟买入（上涨不加仓：已有仓则跳过）。"""
+    mt = ensure_midterm_ma20_state(engine.state)
+    cfg = MidtermMa20SimConfig(**{**asdict(MidtermMa20SimConfig()), **mt.get("config", {})})
+    today = _today()
+    positions = list(mt.get("positions", []))
+    held = {str(p["code"]).zfill(6) for p in positions}
+    cash = float(mt.get("cash", cfg.capital))
+    bought: List[dict] = []
+    skipped: List[dict] = []
+
+    if not force and mt.get("last_buy_date") == today and len(positions) >= cfg.max_positions:
+        return {"bought": [], "skipped": [{"reason": "今日已买满"}], "cash": cash}
+
+    recs = sorted(recommendations, key=lambda x: x.get("midterm_score", 0), reverse=True)
+    new_count = 0
+    for rec in recs:
+        if new_count >= cfg.max_new_per_run:
+            break
+        if len(positions) >= cfg.max_positions:
+            skipped.append({"code": rec.get("code"), "reason": "仓位已满"})
+            break
+        code = str(rec.get("code", "")).zfill(6)
+        if code in held:
+            skipped.append({"code": code, "reason": "已有仓不加仓"})
+            continue
+        score = float(rec.get("midterm_score") or 0)
+        if score < cfg.min_score:
+            skipped.append({"code": code, "reason": f"评分{score:.0f}<{cfg.min_score}"})
+            continue
+        buy_price = float(rec.get("price") or 0)
+        if buy_price <= 0:
+            skipped.append({"code": code, "reason": "无有效价格"})
+            continue
+        slots_left = cfg.max_positions - len(positions) - len(bought)
+        qty = _calc_midterm_quantity(
+            buy_price, cash, cfg.capital, cfg.max_single_weight_pct, slots_left,
+        )
+        if qty <= 0:
+            skipped.append({"code": code, "reason": "资金不足"})
+            break
+        cost = buy_price * qty
+        if cost > cash:
+            skipped.append({"code": code, "reason": "现金不足"})
+            continue
+
+        pos = {
+            "code": code,
+            "name": str(rec.get("name", code)),
+            "quantity": qty,
+            "buy_price": round(buy_price, 2),
+            "buy_date": today,
+            "stop_loss": round(buy_price * (1 + cfg.stop_loss_pct / 100), 2),
+            "midterm_score": score,
+            "reason": str(rec.get("reason") or "")[:120],
+            "tags": str(rec.get("tags") or ""),
+            "strategy": "ma20_pullback",
+            "principal_withdrawn": False,
+            "id": uuid.uuid4().hex[:10],
+        }
+        positions.append(pos)
+        cash -= cost
+        held.add(code)
+        bought.append(pos)
+        new_count += 1
+        _progress(
+            f"  [MA20模拟] 买入 {pos['name']}({code}) {qty}股 @{buy_price:.2f} 评分{score:.0f}",
+            show_progress,
+        )
+
+    mt["positions"] = positions
+    mt["cash"] = round(cash, 2)
+    if bought:
+        mt["last_buy_date"] = today
+    mt["updated_at"] = datetime.now().isoformat()
+    engine._save_state()
+    return {"bought": bought, "skipped": skipped, "cash": mt["cash"], "position_count": len(positions)}
+
+
+def record_ma20_picks(
+    engine: SimReplayEngine,
+    recommendations: List[dict],
+    *,
+    show_progress: bool = False,
+) -> List[dict]:
+    mt = ensure_midterm_ma20_state(engine.state)
+    today = _today()
+    logged = []
+    for rec in recommendations:
+        entry = {
+            "date": today,
+            "code": str(rec.get("code", "")).zfill(6),
+            "name": rec.get("name", ""),
+            "midterm_score": rec.get("midterm_score"),
+            "price": rec.get("price"),
+            "reason": (rec.get("reason") or "")[:120],
+            "action": "recorded",
+            "source": "ma20_pullback",
+        }
+        mt.setdefault("pick_log", []).append(entry)
+        logged.append(entry)
+    mt["last_record_date"] = today
+    mt["last_scan"] = recommendations
+    mt["updated_at"] = datetime.now().isoformat()
+    engine._save_state()
+    _progress(f"  [MA20模拟] 记录选股 {len(logged)} 条", show_progress)
+    return logged
+
+
+def run_sim_ma20_pullback_select(
+    engine: SimReplayEngine,
+    *,
+    show_progress: bool = False,
+    force: bool = False,
+    industry: Optional[str] = None,
+    prefilter: int = 600,
+) -> dict:
+    """模拟 MA20 突破 + MA5 回踩选股（20 万账户）。"""
+    from quantpy.midterm_ma20_pullback_selector import run_ma20_pullback_market_scan
+
+    try:
+        _progress("=" * 50, show_progress)
+        _progress("模拟中线选股（MA20突破·MA5回踩 · 20万账户）", show_progress)
+        ensure_midterm_ma20_state(engine.state)
+        held = _ma20_sim_held_codes(engine)
+
+        recs, select_stats = run_ma20_pullback_market_scan(
+            exclude_codes=sorted(held),
+            top_n=20,
+            prefilter=prefilter,
+            show_progress=show_progress,
+            industry=industry,
+        )
+
+        closed = check_ma20_sim_exits(engine, show_progress=show_progress)
+        logged = record_ma20_picks(engine, recs, show_progress=show_progress)
+        buy_result = run_ma20_sim_buy(engine, recs, show_progress=show_progress, force=force)
+        reviews = run_midterm_sim_review(engine, show_progress=show_progress)
+
+        buy_n = len(buy_result.get("bought", []))
+        message = (
+            f"MA20回踩扫描命中 {len(recs)} 只，买入 {buy_n} 只"
+            if recs
+            else "今日暂无 MA20 突破回踩买点"
+        )
+        _progress(f"  完成：{message}", show_progress)
+        return {
+            # 扫描完成即成功；0 命中是买点稀疏的正常结果，勿当失败
+            "ok": True,
+            "message": message,
+            "strategy": "ma20_pullback",
+            "buy_recommendations": recs,
+            "recommendations": recs,
+            "select_stats": select_stats,
+            "closed_today": closed,
+            "pick_logged": len(logged),
+            "bought": buy_result.get("bought", []),
+            "skipped": buy_result.get("skipped", []),
+            "reviews": reviews,
+            "summary": enrich_midterm_ma20_sim(engine.state),
+            "hit_count": len(recs),
+        }
+    except Exception as exc:
+        import traceback
+
+        err = traceback.format_exc()
+        _progress(f"  [失败] {exc}", show_progress)
+        return {
+            "ok": False,
+            "message": f"MA20选股失败: {exc}",
+            "error": err,
+            "summary": enrich_midterm_ma20_sim(engine.state),
+        }
+
+
+def enrich_midterm_ma20_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) -> dict:
+    mt = ensure_midterm_ma20_state(state)
+    cfg = MidtermMa20SimConfig(**{**asdict(MidtermMa20SimConfig()), **mt.get("config", {})})
+    positions = list(mt.get("positions", []))
+
+    if quotes_df is not None and not quotes_df.empty:
+        qmap = quotes_df.copy()
+        qmap["code"] = qmap["code"].astype(str).str.zfill(6)
+        qmap = qmap.set_index("code")
+    elif positions:
+        quotes = get_realtime_quotes([p["code"] for p in positions])
+        qmap = quotes.set_index("code") if quotes is not None and not quotes.empty else None
+    else:
+        qmap = None
+
+    today = _today()
+    enriched = []
+    total_mv = 0.0
+    capital = float(mt.get("initial_capital", cfg.capital))
+
+    for p in positions:
+        code = str(p["code"]).zfill(6)
+        current = (
+            float(qmap.loc[code, "close"])
+            if qmap is not None and code in qmap.index
+            else p["buy_price"]
+        )
+        mv = current * p["quantity"]
+        cost = p["buy_price"] * p["quantity"]
+        total_mv += mv
+        profit_pct = (current - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0
+        enriched.append({
+            **p,
+            "current_price": round(current, 2),
+            "market_value": round(mv, 2),
+            "profit_amount": round(mv - cost, 2),
+            "profit_pct": round(profit_pct, 2),
+            "weight_pct": round(mv / capital * 100, 2) if capital else 0,
+            "sellable_today": _is_sellable(p["buy_date"], cfg, today),
+            "t_plus_one_locked": cfg.t_plus_one and not _is_sellable(p["buy_date"], cfg, today),
+            "principal_withdrawn": bool(p.get("principal_withdrawn")),
+        })
+
+    cash = float(mt.get("cash", cfg.capital))
+    equity = cash + total_mv
+    initial = float(mt.get("initial_capital", cfg.capital))
+    closed = list(mt.get("closed_trades", []))
+    closed.sort(key=lambda x: x.get("sell_date", ""), reverse=True)
+    pick_log = list(mt.get("pick_log", []))
+    last_scan = list(mt.get("last_scan", []))
+
+    return {
+        "has_data": True,
+        "initial_capital": initial,
+        "cash": round(cash, 2),
+        "market_value": round(total_mv, 2),
+        "equity": round(equity, 2),
+        "total_return_pct": round((equity - initial) / initial * 100, 2) if initial else 0,
+        "position_count": len(enriched),
+        "closed_count": len(closed),
+        "positions": enriched,
+        "closed_trades": closed[:10],
+        "pick_log": pick_log[:20],
+        "last_scan": last_scan[:20],
+        "last_reviews": mt.get("last_reviews", []),
+        "config": asdict(cfg),
+        "strategy": "ma20_pullback",
+        "updated_at": mt.get("updated_at", ""),
+    }

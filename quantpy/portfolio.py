@@ -289,8 +289,6 @@ class PortfolioManager:
             return True
         return False
 
-        return False, f"实盘无 {code}，仅记录交易日记"
-
     def _adjust_bucket_capital(self, bucket: str, profit_amount: float) -> None:
         if bucket == "ultra_short":
             self._portfolio.ultra_short_capital = round(

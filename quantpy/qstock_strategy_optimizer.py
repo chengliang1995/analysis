@@ -179,8 +179,11 @@ class StrategyOptimizer:
             信号DataFrame
         """
         df_with_ma = self.calculate_ma(df, [short_period, long_period])
-        df_with_ma['MA_CROSS'] = (
-            (df_with_ma[f'MA{short_period}'] > df_with_ma[f'MA{long_period}'])
+        short_col = f"MA{short_period}"
+        long_col = f"MA{long_period}"
+        df_with_ma["MA_CROSS"] = (
+            (df_with_ma[short_col] > df_with_ma[long_col])
+            & (df_with_ma[short_col].shift(1) <= df_with_ma[long_col].shift(1))
         ).astype(int)
 
         return df_with_ma
@@ -290,7 +293,8 @@ class StrategyOptimizer:
         return df['close'].pct_change() * 100
 
     def check_limit_up_signal(self, df: pd.DataFrame,
-                              lookback_days: int = 10) -> Optional[Dict]:
+                              lookback_days: int = 10,
+                              code: str = "") -> Optional[Dict]:
         """
         快速检测最新交易日是否满足涨停策略（扫描全市场时使用）。
 
@@ -299,10 +303,13 @@ class StrategyOptimizer:
         if df.empty or len(df) < lookback_days:
             return None
 
+        code = str(code or "").zfill(6)
+        threshold = 19.5 if code.startswith(("300", "301", "688", "689")) else 9.8
+
         pct_chg = self._calc_pct_chg(df)
         recent = df.iloc[-lookback_days:].copy()
         recent_pct = pct_chg.iloc[-lookback_days:]
-        limit_mask = recent_pct >= 9.8
+        limit_mask = recent_pct >= threshold - 0.3
 
         if not limit_mask.any():
             return None
@@ -472,34 +479,39 @@ class StrategyOptimizer:
         signals = df[df[signal_column] == 1].copy()
 
         results = []
+        n = len(df)
 
-        for idx, signal in signals.iterrows():
-            buy_date = signal.get('date', idx)
-            buy_price = signal['close']
+        for idx in signals.index:
+            try:
+                signal_pos = df.index.get_loc(idx)
+                if isinstance(signal_pos, slice):
+                    signal_pos = signal_pos.start or 0
+            except KeyError:
+                continue
 
-            # 找到卖出点
-            sell_date = None
-            sell_price = None
-            actual_hold_days = 0
+            buy_pos = int(signal_pos) + 1
+            if buy_pos >= n:
+                continue
 
-            # 在之后的数据中找到卖出点
-            future_data = df.loc[idx+1: idx+hold_days]
+            buy_row = df.iloc[buy_pos]
+            buy_date = buy_row.get("date", df.index[buy_pos])
+            buy_price = float(buy_row.get("open") or buy_row["close"])
 
-            if not future_data.empty:
-                sell_date = future_data.index[0] if hasattr(future_data.index[0], 'date') else buy_date
-                sell_price = future_data.iloc[0]['close']
-                actual_hold_days = 1
+            sell_pos = min(buy_pos + max(int(hold_days), 1), n - 1)
+            sell_row = df.iloc[sell_pos]
+            sell_date = sell_row.get("date", df.index[sell_pos])
+            sell_price = float(sell_row["close"])
+            actual_hold_days = sell_pos - buy_pos
 
-            if sell_price is not None:
+            if sell_price > 0 and buy_price > 0:
                 profit_pct = (sell_price - buy_price) / buy_price * 100
-
                 results.append({
-                    'buy_date': buy_date,
-                    'sell_date': sell_date,
-                    'buy_price': buy_price,
-                    'sell_price': sell_price,
-                    'profit_pct': profit_pct,
-                    'hold_days': actual_hold_days
+                    "buy_date": buy_date,
+                    "sell_date": sell_date,
+                    "buy_price": round(buy_price, 4),
+                    "sell_price": round(sell_price, 4),
+                    "profit_pct": round(profit_pct, 4),
+                    "hold_days": actual_hold_days,
                 })
 
         if results:

@@ -46,8 +46,15 @@ class TradeRecord:
     @property
     def hold_days(self) -> int:
         try:
-            buy = datetime.strptime(self.buy_date[:10], "%Y-%m-%d")
-            sell = datetime.strptime(self.sell_date[:10], "%Y-%m-%d")
+            from quantpy.midterm_pick_tracker import _trading_days_between
+
+            buy_d = self.buy_date[:10]
+            sell_d = self.sell_date[:10]
+            cal = _trading_days_between(buy_d, sell_d)
+            if cal:
+                return max(len(cal) - 1, 0)
+            buy = datetime.strptime(buy_d, "%Y-%m-%d")
+            sell = datetime.strptime(sell_d, "%Y-%m-%d")
             return max((sell - buy).days, 0)
         except ValueError:
             return 0

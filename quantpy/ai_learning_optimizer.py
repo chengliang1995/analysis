@@ -96,45 +96,72 @@ class AILearningOptimizer:
                 factor = {}
             if factor:
                 from quantpy.selection_tuning import (
+                    LEGACY_DIVERGENCE_CONDITION_IDS,
+                    LEGACY_DIVERGENCE_TAGS,
+                    MA20_HARD_GATE_CONDITION_IDS,
                     TRIPLE_VOLUME_CONDITION_IDS,
                     TRIPLE_VOLUME_TAGS,
                     MIDTERM_FORBIDDEN_TAG_BONUS,
+                    _is_chase_tag,
+                    _is_midterm_condition_tunable,
+                    _is_midterm_tag_tunable,
                 )
 
                 if factor.get("midterm_min_score") is not None:
-                    selection_changes["midterm_min_score"] = max(
-                        selection_changes.get("midterm_min_score", 55),
-                        int(factor["midterm_min_score"]),
+                    suggested = int(factor["midterm_min_score"])
+                    if suggested >= 78:
+                        selection_changes["midterm_min_score"] = max(
+                            selection_changes.get("midterm_min_score", 55), 62,
+                        )
+                        selection_changes["midterm_reject_score_bands"] = [[70, 80]]
+                    else:
+                        selection_changes["midterm_min_score"] = max(
+                            selection_changes.get("midterm_min_score", 55),
+                            suggested,
+                        )
+                if factor.get("midterm_reject_score_bands"):
+                    selection_changes["midterm_reject_score_bands"] = factor[
+                        "midterm_reject_score_bands"
+                    ]
+                if factor.get("triple_min_score") is not None:
+                    selection_changes["triple_min_score"] = max(
+                        int(selection_changes.get("triple_min_score", 60) or 60),
+                        int(factor["triple_min_score"]),
                     )
                 for cond, bonus in (factor.get("midterm_condition_bonus") or {}).items():
-                    bucket = (
-                        "triple_condition_bonus"
-                        if cond in TRIPLE_VOLUME_CONDITION_IDS
-                        else "midterm_condition_bonus"
-                    )
-                    selection_changes.setdefault(bucket, {})[cond] = bonus
-                for cond, pen in (factor.get("midterm_condition_penalty") or {}).items():
-                    bucket = (
-                        "triple_condition_penalty"
-                        if cond in TRIPLE_VOLUME_CONDITION_IDS
-                        else "midterm_condition_penalty"
-                    )
-                    selection_changes.setdefault(bucket, {})[cond] = pen
-                for tag, bonus in (factor.get("midterm_tag_bonus") or {}).items():
-                    if tag in MIDTERM_FORBIDDEN_TAG_BONUS and tag not in TRIPLE_VOLUME_TAGS:
+                    if cond in TRIPLE_VOLUME_CONDITION_IDS:
                         continue
-                    bucket = (
-                        "triple_tag_bonus" if tag in TRIPLE_VOLUME_TAGS else "midterm_tag_bonus"
-                    )
-                    selection_changes.setdefault(bucket, {})[tag] = bonus
+                    if cond in LEGACY_DIVERGENCE_CONDITION_IDS or cond in MA20_HARD_GATE_CONDITION_IDS:
+                        continue
+                    if not _is_midterm_condition_tunable(cond):
+                        continue
+                    selection_changes.setdefault("midterm_condition_bonus", {})[cond] = bonus
+                for cond, pen in (factor.get("midterm_condition_penalty") or {}).items():
+                    if cond in TRIPLE_VOLUME_CONDITION_IDS:
+                        continue
+                    if cond in LEGACY_DIVERGENCE_CONDITION_IDS or cond in MA20_HARD_GATE_CONDITION_IDS:
+                        continue
+                    if not _is_midterm_condition_tunable(cond):
+                        continue
+                    selection_changes.setdefault("midterm_condition_penalty", {})[cond] = pen
+                for tag, bonus in (factor.get("midterm_tag_bonus") or {}).items():
+                    if tag in MIDTERM_FORBIDDEN_TAG_BONUS or tag in TRIPLE_VOLUME_TAGS:
+                        continue
+                    if tag in LEGACY_DIVERGENCE_TAGS or _is_chase_tag(tag):
+                        continue
+                    if not _is_midterm_tag_tunable(tag):
+                        continue
+                    selection_changes.setdefault("midterm_tag_bonus", {})[tag] = bonus
                 for tag, pen in (factor.get("midterm_tag_penalty") or {}).items():
-                    bucket = (
-                        "triple_tag_penalty" if tag in TRIPLE_VOLUME_TAGS else "midterm_tag_penalty"
-                    )
-                    selection_changes.setdefault(bucket, {})[tag] = pen
-                if selection_changes.get("triple_condition_penalty") or selection_changes.get(
-                    "triple_tag_penalty"
-                ):
+                    if tag in TRIPLE_VOLUME_TAGS or tag in LEGACY_DIVERGENCE_TAGS:
+                        continue
+                    selection_changes.setdefault("midterm_tag_penalty", {})[tag] = pen
+                # 永不写回硬筛加减分
+                selection_changes.pop("triple_condition_bonus", None)
+                selection_changes.pop("triple_condition_penalty", None)
+                selection_changes.pop("triple_tag_bonus", None)
+                selection_changes.pop("triple_tag_penalty", None)
+                if factor.get("triple_min_score"):
                     selection_changes["triple_min_score"] = max(
                         int(selection_changes.get("triple_min_score", 60) or 60), 68,
                     )
@@ -187,13 +214,30 @@ class AILearningOptimizer:
         filtered = df[mask].copy()
         if filtered.empty:
             return filtered
-        filtered = filtered.rename(
-            columns={"profit_pct": "profit_pct", "avg_hold_days": "hold_days"}
-        )
         if "hold_days" not in filtered.columns:
-            filtered["hold_days"] = 0
+            if "avg_hold_days" in filtered.columns:
+                filtered["hold_days"] = pd.to_numeric(
+                    filtered["avg_hold_days"], errors="coerce",
+                ).fillna(0).astype(int)
+            else:
+                from quantpy.midterm_pick_tracker import _trading_days_between
+
+                def _hd(row):
+                    try:
+                        cal = _trading_days_between(
+                            str(row.get("buy_date", ""))[:10],
+                            str(row.get("sell_date", ""))[:10],
+                        )
+                        return max(len(cal) - 1, 0) if cal else 0
+                    except Exception:
+                        return 0
+
+                filtered["hold_days"] = filtered.apply(_hd, axis=1)
         filtered["score"] = 0.0
-        filtered["exit_reason"] = filtered.get("note", "").fillna("").replace("", "手动")
+        if "note" in filtered.columns:
+            filtered["exit_reason"] = filtered["note"].fillna("").replace("", "手动")
+        else:
+            filtered["exit_reason"] = "手动"
         return filtered
 
     def _build_analytics(self, df: pd.DataFrame, config: SimConfig, source: str) -> dict:
@@ -461,7 +505,7 @@ class AILearningOptimizer:
         win_rate = (midterm_df["profit_pct"] > 0).mean() * 100
         avg_profit = float(midterm_df["profit_pct"].mean())
         if win_rate < 45 or avg_profit < -1:
-            changes["midterm_min_score"] = 58
+            changes["midterm_min_score"] = 62
         score_col = "midterm_score" if "midterm_score" in midterm_df.columns else "score"
         if score_col in midterm_df.columns:
             for low, high, label in [(0, 65, "<65"), (65, 80, "65-80"), (80, 999, "80+")]:
@@ -474,16 +518,17 @@ class AILearningOptimizer:
                 avg_p = float(part["profit_pct"].mean())
                 if label == "<65" and len(part) >= 2 and wr < 40:
                     changes["midterm_min_score"] = max(
-                        changes.get("midterm_min_score", 55), 68,
+                        changes.get("midterm_min_score", 55), 62,
                     )
                 if label == "80+" and len(part) >= 3 and wr >= 55 and avg_p > 1:
                     changes["midterm_min_score"] = max(
-                        changes.get("midterm_min_score", 65), 80,
+                        changes.get("midterm_min_score", 62), 62,
                     )
                 if label == "65-80" and len(part) >= 2 and wr < 40:
                     changes["midterm_min_score"] = max(
-                        changes.get("midterm_min_score", 65), 78,
+                        changes.get("midterm_min_score", 62), 62,
                     )
+                    changes["midterm_reject_score_bands"] = [[70, 80]]
 
     def _clamp_deltas(self, config: SimConfig, deltas: Dict[str, float]) -> Dict[str, float]:
         clamped: Dict[str, float] = {}

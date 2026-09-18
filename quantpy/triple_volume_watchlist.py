@@ -22,8 +22,14 @@ WATCH_MIN_DAYS = 1
 WATCH_MAX_DAYS = 5
 MA5_HOLD_DAYS = 2
 MA5_TOLERANCE = 0.005
-# 当日量相对突破前量的上限（1.0 = 须缩至突破前及以下，略放 5% 容差对齐单位）
-PRE_VOLUME_MAX_RATIO = 1.05
+# 当日量须缩至突破前量及以下（收紧：原 1.05）
+PRE_VOLUME_MAX_RATIO = 1.0
+# 买点相对突破价：收紧追涨与破位容差（原 +3% / -5%）
+BUY_MAX_EXTEND_PCT = 2.0
+BUY_MAX_DRAWDOWN_PCT = -3.0
+# 入池：量比与评分底线（观察池历史胜率约 15%，进一步提质）
+INTAKE_MIN_VOLUME_RATIO = 3.2
+INTAKE_MIN_SCORE_FLOOR = 72.0
 MAX_ITEMS = 200
 # 同步近期选股报告的日历日窗口（覆盖观察期 + 缓冲）
 INGEST_LOOKBACK_DAYS = 20
@@ -129,7 +135,20 @@ def add_to_watchlist(
         if it.get("status") in ("watching", "buy_signal")
     }
 
+    # 入池质量门槛：对齐当前三倍量调优，过滤追涨与低分
+    try:
+        from quantpy.selection_tuning import build_selection_tuning
+        from quantpy.midterm_triple_volume_selector import is_triple_pct_chase_risky
+
+        min_score = float(build_selection_tuning().triple_min_score)
+    except Exception:
+        from quantpy.midterm_triple_volume_selector import is_triple_pct_chase_risky
+
+        min_score = 68.0
+    min_score = max(min_score, INTAKE_MIN_SCORE_FLOOR)
+
     added: List[dict] = []
+    skipped = 0
     for rec in recommendations:
         code = str(rec.get("code", "")).zfill(6)
         if not code or code == "000000":
@@ -138,12 +157,32 @@ def add_to_watchlist(
             continue
         if float(rec.get("price") or 0) <= 0:
             continue
+        score = float(rec.get("midterm_score") or 0)
+        if score < min_score:
+            skipped += 1
+            continue
+        pct = float(rec.get("pct_chg") or 0)
+        if is_triple_pct_chase_risky(pct):
+            skipped += 1
+            continue
+        vol_ratio = float(rec.get("volume_ratio") or 0)
+        if vol_ratio > 0 and vol_ratio < INTAKE_MIN_VOLUME_RATIO:
+            skipped += 1
+            continue
         added.append(_watch_snapshot(rec, pick_date))
 
     if not added:
         if show_progress:
-            print(f"  观察池：{pick_date} 已记录或无新标的")
-        return {"added": 0, "pick_date": pick_date, "message": "当日已记录"}
+            msg = f"  观察池：{pick_date} 已记录或无新标的"
+            if skipped:
+                msg += f"（质量过滤跳过 {skipped}）"
+            print(msg)
+        return {
+            "added": 0,
+            "pick_date": pick_date,
+            "skipped": skipped,
+            "message": "当日已记录或未达入池门槛",
+        }
 
     items = state.setdefault("items", [])
     items.extend(added)
@@ -155,11 +194,13 @@ def add_to_watchlist(
 
     if show_progress:
         names = "、".join(r["name"] for r in added[:5])
-        print(f"  观察池：新增 {len(added)} 只（{pick_date}）{names}")
+        extra = f"（过滤 {skipped}）" if skipped else ""
+        print(f"  观察池：新增 {len(added)} 只{extra}（{pick_date}）{names}")
 
     return {
         "added": len(added),
         "pick_date": pick_date,
+        "skipped": skipped,
         "codes": [r["code"] for r in added],
     }
 
@@ -487,6 +528,23 @@ def _evaluate_item(item: dict, ref_date: str) -> dict:
     item["volume_shrink_ok"] = shrink_ok
 
     if ma5_ok and shrink_ok:
+        pick_price = float(item.get("pick_price") or 0)
+        if pick_price > 0 and price > 0:
+            move_pct = (price / pick_price - 1.0) * 100.0
+            if move_pct > BUY_MAX_EXTEND_PCT:
+                item["status"] = "watching"
+                item["buy_reason"] = (
+                    f"站稳MA5+缩量，但相对突破价已涨{move_pct:+.1f}%（>{BUY_MAX_EXTEND_PCT:g}%），"
+                    f"避免追高不触发买入"
+                )
+                return item
+            if move_pct < BUY_MAX_DRAWDOWN_PCT:
+                item["status"] = "watching"
+                item["buy_reason"] = (
+                    f"站稳MA5+缩量，但相对突破价{move_pct:+.1f}%（<{BUY_MAX_DRAWDOWN_PCT:g}%），"
+                    f"结构偏弱暂不买入"
+                )
+                return item
         item["status"] = "buy_signal"
         item["buy_signal_date"] = ref_date
         item["buy_signal_price"] = round(price, 2)

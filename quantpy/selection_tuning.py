@@ -13,13 +13,68 @@ from quantpy.paths import SIM_REVIEW_DIR, SIM_STATE_FILE
 
 ULTRA_SHORT_STRATEGIES = frozenset({"超短", "涨停", "短线"})
 
-# 三倍量策略条件/标签（与中线底背离分流，避免互相污染加减分）
+# 调参最小样本：避免 2～3 笔噪声驱动门槛爬升
+SIM_TUNING_MIN_TRADES = 15
+SIM_TUNING_MIN_BUCKET = 8
+SIM_TUNING_RECENT_WINDOW = 30
+
+# 三倍量策略条件/标签（与中线分流，避免互相污染加减分）
 TRIPLE_VOLUME_CONDITION_IDS = frozenset({
     "non_st", "vol_3x", "yang_line", "cross_ma5", "cross_ma10", "cross_ma20",
 })
 TRIPLE_VOLUME_TAGS = frozenset({"一阳穿三线"})
-# 中线策略不应强化的标签（三倍量污染项）；MA60向下已由成熟跟进证实有效，允许加分
+# 中线策略不应强化的标签（三倍量污染项）
 MIDTERM_FORBIDDEN_TAG_BONUS = frozenset({"一阳穿三线"})
+# 追涨类标签禁止加分（与「未封板追涨扣分」冲突）
+MIDTERM_CHASE_TAG_BONUS_BLOCK = frozenset({
+    "涨+10.0%", "涨+10%", "高位追涨", "当日偏热", "追涨",
+})
+# 旧底背离策略残留：选股已切 MA20 回踩，禁止再写入加减分
+LEGACY_DIVERGENCE_CONDITION_IDS = frozenset({
+    "diff_div", "obv_div", "price_new_low", "diff_below_zero", "vol_shrink",
+    "rsi_div", "ma60_hold", "near_ma60", "stop_confirm", "entry_confirm",
+    "not_freefall",
+})
+LEGACY_DIVERGENCE_TAGS = frozenset({
+    "RSI底背离", "绿柱缩短", "MACD金叉", "MA60走平/向上", "MA60向上",
+    "贴近MA60", "60分底背离", "MA60向下", "MA60走平", "等金叉确认",
+    "偏远离MA60", "弱止跌确认", "DIFF底背离", "OBV底背离", "阶段新低",
+})
+# MA20 回踩硬筛/全员条件：无区分度，不加分
+MA20_HARD_GATE_CONDITION_IDS = frozenset({
+    "cap_range", "price_cap", "liquidity", "sector_ma20", "above_ma20",
+    "ma20_breakout", "ma20_rising", "ma5_above_ma10", "ride_ma5",
+    "pullback_ma5", "no_chase_rally",
+})
+# 当前中线可调优的条件白名单（仅差异化因子）
+MA20_TUNABLE_CONDITION_IDS = frozenset({
+    "vol_shrink_pullback",
+})
+MA20_TUNABLE_TAGS = frozenset({
+    "回踩缩量", "均线多头",
+})
+
+
+def _is_legacy_midterm_condition(cond: str) -> bool:
+    return str(cond or "") in LEGACY_DIVERGENCE_CONDITION_IDS
+
+
+def _is_midterm_condition_tunable(cond: str) -> bool:
+    c = str(cond or "")
+    if not c or c in TRIPLE_VOLUME_CONDITION_IDS:
+        return False
+    if c in LEGACY_DIVERGENCE_CONDITION_IDS or c in MA20_HARD_GATE_CONDITION_IDS:
+        return False
+    return c in MA20_TUNABLE_CONDITION_IDS
+
+
+def _is_midterm_tag_tunable(tag: str) -> bool:
+    t = str(tag or "")
+    if not t or t in TRIPLE_VOLUME_TAGS or t in MIDTERM_FORBIDDEN_TAG_BONUS:
+        return False
+    if t in LEGACY_DIVERGENCE_TAGS or _is_chase_tag(t):
+        return False
+    return t in MA20_TUNABLE_TAGS or t.startswith("MA20")
 
 # 强势标签别名：复盘偏好「封板」时，连板/高换手等同类信号一并认可
 ULTRA_STRONG_TAG_GROUPS: Dict[str, List[str]] = {
@@ -31,13 +86,30 @@ ULTRA_STRONG_TAG_GROUPS: Dict[str, List[str]] = {
 }
 
 
+def _is_chase_tag(tag: str) -> bool:
+    t = str(tag or "")
+    if t in MIDTERM_CHASE_TAG_BONUS_BLOCK:
+        return True
+    if t.startswith("涨+") and "%" in t:
+        try:
+            pct = float(t.replace("涨+", "").replace("%", ""))
+            return pct >= 8.0
+        except ValueError:
+            return True
+    return False
+
+
 @dataclass
 class SelectionTuning:
     """选股调优参数（由复盘记录推导）。"""
 
     ultra_min_score: int = 35
-    midterm_min_score: int = 65
+    midterm_min_score: int = 62
     triple_min_score: int = 60
+    # MA20 回踩独立门槛（勿与 midterm_min_score 混用）
+    ma20_pullback_min_score: int = 62
+    # 拒分档：如 [(70, 80)] 表示拒绝 [70,80)，保留 60–70 与 80+
+    midterm_reject_score_bands: List = field(default_factory=list)
     ultra_tag_bonus: Dict[str, int] = field(default_factory=dict)
     ultra_tag_penalty: Dict[str, int] = field(default_factory=dict)
     ultra_penalize_3d_gain_above: Optional[float] = None
@@ -72,17 +144,24 @@ def _route_condition_maps(
     bonus: Optional[Dict[str, int]],
     penalty: Optional[Dict[str, int]],
 ) -> tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int]]:
-    """将条件加减分拆到中线 / 三倍量两套字典。"""
+    """将条件加减分拆到中线 / 三倍量；硬筛条件永不进入加减分（无区分度）。"""
     mid_b: Dict[str, int] = {}
     mid_p: Dict[str, int] = {}
     tri_b: Dict[str, int] = {}
     tri_p: Dict[str, int] = {}
     for key, val in (bonus or {}).items():
-        bucket = tri_b if key in TRIPLE_VOLUME_CONDITION_IDS else mid_b
-        bucket[key] = int(val)
+        if key in TRIPLE_VOLUME_CONDITION_IDS:
+            continue  # 硬筛全员命中，加分空转
+        if not _is_midterm_condition_tunable(key):
+            continue
+        mid_b[key] = int(val)
     for key, val in (penalty or {}).items():
-        bucket = tri_p if key in TRIPLE_VOLUME_CONDITION_IDS else mid_p
-        bucket[key] = int(val)
+        if key in TRIPLE_VOLUME_CONDITION_IDS:
+            continue
+        if _is_legacy_midterm_condition(key) or key in MA20_HARD_GATE_CONDITION_IDS:
+            continue
+        if key in MA20_TUNABLE_CONDITION_IDS:
+            mid_p[key] = int(val)
     return mid_b, mid_p, tri_b, tri_p
 
 
@@ -90,22 +169,26 @@ def _route_tag_maps(
     bonus: Optional[Dict[str, int]],
     penalty: Optional[Dict[str, int]],
 ) -> tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int]]:
-    """将标签加减分拆到中线 / 三倍量；过滤中线冲突 bonus。"""
+    """将标签加减分拆到中线 / 三倍量；过滤旧背离/追涨/硬筛 bonus。"""
     mid_b: Dict[str, int] = {}
     mid_p: Dict[str, int] = {}
     tri_b: Dict[str, int] = {}
     tri_p: Dict[str, int] = {}
     for key, val in (bonus or {}).items():
         if key in TRIPLE_VOLUME_TAGS:
-            tri_b[key] = int(val)
-        elif key in MIDTERM_FORBIDDEN_TAG_BONUS:
             continue
-        else:
-            mid_b[key] = int(val)
+        if key in MIDTERM_FORBIDDEN_TAG_BONUS:
+            continue
+        if _is_chase_tag(key) or key in LEGACY_DIVERGENCE_TAGS:
+            continue
+        if not _is_midterm_tag_tunable(key):
+            continue
+        mid_b[key] = int(val)
     for key, val in (penalty or {}).items():
-        if key in TRIPLE_VOLUME_TAGS:
-            tri_p[key] = int(val)
-        else:
+        if key in TRIPLE_VOLUME_TAGS or key in LEGACY_DIVERGENCE_TAGS:
+            continue
+        # 仅保留对当前策略有意义的降权（如当日偏热）
+        if key in MA20_TUNABLE_TAGS or _is_chase_tag(key) or key == "当日偏热":
             mid_p[key] = int(val)
     return mid_b, mid_p, tri_b, tri_p
 
@@ -194,17 +277,29 @@ def _apply_sim_midterm_insights(tuning: SelectionTuning, df: pd.DataFrame) -> No
         if part.empty:
             continue
         wr = (part["profit_pct"] > 0).mean() * 100
-        avg_p = float(part["profit_pct"].mean())
         if label == "80+" and len(part) >= 3 and wr >= 55:
-            tuning.midterm_min_score = max(tuning.midterm_min_score, 80)
-            tuning.notes.append(f"模拟中线80+胜率{wr:.0f}%，门槛≥80")
-        if label == "65-80" and len(part) >= 2 and wr < 40:
-            tuning.midterm_min_score = max(tuning.midterm_min_score, 78)
-            tuning.notes.append(f"模拟中线65-80胜率{wr:.0f}%偏弱")
+            # 强化高分偏好，但不一刀砍掉 60–70
+            tuning.midterm_min_score = max(tuning.midterm_min_score, 62)
+            tuning.notes.append(f"模拟中线80+胜率{wr:.0f}%，偏好高分并保留60–70档")
+        if label == "65-80" and len(part) >= SIM_TUNING_MIN_BUCKET and wr < 40:
+            _set_reject_band(tuning, 70, 80)
+            tuning.notes.append(f"模拟中线65-80胜率{wr:.0f}%偏弱，拒分档70–80")
+
+
+def _set_reject_band(tuning: SelectionTuning, lo: float, hi: float) -> None:
+    bands = list(tuning.midterm_reject_score_bands or [])
+    key = (float(lo), float(hi))
+    if key not in {(float(b[0]), float(b[1])) for b in bands if isinstance(b, (list, tuple)) and len(b) >= 2}:
+        bands.append([float(lo), float(hi)])
+    tuning.midterm_reject_score_bands = bands
 
 
 def _apply_sim_trade_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None:
-    if df.empty or len(df) < 3:
+    if df.empty or len(df) < SIM_TUNING_MIN_TRADES:
+        if not df.empty:
+            tuning.notes.append(
+                f"模拟平仓仅 {len(df)} 笔(<{SIM_TUNING_MIN_TRADES})，跳过超短自动调参"
+            )
         return
 
     win_rate = (df["profit_pct"] > 0).mean() * 100
@@ -213,14 +308,22 @@ def _apply_sim_trade_insights(tuning: SelectionTuning, df: pd.DataFrame) -> None
 
     recent = df
     if "sell_date" in df.columns:
-        recent = df.sort_values("sell_date").tail(30)
-    recent_wr = (recent["profit_pct"] > 0).mean() * 100 if len(recent) >= 8 else win_rate
+        recent = df.sort_values("sell_date").tail(SIM_TUNING_RECENT_WINDOW)
+    recent_wr = (recent["profit_pct"] > 0).mean() * 100 if len(recent) >= SIM_TUNING_MIN_TRADES else win_rate
     stop_rate = (
         recent["exit_reason"].astype(str).str.contains("止损", na=False).mean() * 100
-        if len(recent) >= 8 and "exit_reason" in recent.columns else 0
+        if len(recent) >= SIM_TUNING_MIN_TRADES and "exit_reason" in recent.columns else 0
     )
 
-    if recent_wr < 38 or stop_rate >= 60:
+    if len(recent) >= SIM_TUNING_MIN_TRADES and recent_wr >= 52 and avg_profit > 0.5:
+        old = tuning.ultra_min_score
+        tuning.ultra_min_score = max(35, old - 2)
+        if tuning.ultra_min_score < old:
+            tuning.notes.append(
+                f"近{len(recent)}笔胜率{recent_wr:.0f}%/均益{avg_profit:+.2f}%，门槛 {old}→{tuning.ultra_min_score}"
+            )
+
+    if len(recent) >= SIM_TUNING_MIN_TRADES and (recent_wr < 38 or stop_rate >= 60):
         tuning.ultra_min_score = max(tuning.ultra_min_score, 48)
         tuning.ultra_penalize_unsealed_above_pct = min(
             tuning.ultra_penalize_unsealed_above_pct or 99, 5.0,
@@ -305,7 +408,16 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
     if sel.get("ultra_min_score") is not None:
         tuning.ultra_min_score = max(tuning.ultra_min_score, int(sel["ultra_min_score"]))
     if sel.get("midterm_min_score") is not None:
-        tuning.midterm_min_score = max(tuning.midterm_min_score, int(sel["midterm_min_score"]))
+        suggested = int(sel["midterm_min_score"])
+        if suggested >= 78:
+            tuning.midterm_min_score = max(tuning.midterm_min_score, 62)
+            _set_reject_band(tuning, 70, 80)
+        else:
+            tuning.midterm_min_score = max(tuning.midterm_min_score, suggested)
+    if sel.get("midterm_reject_score_bands"):
+        for band in sel["midterm_reject_score_bands"]:
+            if isinstance(band, (list, tuple)) and len(band) >= 2:
+                _set_reject_band(tuning, band[0], band[1])
     if sel.get("triple_min_score") is not None:
         tuning.triple_min_score = max(tuning.triple_min_score, int(sel["triple_min_score"]))
 
@@ -387,27 +499,33 @@ def _apply_ai_learning(tuning: SelectionTuning, ai: dict) -> None:
 
     midterm = analytics.get("midterm") or {}
     if midterm.get("sufficient") and float(midterm.get("win_rate", 100)) < 45:
-        tuning.midterm_min_score = max(tuning.midterm_min_score, 58)
+        tuning.midterm_min_score = max(tuning.midterm_min_score, 62)
     elif midterm.get("sufficient") and float(midterm.get("win_rate", 100)) >= 55:
         if sel.get("midterm_min_score") is not None:
-            tuning.midterm_min_score = max(tuning.midterm_min_score, int(sel["midterm_min_score"]))
+            suggested = int(sel["midterm_min_score"])
+            if suggested >= 78:
+                tuning.midterm_min_score = max(tuning.midterm_min_score, 62)
+                _set_reject_band(tuning, 70, 80)
+            else:
+                tuning.midterm_min_score = max(tuning.midterm_min_score, suggested)
+    if sel.get("midterm_reject_score_bands"):
+        for band in sel["midterm_reject_score_bands"]:
+            if isinstance(band, (list, tuple)) and len(band) >= 2:
+                _set_reject_band(tuning, band[0], band[1])
 
-    # 根据建议文本强化已知有效因子（兜底）
+    # 旧底背离文案不再写入加减分；仅保留 MA20 差异化因子提示
     for sug in ai.get("suggestions") or []:
         text = str(sug)
-        if "RSI底背离" in text and "强化" in text:
-            tuning.midterm_condition_bonus["rsi_div"] = max(
-                tuning.midterm_condition_bonus.get("rsi_div", 0), 6,
+        if "回踩缩量" in text and "强化" in text:
+            tuning.midterm_condition_bonus["vol_shrink_pullback"] = max(
+                tuning.midterm_condition_bonus.get("vol_shrink_pullback", 0), 6,
             )
-            tuning.midterm_tag_bonus["RSI底背离"] = max(
-                tuning.midterm_tag_bonus.get("RSI底背离", 0), 5,
+            tuning.midterm_tag_bonus["回踩缩量"] = max(
+                tuning.midterm_tag_bonus.get("回踩缩量", 0), 5,
             )
-        if "MA60走平" in text and ("降权" in text or "偏低" in text):
-            tuning.midterm_condition_penalty["ma60_hold"] = max(
-                tuning.midterm_condition_penalty.get("ma60_hold", 0), 5,
-            )
-            tuning.midterm_tag_penalty["MA60走平/向上"] = max(
-                tuning.midterm_tag_penalty.get("MA60走平/向上", 0), 6,
+        if "均线多头" in text and "强化" in text:
+            tuning.midterm_tag_bonus["均线多头"] = max(
+                tuning.midterm_tag_bonus.get("均线多头", 0), 4,
             )
 
 
@@ -468,28 +586,42 @@ def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
         _merge_int_map(tuning.triple_tag_penalty, tri_tp)
 
         if factor.get("midterm_min_score") is not None:
-            tuning.midterm_min_score = max(
-                tuning.midterm_min_score, int(factor["midterm_min_score"]),
-            )
+            # 跟进给出的 ≥80 改写为拒弱档，避免误杀 60–70
+            suggested = int(factor["midterm_min_score"])
+            if suggested >= 78:
+                tuning.midterm_min_score = max(tuning.midterm_min_score, 62)
+                _set_reject_band(tuning, 70, 80)
+                tuning.notes.append("跟进建议门槛≥80 → 改为拒分档70–80，底线≥62")
+            else:
+                tuning.midterm_min_score = max(tuning.midterm_min_score, suggested)
+        if factor.get("midterm_reject_score_bands"):
+            for band in factor["midterm_reject_score_bands"]:
+                if isinstance(band, (list, tuple)) and len(band) >= 2:
+                    _set_reject_band(tuning, band[0], band[1])
         if factor.get("triple_min_score") is not None:
             tuning.triple_min_score = max(
                 tuning.triple_min_score, int(factor["triple_min_score"]),
             )
-        # 三倍量硬筛因子样本差 → 抬高门槛（不对硬筛条件逐项扣分）
-        if tuning.triple_condition_penalty or any(
-            t in TRIPLE_VOLUME_TAGS for t in tuning.triple_tag_penalty
+        # 三倍量：仅抬门槛，硬筛条件加减分一律清空
+        tuning.triple_condition_bonus = {}
+        tuning.triple_condition_penalty = {}
+        tuning.triple_tag_bonus = {
+            k: v for k, v in tuning.triple_tag_bonus.items()
+            if k not in TRIPLE_VOLUME_TAGS
+        }
+        tuning.triple_tag_penalty = {
+            k: v for k, v in tuning.triple_tag_penalty.items()
+            if k not in TRIPLE_VOLUME_TAGS
+        }
+        if factor.get("triple_min_score") or any(
+            "三倍量" in str(n) for n in (factor.get("notes") or [])
         ):
             tuning.triple_min_score = max(tuning.triple_min_score, 68)
-            tuning.notes.append("三倍量跟进偏弱，门槛≥68（优质量比突破）")
-            # 硬筛条件惩罚仅作分流标记，不参与逐项扣分
-            tuning.triple_condition_penalty = {
-                k: v for k, v in tuning.triple_condition_penalty.items()
-                if k not in TRIPLE_VOLUME_CONDITION_IDS
-            }
-            tuning.triple_tag_penalty = {
-                k: v for k, v in tuning.triple_tag_penalty.items()
-                if k not in TRIPLE_VOLUME_TAGS
-            }
+            tuning.notes.append("三倍量跟进偏弱或硬筛空转，仅抬门槛≥68（不逐项加分）")
+        # 清洗追涨标签加分
+        tuning.midterm_tag_bonus = {
+            k: v for k, v in tuning.midterm_tag_bonus.items() if not _is_chase_tag(k)
+        }
         tuning.notes.extend((factor.get("notes") or [])[:4])
         if matured >= 3:
             wr = summary.get("win_rate", 0)
@@ -502,7 +634,7 @@ def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
                 f"中线中间统计胜率 {interim.get('win_rate', 0)}%"
                 f"（{interim['interim_count']} 只），因子 provisional 调优"
             )
-        # 成熟跟进：80+ 档明显优于 70-80 → 抬高门槛
+        # 成熟跟进：80+ 优于 70-80 → 拒弱档而非一刀 ≥80
         for row in summary.get("by_score_bucket", []):
             if row.get("key") == "80+" and row.get("count", 0) >= 8:
                 high_wr = float(row.get("win_rate", 0))
@@ -512,12 +644,13 @@ def _apply_midterm_tracker(tuning: SelectionTuning) -> None:
                 )
                 low_wr = float(low_row.get("win_rate", 100))
                 if high_wr >= 55 and low_wr < 45:
-                    tuning.midterm_min_score = max(tuning.midterm_min_score, 80)
+                    tuning.midterm_min_score = max(tuning.midterm_min_score, 62)
+                    _set_reject_band(tuning, 70, 80)
                     tuning.notes.append(
-                        f"跟进评分80+胜率{high_wr:.0f}% vs 70-80仅{low_wr:.0f}%，门槛≥80"
+                        f"跟进80+胜率{high_wr:.0f}% vs 70-80仅{low_wr:.0f}%，拒分档70–80"
                     )
-    except Exception:
-        pass
+    except Exception as exc:
+        tuning.notes.append(f"中线跟进调优读取失败: {type(exc).__name__}")
 
 
 def _apply_real_review(tuning: SelectionTuning, review: dict) -> None:
@@ -607,7 +740,11 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
     _apply_sim_midterm_insights(tuning, _load_sim_midterm_trades())
 
     review_stats = _load_latest_sim_review_stats()
-    if review_stats.get("win_rate", 100) < 45:
+    wr = float(review_stats.get("win_rate", 100) or 100)
+    if wr < 40:
+        tuning.ultra_min_score = max(tuning.ultra_min_score, 48)
+        tuning.notes.append(f"模拟复盘胜率 {wr:.0f}% 偏低，超短门槛≥48")
+    elif wr < 45:
         tuning.ultra_min_score = max(tuning.ultra_min_score, 40)
 
     from quantpy.ai_learning_optimizer import load_latest_ai_learning
@@ -631,14 +768,41 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
             tuning.require_ultra_tag_any = None
 
     tuning.ultra_min_score = int(max(35, min(65, tuning.ultra_min_score)))
-    # 实盘扫描避免 AI 把门槛抬到 55+ 导致经常空榜
-    if not for_sim and tuning.ultra_min_score > 48:
+    # 实盘与模拟口径对齐：软封顶 55（不再压到 48 抵消 AI 收紧）
+    if not for_sim and tuning.ultra_min_score > 55:
         tuning.notes.append(
-            f"实盘扫描超短门槛由 {tuning.ultra_min_score} 软封顶至 48（避免空榜）"
+            f"实盘扫描超短门槛由 {tuning.ultra_min_score} 软封顶至 55"
         )
-        tuning.ultra_min_score = 48
-    tuning.midterm_min_score = int(max(58, min(82, tuning.midterm_min_score)))
+        tuning.ultra_min_score = 55
+    tuning.midterm_min_score = int(max(58, min(72, tuning.midterm_min_score)))
+    # MA20 独立门槛：不低于中线底线，但不受中线误抬到 68+ 绑架
+    ma20_floor = int(getattr(tuning, "ma20_pullback_min_score", 62) or 62)
+    ma20_floor = max(62, min(70, ma20_floor, tuning.midterm_min_score))
+    tuning.ma20_pullback_min_score = int(max(58, min(72, ma20_floor)))
     tuning.triple_min_score = int(max(55, min(80, tuning.triple_min_score)))
+    # 清理空转的硬筛加减分、旧背离与追涨标签
+    tuning.triple_condition_bonus = {}
+    tuning.triple_condition_penalty = {}
+    tuning.triple_tag_bonus = {
+        k: v for k, v in (tuning.triple_tag_bonus or {}).items()
+        if k not in TRIPLE_VOLUME_TAGS
+    }
+    tuning.midterm_condition_bonus = {
+        k: v for k, v in (tuning.midterm_condition_bonus or {}).items()
+        if _is_midterm_condition_tunable(k)
+    }
+    tuning.midterm_condition_penalty = {
+        k: v for k, v in (tuning.midterm_condition_penalty or {}).items()
+        if k in MA20_TUNABLE_CONDITION_IDS
+    }
+    tuning.midterm_tag_bonus = {
+        k: v for k, v in (tuning.midterm_tag_bonus or {}).items()
+        if _is_midterm_tag_tunable(k)
+    }
+    tuning.midterm_tag_penalty = {
+        k: v for k, v in (tuning.midterm_tag_penalty or {}).items()
+        if k not in LEGACY_DIVERGENCE_TAGS
+    }
     return tuning
 
 
@@ -767,13 +931,22 @@ def format_tuning_summary(tuning: SelectionTuning) -> str:
     if not tuning.notes and not tuning.sources:
         return (
             f"选股调优：超短≥{tuning.ultra_min_score} · 中线≥{tuning.midterm_min_score}"
+            f" · MA20回踩≥{tuning.ma20_pullback_min_score}"
             f" · 三倍量≥{tuning.triple_min_score}"
             f"（暂无复盘样本，使用默认门槛）"
         )
     lines = [
         f"选股调优：超短≥{tuning.ultra_min_score} · 中线≥{tuning.midterm_min_score}"
+        f" · MA20回踩≥{tuning.ma20_pullback_min_score}"
         f" · 三倍量≥{tuning.triple_min_score}",
     ]
+    if tuning.midterm_reject_score_bands:
+        bands = ",".join(
+            f"[{b[0]:g},{b[1]:g})"
+            for b in tuning.midterm_reject_score_bands
+            if isinstance(b, (list, tuple)) and len(b) >= 2
+        )
+        lines.append(f"拒分档：{bands}")
     if tuning.sources:
         lines.append(f"依据：{', '.join(tuning.sources)}")
     lines.extend(f"  · {n}" for n in tuning.notes[:6])

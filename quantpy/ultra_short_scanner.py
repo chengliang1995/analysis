@@ -217,11 +217,15 @@ class UltraShortScanner:
     spot: Optional[dict] = None,
     lookback_days: int = 10,
     tuning: Optional[object] = None,
+    hist_df: Optional[pd.DataFrame] = None,
   ) -> Optional[Dict]:
     if is_bse_code(code):
       return None
 
-    hist = get_stock_hist(code, days=lookback_days + 25)
+    if hist_df is not None and not hist_df.empty:
+      hist = hist_df.copy()
+    else:
+      hist = get_stock_hist(code, days=lookback_days + 25)
     if hist.empty or len(hist) < 5:
       return None
 
@@ -243,7 +247,7 @@ class UltraShortScanner:
 
     consecutive = self._count_consecutive_limit_ups(hist, code)
     vol_ratio = self._volume_ratio(hist)
-    limit_signal = self.optimizer.check_limit_up_signal(hist, lookback_days)
+    limit_signal = self.optimizer.check_limit_up_signal(hist, lookback_days, code=code)
 
     ma5 = hist["close"].rolling(5).mean().iloc[-1]
     above_ma5 = price >= ma5 * 0.99 if pd.notna(ma5) else True
@@ -503,17 +507,15 @@ class UltraShortScanner:
         except Exception:
           pass
 
-    # 门槛过高时空结果，逐步放宽（模拟盘默认禁止，避免低质量凑数）
+    # 门槛过高时空结果：最多放宽 3 分；不低于 48，避免抵消 AI/复盘收紧
     if allow_soft_min and not results and raw_hits:
-      for soft in (max(40, min_score - 10), 40, 35):
-        if soft >= min_score:
-          continue
+      soft = max(48, int(min_score) - 3)
+      if soft < min_score:
         softened = [x for x in raw_hits if x["ultra_short_score"] >= soft]
         if softened:
           if show_progress:
-            print(f"硬门槛 {min_score} 无结果，放宽至 ≥{soft}，命中 {len(softened)} 只")
+            print(f"硬门槛 {min_score} 无结果，仅放宽至 ≥{soft}，命中 {len(softened)} 只")
           results = softened
-          break
 
     if not results:
       return pd.DataFrame()

@@ -376,7 +376,7 @@ def _fetch_via_eastmoney_api() -> pd.DataFrame:
         "http://80.push2.eastmoney.com",
         "http://22.push2.eastmoney.com",
     ]
-    fields = "f12,f14,f2,f3,f4,f5,f6,f15,f16,f17,f18,f20,f21,f23"
+    fields = "f12,f14,f2,f3,f4,f5,f6,f9,f15,f16,f17,f18,f20,f21,f23"
     fs = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23"
     headers = {**DEFAULT_HEADERS, "Referer": "https://quote.eastmoney.com/"}
 

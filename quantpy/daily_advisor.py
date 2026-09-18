@@ -632,9 +632,9 @@ def main() -> None:
             "report", "scan", "learn", "record", "stats", "import", "portfolio", "refresh",
             "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn",
             "midterm", "midterm-track", "midterm-triple-volume", "triple-volume-watch",
-            "review", "alerts", "web",
+            "sim-ma20", "review-tune", "review", "alerts", "web",
         ],
-        help="sim=模拟复盘, midterm=实盘中线分析, midterm-track=中线跟进, midterm-triple-volume=三倍量选股, triple-volume-watch=观察池评估, review=实盘操作复盘",
+        help="review-tune=复盘后调优选股, sim-ma20=MA20回踩模拟选股, midterm=实盘中线分析, midterm-track=中线跟进, midterm-triple-volume=三倍量选股, triple-volume-watch=观察池评估, review=实盘操作复盘",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -743,6 +743,26 @@ def main() -> None:
             eval_part = (result.get("payload") or {}).get("watch_eval") or {}
             for i, a in enumerate((eval_part.get("alerts") or [])[:10], 1):
                 print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
+            _cli_exit(result)
+        elif args.command == "sim-ma20":
+            from quantpy.orchestration import run_action_sim_ma20
+
+            # 盘中定时扫描：始终 force，允许非早盘窗口买入
+            result = run_action_sim_ma20(
+                force=True,
+                show_progress=True,
+                prefilter=max(int(args.prefilter or 600), 600),
+            )
+            print(result.get("message") or "")
+            _cli_exit(result)
+        elif args.command == "review-tune":
+            from quantpy.orchestration import run_action_review_tune
+
+            result = run_action_review_tune(
+                show_progress=True,
+                review_days=max(args.days, 90),
+                auto_apply=True,
+            )
             _cli_exit(result)
         elif args.command == "review":
             print("=" * 60)

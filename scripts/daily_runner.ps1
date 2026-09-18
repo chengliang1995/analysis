@@ -1,7 +1,7 @@
 # 每日任务执行器（带日志 + 状态标记）
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("morning", "close", "report", "triple-volume", "all")]
+    [ValidateSet("morning", "close", "report", "triple-volume", "ma20-am", "ma20-pm", "all")]
     [string]$Phase
 )
 
@@ -128,8 +128,16 @@ try {
             # 计划任务在窗口边缘也可能偏几分钟，强制执行避免跳过
             Invoke-Step "Triple volume select" @("midterm-triple-volume", "--force")
         }
+        "ma20-am" {
+            Invoke-Step "MA20 pullback scan (AM)" @("sim-ma20", "--force")
+        }
+        "ma20-pm" {
+            Invoke-Step "MA20 pullback scan (PM)" @("sim-ma20", "--force")
+        }
         "all" {
             & $PSCommandPath -Phase morning
+            & $PSCommandPath -Phase ma20-am
+            & $PSCommandPath -Phase ma20-pm
             & $PSCommandPath -Phase triple-volume
             & $PSCommandPath -Phase close
             & $PSCommandPath -Phase report

@@ -16,8 +16,8 @@ AI_LEARNING_DIR = OUTPUT_DIR / "ai_learning"
 LOG_DIR = PROJECT_ROOT / "logs"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 
-# 按日落盘的日志/报告保留天数（含今天共保留 N 个自然日）
-RETENTION_DAYS = 3
+# 按日落盘的日志/报告保留天数（含今天共保留 N 个自然日；AI 学习依赖复盘产物，不宜过短）
+RETENTION_DAYS = 14
 
 PORTFOLIO_CONFIG_FILE = DATA_DIR / "portfolio_config.json"
 PORTFOLIO_FILE = DATA_DIR / "portfolio.json"

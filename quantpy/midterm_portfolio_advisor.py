@@ -48,42 +48,30 @@ PERFORMANCE_FILTER_OPTIONS = {
     "value_growth": "低PE+正增长",
 }
 
-# 中线选股：趋势回调 + 底背离（避开自由落体）
-DIVERGENCE_N_DAILY = 25
-DIVERGENCE_N_60M = 15
+# 中线选股：MA20 突破 + MA5 回踩（鱼身波段）
 MIN_DAILY_AMOUNT_WAN = 5000  # 5000 万元（行情 amount 列通常为万元）
 MIDTERM_PREFILTER_DEFAULT = 500
 MIDTERM_PREFILTER_MAX = 1200
 MIDTERM_SCAN_WORKERS = 8
-# 趋势风控：拒绝空头自由落体
-MIDTERM_MAX_RET_20D = -12.0   # 20 日跌超 12% 不出
-MIDTERM_MAX_RET_60D = -22.0   # 60 日跌超 22% 不出
-MIDTERM_MIN_PRICE_TO_MA60 = 0.90  # 价相对 MA60 过低视为深套
+MIDTERM_MIN_HIST_DAYS = 35
+# 持仓复盘仍使用底背离检测（选股已切换为 MA20 回踩）
+DIVERGENCE_N_DAILY = 25
+DIVERGENCE_N_60M = 15
 
-# 中线选股条件展示
-MIDTERM_SELECT_CONDITIONS = [
-    {"id": "cap_range", "label": "市值150-1000亿", "category": "基本面"},
-    {"id": "price_cap", "label": "股价<100元", "category": "基本面"},
-    {"id": "liquidity", "label": "成交额≥5000万", "category": "基本面"},
-    {"id": "ma60_hold", "label": "MA60走平/向上(软筛)", "category": "趋势"},
-    {"id": "not_freefall", "label": "拒绝20/60日深跌", "category": "趋势"},
-    {"id": "near_ma60", "label": "靠近MA60支撑带", "category": "趋势"},
-    {"id": "price_new_low", "label": "股价创阶段新低", "category": "技术面"},
-    {"id": "diff_div", "label": "DIFF底背离", "category": "技术面"},
-    {"id": "obv_div", "label": "OBV资金底背离", "category": "技术面"},
-    {"id": "diff_below_zero", "label": "DIFF零轴下", "category": "技术面"},
-    {"id": "vol_shrink", "label": "缩量地量", "category": "技术面"},
-    {"id": "stop_confirm", "label": "止跌确认(金叉/绿柱缩/RSI背离)", "category": "技术面"},
-    {"id": "entry_confirm", "label": "MACD金叉确认", "category": "技术面"},
-    {"id": "rsi_div", "label": "RSI底背离", "category": "技术面"},
-]
+from quantpy.midterm_ma20_pullback_selector import (  # noqa: E402
+    MA20_PULLBACK_SELECT_CONDITIONS,
+    build_hot_sector_codes,
+    evaluate_ma20_pullback_technicals,
+    get_ma20_pullback_select_conditions,
+)
 
+MIDTERM_SELECT_CONDITIONS = MA20_PULLBACK_SELECT_CONDITIONS
 _CONDITION_LABELS = {c["id"]: c["label"] for c in MIDTERM_SELECT_CONDITIONS}
-MIDTERM_MIN_SCORE = 65
+MIDTERM_MIN_SCORE = 62
 
 
 def get_midterm_select_conditions() -> List[dict]:
-    return list(MIDTERM_SELECT_CONDITIONS)
+    return get_ma20_pullback_select_conditions()
 
 
 def _amount_to_wan(value) -> float:
@@ -125,192 +113,19 @@ def _evaluate_midterm_technicals(
     daily_amount: Optional[float] = None,
     code: str = "",
     check_60m: bool = True,
+    sector_hot: bool = True,
 ) -> Optional[dict]:
-    """
-    中线选股：趋势回调中的 MACD+OBV 底背离（日线 N=25）。
-
-    硬筛：
-    - 底背离五要素（阶段新低 + DIFF/OBV 背离 + DIFF<0 + 缩量）
-    - 拒绝 20/60 日深跌与远离 MA60 的深套
-    - 强止跌确认（金叉 / 绿柱缩短 / RSI 底背离）；仅收复短均不够
-    - MA60 向下允许（跟进成熟样本更优），但必须强止跌确认
-    """
-    del min_daily_gain_pct, turnover
-
-    if _is_st_or_delist_name(name):
-        return None
-
-    pick = _evaluate_tdx_bottom_divergence(
-        hist, n=DIVERGENCE_N_DAILY, code=code, check_60m=check_60m,
+    """中线选股：MA20 突破 + MA5 回踩（板块共振）。"""
+    del min_daily_gain_pct, turnover, check_60m
+    return evaluate_ma20_pullback_technicals(
+        hist,
+        spot_pct,
+        name=name,
+        daily_amount=daily_amount,
+        code=code,
+        sector_hot=sector_hot,
+        tuning=tuning,
     )
-    if pick is None or not pick.get("signal"):
-        return None
-
-    if daily_amount is not None and daily_amount > 0:
-        amount_wan = _amount_to_wan(daily_amount)
-        if not _passes_liquidity(amount_wan):
-            return None
-    if spot_pct <= -9.5:
-        return None
-
-    close = pd.to_numeric(hist["close"], errors="coerce")
-    price = float(close.iloc[-1])
-    ma5 = float(close.rolling(5).mean().iloc[-1]) if len(close) >= 5 else price
-    ma10 = float(close.rolling(10).mean().iloc[-1]) if len(close) >= 10 else price
-    ma20 = float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else price
-    ma60 = float(close.rolling(60).mean().iloc[-1]) if len(close) >= 60 else price
-    rsi = pick.get("rsi", _rsi(close))
-    ret_20d = _safe_pct(price, float(close.iloc[-21])) if len(close) >= 21 else 0.0
-    ret_60d = _safe_pct(price, float(close.iloc[-61])) if len(close) >= 61 else 0.0
-
-    ma60_trend = pick.get("ma60_trend", _ma60_trend_label(close))
-    # ---- 深跌硬筛：拒绝自由落体（保留）；MA60 方向改由强止跌 + 评分控制 ----
-    if ret_20d < MIDTERM_MAX_RET_20D:
-        return None
-    if ret_60d < MIDTERM_MAX_RET_60D:
-        return None
-    if ma60 > 0 and price < ma60 * MIDTERM_MIN_PRICE_TO_MA60:
-        return None
-
-    # MA20 中期也在加速下杀时放弃（即便 MA60 仍名义走平）
-    if len(close) >= 25:
-        ma20_prev = float(close.rolling(20).mean().iloc[-6])
-        if ma20_prev > 0 and (ma20 - ma20_prev) / ma20_prev * 100 < -2.5 and ret_20d < -8:
-            return None
-
-    has_golden = bool(pick.get("macd_golden_cross"))
-    has_bar_shrink = bool(pick.get("macd_bar_shrink"))
-    has_rsi_div = bool(pick.get("rsi_divergence"))
-    reclaim_ma = price >= ma5 * 0.998 or price >= ma10 * 0.99
-    strong_confirm = has_golden or has_bar_shrink or has_rsi_div
-    # 跟进成熟样本：MA60 向下组胜率更高；走平组偏弱。
-    # 一律要求强止跌确认（金叉/绿柱缩/RSI），仅收复短均不再过筛。
-    if not strong_confirm:
-        return None
-
-    tags: List[str] = list(pick.get("tags", []))
-    conditions: List[str] = [
-        "cap_range", "price_cap", "liquidity",
-        "not_freefall", "near_ma60",
-        "price_new_low", "diff_div", "obv_div", "diff_below_zero", "vol_shrink",
-        "stop_confirm",
-    ]
-    if ma60_trend in ("up", "flat"):
-        conditions.append("ma60_hold")
-    score = 55
-
-    # 评分权重按跟进成熟结果校准（向下 > 向上 ≈ 走平）
-    if ma60_trend == "down":
-        score += 14
-        tags.append("MA60向下")
-        trend = "下跌趋势底背离反转"
-        hold_style = "MA60仍向下，仅作轻仓反转博弈，须强止跌+严格止损"
-    elif ma60_trend == "up":
-        score += 12
-        tags.append("MA60向上")
-        trend = "趋势回调底背离"
-        hold_style = "均线多头/走强中的回调底背离，适合中线"
-    elif ma60_trend == "flat":
-        score += 6
-        tags.append("MA60走平")
-        trend = "震荡筑底背离"
-        hold_style = "MA60走平筑底偏弱，需更强确认、控制仓位"
-    else:
-        score += 2
-        tags.append("MA60未知")
-        trend = "弱趋势筑底"
-        hold_style = "趋势不明，需更强止跌信号"
-
-    # 靠近 MA60 支撑加分
-    if ma60 > 0:
-        dist_ma60 = (price / ma60 - 1) * 100
-        if -6 <= dist_ma60 <= 3:
-            score += 10
-            tags.append("贴近MA60")
-        elif dist_ma60 > 8:
-            score -= 8
-            tags.append("偏远离MA60")
-
-    if has_rsi_div:
-        score += 18
-        tags.append("RSI底背离")
-        conditions.append("rsi_div")
-    elif 28 <= float(rsi) <= 42:
-        score += 4
-        tags.append("RSI回调区")
-
-    if has_golden:
-        score += 14
-        tags.append("MACD金叉")
-        conditions.append("entry_confirm")
-        entry_hint = "DIFF上穿DEA，可考虑分批介入"
-        if has_rsi_div or has_bar_shrink:
-            score += 4
-    elif has_bar_shrink:
-        score += 16
-        tags.append("绿柱缩短")
-        entry_hint = "绿柱缩短止跌，等金叉或放量再加仓"
-    else:
-        entry_hint = "已具备强止跌信号，仍建议观察量能"
-
-    if pick.get("confirm_60m"):
-        score += 8
-        tags.append("60分底背离")
-
-    # 今日仍大跌则减分（抄底当日追跌）
-    if spot_pct <= -5:
-        score -= 10
-        tags.append("当日偏弱")
-    elif -3 <= spot_pct <= 2:
-        score += 4
-
-    if ret_20d >= -5:
-        score += 6
-    elif ret_20d <= -10:
-        score -= 8
-
-    if tuning:
-        for cond in conditions:
-            score += tuning.midterm_condition_bonus.get(cond, 0)
-            score -= tuning.midterm_condition_penalty.get(cond, 0)
-        for tag_key, bonus in tuning.midterm_tag_bonus.items():
-            if any(tag_key in t or t == tag_key for t in tags):
-                score += bonus
-        for tag_key, penalty in tuning.midterm_tag_penalty.items():
-            if any(tag_key in t or t == tag_key for t in tags):
-                score -= penalty
-        if tuning.midterm_penalize_ret_20d_below is not None and ret_20d < tuning.midterm_penalize_ret_20d_below:
-            score -= 10
-
-    if tuning and tuning.midterm_ma20_chase_penalty > 0 and ma20 > 0:
-        if price > ma20 * tuning.midterm_ma20_chase_ratio:
-            score -= tuning.midterm_ma20_chase_penalty
-
-    min_score = tuning.midterm_min_score if tuning else MIDTERM_MIN_SCORE
-    # 尊重 AI/跟进调优门槛（build_selection_tuning 已限制在 58~72）
-    if score < min_score:
-        return None
-
-    return {
-        "score": score,
-        "tags": tags,
-        "conditions": conditions,
-        "price": price,
-        "ma5": round(ma5, 2),
-        "ma10": round(ma10, 2),
-        "ma20": round(ma20, 2),
-        "ma60": round(ma60, 2),
-        "rsi": round(float(rsi), 1),
-        "ret_20d": round(ret_20d, 2),
-        "ret_60d": round(ret_60d, 2),
-        "trend": trend,
-        "hold_style": hold_style,
-        "entry_hint": entry_hint,
-        "ma60_trend": ma60_trend,
-        "bottom_divergence": True,
-        "bottom_divergence_detail": pick,
-        "stop_confirm": True,
-    }
 
 
 def _num(value) -> float:
@@ -1003,9 +818,10 @@ class MidtermPortfolioAdvisor:
         tuning: Optional[SelectionTuning] = None,
         *,
         check_60m: bool = True,
+        sector_hot: bool = True,
     ) -> Optional[dict]:
         hist = get_stock_hist(code, days=120)
-        if hist.empty or len(hist) < DIVERGENCE_N_DAILY + 5:
+        if hist.empty or len(hist) < MIDTERM_MIN_HIST_DAYS:
             return None
 
         hist = hist.sort_values("date").reset_index(drop=True)
@@ -1026,7 +842,7 @@ class MidtermPortfolioAdvisor:
         tech = _evaluate_midterm_technicals(
             hist, spot_pct, turnover, tuning=tuning,
             name=name, daily_amount=daily_amount, code=code,
-            check_60m=check_60m,
+            check_60m=check_60m, sector_hot=sector_hot,
         )
         if tech is None:
             return None
@@ -1130,6 +946,8 @@ class MidtermPortfolioAdvisor:
         fundamental_map = get_fundamental_map()
 
         _progress("  拉取全市场行情…", show_progress)
+        hot_codes, _hot_names = build_hot_sector_codes(show_progress=show_progress)
+        select_stats["sector_hot_count"] = len(hot_codes)
         market = get_market_spot(verbose=show_progress, force_refresh=False)
         if market.empty:
             _progress("  行情为空，跳过推荐", show_progress)
@@ -1193,14 +1011,18 @@ class MidtermPortfolioAdvisor:
                 pool = pool[~pool[name_col].astype(str).map(_is_st_or_delist_name)]
             if pool.empty:
                 return pool
-            # 趋势回调候选：避免优先今日大跌，偏好温和调整 + 高流动性
-            crash = pool["_pct"].clip(upper=0)
-            mild = ((pool["_pct"] >= -4) & (pool["_pct"] <= 2)).astype(float)
+            # MA20 回踩候选：偏好温和调整 + 高流动性 + 热门板块
+            mild = ((pool["_pct"] >= -3) & (pool["_pct"] <= 2)).astype(float)
+            if hot_codes and code_col in pool.columns:
+                pool["_hot"] = pool[code_col].astype(str).str.zfill(6).isin(hot_codes)
+                hot_boost = pool["_hot"].astype(float) * 0.25
+            else:
+                hot_boost = 0.0
             pool["_rank"] = (
                 mild * 0.35
-                + crash.clip(lower=-8) * 0.12   # 大跌日降权（crash 为负）
-                + pool["_amount_wan"].clip(0, 120000) / 120000 * 0.38
-                + (10 - pool["_turnover"].clip(0, 15)) / 10 * 0.15
+                + hot_boost
+                + pool["_amount_wan"].clip(0, 120000) / 120000 * 0.40
+                + (10 - pool["_turnover"].clip(0, 15)) / 10 * 0.10
             )
             return pool.sort_values("_rank", ascending=False).head(limit)
 
@@ -1248,6 +1070,7 @@ class MidtermPortfolioAdvisor:
                         "pe": fund.get("pe"),
                         "profit_yoy": fund.get("profit_yoy"),
                     },
+                    "sector_hot": code in hot_codes if hot_codes else True,
                 })
 
             local_results: List[dict] = []
@@ -1270,6 +1093,7 @@ class MidtermPortfolioAdvisor:
                         task["spot"],
                         tuning=tuning,
                         check_60m=False,
+                        sector_hot=bool(task.get("sector_hot", True)),
                     )
                     return ("hit" if item else "miss"), item, None
                 except Exception as exc:
@@ -1369,19 +1193,19 @@ class MidtermPortfolioAdvisor:
         if industry or performance:
             _progress(f"  [筛选] 合计: {len(results)} → {len(filtered)} 只", show_progress)
         if not filtered and results and (industry or performance):
-            _progress("  行业/业绩无匹配，回退展示全部技术命中标的", show_progress)
-            filtered = results
-            select_stats["fallback_used"] = True
+            _progress(
+                "  行业/业绩无匹配，不回退展示全部（避免筛选形同虚设）",
+                show_progress,
+            )
+            select_stats["fallback_used"] = False
+            select_stats["filter_empty"] = True
+            return pd.DataFrame(), select_stats
         if not filtered:
             _progress("  无推荐标的，可尝试重置行业/业绩筛选", show_progress)
             return pd.DataFrame(), select_stats
 
         out = pd.DataFrame(filtered).head(top_n)
-        _progress(
-            f"  推荐命中 {len(out)} 只"
-            + (f"（回退模式，未应用行业/业绩）" if select_stats["fallback_used"] else ""),
-            show_progress,
-        )
+        _progress(f"  推荐命中 {len(out)} 只", show_progress)
         if filter_stats.get("top_industries"):
             _progress(f"  技术命中行业分布: {', '.join(filter_stats['top_industries'])}", show_progress)
         return out.reset_index(drop=True), select_stats
@@ -1771,7 +1595,7 @@ def format_midterm_report_markdown(result: dict) -> str:
 
     recs = result.get("recommendations", [])
     if recs:
-        parts.append("## 四、个股推荐（MACD+OBV底背离 · 日线N=25 · 成交额≥5000万）\n\n")
+        parts.append("## 四、个股推荐（MA20突破·MA5回踩 · 板块共振 · 成交额≥5000万）\n\n")
         parts.append(
             "选股条件：" + " · ".join(c["label"] for c in MIDTERM_SELECT_CONDITIONS) + "\n\n"
         )

@@ -623,6 +623,34 @@ def api_action(action: str):
             round_no = result.get("round", 0) if isinstance(result, dict) else 0
             message = f"AI 策略学习完成（第 {round_no} 轮）"
             extra["ai_learning"] = result
+        elif action == "review-tune":
+            from quantpy.orchestration import run_action_review_tune
+
+            result, log = _run_quiet(
+                run_action_review_tune,
+                show_progress=True,
+                review_days=90,
+                auto_apply=True,
+                action="review-tune",
+            )
+            if not isinstance(result, dict) or not result.get("ok"):
+                return jsonify({
+                    "ok": False,
+                    "message": (result or {}).get("message") or "复盘调优失败",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
+            message = result.get("message") or "复盘调优完成"
+            payload = result.get("payload") or {}
+            extra["ai_learning"] = payload.get("ai_learning")
+            extra["midterm_tracker"] = payload.get("midterm_tracker")
+            extra["portfolio_review"] = payload.get("portfolio_review")
+            extra["selection_tuning"] = payload.get("selection_tuning")
+            if payload.get("tuning_summary"):
+                extra["tuning_content"] = {
+                    "name": "选股策略调优",
+                    "content": payload["tuning_summary"],
+                }
         elif action == "midterm":
             from quantpy.orchestration import run_action_midterm
 
@@ -780,6 +808,28 @@ def api_action(action: str):
                     **extra,
                 }
                 return jsonify(payload), 200
+        elif action == "sim-ma20-select":
+            force = str(request.args.get("force") or "").lower() in ("1", "true", "yes")
+            industry = str(request.args.get("industry") or "").strip() or None
+            from quantpy.orchestration import run_action_sim_ma20
+
+            result, log = _run_quiet(
+                run_action_sim_ma20,
+                force=force,
+                show_progress=True,
+                industry=industry,
+                action="sim-ma20-select",
+            )
+            if not isinstance(result, dict) or not result.get("ok"):
+                return jsonify({
+                    "ok": False,
+                    "message": (result or {}).get("message") or "MA20模拟选股失败，请查看运行日志",
+                    "log": log.strip(),
+                    "data": get_dashboard_data(),
+                }), 500
+            message = result.get("message") or "MA20模拟选股完成"
+            payload = result.get("payload") or {}
+            extra["sim_midterm_ma20"] = payload.get("sim_midterm_ma20") or result
         elif action == "sim-midterm":
             from quantpy.sim_midterm import (
                 check_midterm_exits,
