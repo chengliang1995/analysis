@@ -1,0 +1,144 @@
+{
+
+  "task_prefix": "QuantPyStock",
+
+  "phases": [
+
+    {
+
+      "id": "morning",
+
+      "task_name": "Morning",
+
+      "label": "早盘 9:35",
+
+      "time": "09:35",
+
+      "timeout_hours": 1,
+
+      "steps": [
+
+        ["refresh"],
+
+        ["sim"]
+
+      ]
+
+    },
+
+    {
+
+      "id": "ma20-am",
+
+      "task_name": "Ma20Am",
+
+      "label": "MA20回踩 11:00",
+
+      "time": "11:00",
+
+      "timeout_hours": 1,
+
+      "note": "盘中 MA20突破+MA5回踩模拟选股",
+
+      "steps": [
+
+        ["sim-ma20", "--force"]
+
+      ]
+
+    },
+
+    {
+
+      "id": "ma20-pm",
+
+      "task_name": "Ma20Pm",
+
+      "label": "MA20回踩 13:30",
+
+      "time": "13:30",
+
+      "timeout_hours": 1,
+
+      "note": "盘中 MA20突破+MA5回踩模拟选股",
+
+      "steps": [
+
+        ["sim-ma20", "--force"]
+
+      ]
+
+    },
+
+    {
+
+      "id": "triple-volume",
+
+      "task_name": "TripleVolume",
+
+      "label": "三倍量 14:45",
+
+      "time": "14:45",
+
+      "timeout_hours": 2,
+
+      "steps": [
+
+        ["midterm-triple-volume", "--force"]
+
+      ]
+
+    },
+
+    {
+
+      "id": "close",
+
+      "task_name": "Close",
+
+      "label": "收盘 15:10",
+
+      "time": "15:10",
+
+      "timeout_hours": 1,
+
+      "steps": [
+
+        ["refresh"],
+
+        ["sim"],
+
+        ["sim-status"]
+
+      ]
+
+    },
+
+    {
+
+      "id": "report",
+
+      "task_name": "Report",
+
+      "label": "日报 15:25",
+
+      "time": "15:25",
+
+      "timeout_hours": 2,
+
+      "note": "日报内已含观察池评估，勿再单独跑 triple-volume-watch",
+
+      "steps": [
+
+        ["report", "--prefilter", "300", "--min-score", "35"],
+
+        ["portfolio"]
+
+      ]
+
+    }
+
+  ]
+
+}
+
