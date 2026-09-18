@@ -48,7 +48,19 @@ class SimConfig:
     max_chase_above_zone_pct: float = 0.3  # 可略高于买点上沿的容忍%
     top_prefilter: int = 200
     t_plus_one: bool = True  # A股 T+1：买入当日不可卖出
-    round_trip_cost_pct: float = 0.12  # 买卖佣金+卖出印花税近似（从收益中扣除）
+    # 交易成本（A 股常规口径；兼容旧版 round_trip_cost_pct）
+    commission_rate: float = 0.00025   # 佣金，双边（万2.5）
+    stamp_tax_rate: float = 0.0005     # 印花税，仅卖出（万5）
+    slippage_rate: float = 0.001       # 滑点，双边（0.1%）
+    round_trip_cost_pct: float = 0.0   # 已废弃：改用分项费率；>0 时仍作兼容扣减
+
+    @property
+    def buy_cost_rate(self) -> float:
+        return self.commission_rate + self.slippage_rate
+
+    @property
+    def sell_cost_rate(self) -> float:
+        return self.commission_rate + self.stamp_tax_rate + self.slippage_rate
 
 
 @dataclass
@@ -605,9 +617,10 @@ class SimReplayEngine:
         return self._default_state()
 
     def _upgrade_sim_config(self, state: dict) -> None:
-        """将旧版偏松参数升级到当前默认（仅抬严、不自动放宽）。"""
+        """将旧版偏松参数升级到当前默认（仅抬严、不自动放宽）；并补齐新增费率字段。"""
         cfg = state.get("config") or {}
         defaults = asdict(SimConfig())
+        merged = {**defaults, **cfg}
         upgrades = {
             "min_score": lambda v: max(int(v or 0), defaults["min_score"]),
             "max_open_gap_pct": lambda v: min(float(v or 99), defaults["max_open_gap_pct"]),
@@ -617,16 +630,17 @@ class SimReplayEngine:
         }
         changed = False
         for key, fn in upgrades.items():
-            old = cfg.get(key, defaults[key])
+            old = merged.get(key, defaults[key])
             new = fn(old)
             if new != old:
-                cfg[key] = new
+                merged[key] = new
                 changed = True
-        if changed:
-            state["config"] = cfg
-            merged = {**defaults, **cfg}
-            self.config = SimConfig(**merged)
-            self.selector = MorningSelector(self.config)
+        # 旧版仅有 round_trip_cost_pct 时，保留其收益扣减口径，不强制覆盖分项费率默认
+        clean = {k: merged.get(k, defaults[k]) for k in defaults}
+        state["config"] = clean
+        self.config = SimConfig(**clean)
+        self.selector = MorningSelector(self.config)
+        if changed or set(cfg.keys()) != set(defaults.keys()):
             try:
                 SIM_STATE_FILE.write_text(
                     json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8",
@@ -789,9 +803,11 @@ class SimReplayEngine:
             if qty <= 0:
                 skipped_buy.append(f"{name}({code}): 资金不足")
                 continue
-            cost = buy_price * qty
+            # 成交价含买入滑点；现金扣减含佣金
+            exec_price = round(buy_price * (1 + self.config.slippage_rate), 4)
+            cost = exec_price * qty * (1 + self.config.commission_rate)
             if cost > float(self.state["cash"]):
-                skipped_buy.append(f"{name}({code}): 现金不足")
+                skipped_buy.append(f"{name}({code}): 现金不足(含交易费用)")
                 continue
 
             zone = meta.get("buy_zone", "")
@@ -808,7 +824,7 @@ class SimReplayEngine:
                 code=code,
                 name=name,
                 quantity=qty,
-                buy_price=buy_price,
+                buy_price=exec_price,
                 buy_date=today,
                 stop_loss=round(stop_loss, 2),
                 take_profit=round(take_profit, 2),
@@ -827,7 +843,7 @@ class SimReplayEngine:
             })
             self.state["cash"] = float(self.state["cash"]) - cost
             self.state["positions"].append(pos_dict)
-            bought.append({**item, **meta, "buy_price": buy_price})
+            bought.append({**item, **meta, "buy_price": exec_price})
 
         if bought:
             self.state["last_select_date"] = today
@@ -931,23 +947,28 @@ class SimReplayEngine:
     def _close_position(
         self, p: dict, sell_date: str, sell_price: float, reason: str, hold_days: int
     ) -> SimTrade:
-        cost_pct = float(getattr(self.config, "round_trip_cost_pct", 0.0) or 0.0)
-        gross_pct = (sell_price - p["buy_price"]) / p["buy_price"] * 100
-        profit_pct = gross_pct - cost_pct
-        notional = p["buy_price"] * p["quantity"]
-        gross_amount = (sell_price - p["buy_price"]) * p["quantity"]
-        profit_amount = gross_amount - notional * cost_pct / 100
-        self.state["cash"] = float(self.state["cash"]) + sell_price * p["quantity"]
+        # 卖出：滑点后成交；回款扣佣金+印花税。旧版 round_trip_cost_pct>0 时额外兼容扣减。
+        exec_price = round(float(sell_price) * (1 - self.config.slippage_rate), 4)
+        buy_cost = float(p["buy_price"]) * p["quantity"] * (1 + self.config.commission_rate)
+        proceeds = exec_price * p["quantity"] * (
+            1 - self.config.commission_rate - self.config.stamp_tax_rate
+        )
+        legacy = float(getattr(self.config, "round_trip_cost_pct", 0.0) or 0.0)
+        if legacy > 0:
+            proceeds -= float(p["buy_price"]) * p["quantity"] * legacy / 100.0
+        profit_amount = round(proceeds - buy_cost, 2)
+        profit_pct = round(profit_amount / buy_cost * 100, 2) if buy_cost > 0 else 0.0
+        self.state["cash"] = float(self.state["cash"]) + proceeds
         trade = SimTrade(
             code=p["code"],
             name=p["name"],
             buy_date=p["buy_date"],
-            buy_price=p["buy_price"],
+            buy_price=round(float(p["buy_price"]), 2),
             sell_date=sell_date,
-            sell_price=round(sell_price, 2),
+            sell_price=round(float(sell_price), 2),
             quantity=p["quantity"],
-            profit_pct=round(profit_pct, 2),
-            profit_amount=round(profit_amount, 2),
+            profit_pct=profit_pct,
+            profit_amount=profit_amount,
             hold_days=hold_days,
             exit_reason=reason,
             score=p.get("score", 0),
@@ -995,14 +1016,17 @@ class SimReplayEngine:
         return False
 
     def run_review(self, show_progress: bool = True) -> dict:
-        """每 5 个交易日复盘，输出优化建议并微调参数。"""
+        """每 5 个交易日复盘：统一走调优管线（AI / 规则回退 + 选股门槛构建）。"""
+        from quantpy.tuning_pipeline import run_tuning_pipeline
+
         trades = self.state.get("closed_trades", [])
         recent = trades[-20:] if trades else []
         today = self._today()
+        next_round = int(self.state.get("review_round", 0)) + 1
 
         if show_progress:
             print("\n" + "=" * 60)
-            print(f"第 {int(self.state.get('review_round', 0)) + 1} 轮复盘（每 {self.config.review_interval} 交易日）")
+            print(f"第 {next_round} 轮复盘（每 {self.config.review_interval} 交易日）")
             print("=" * 60)
 
         if not recent:
@@ -1020,54 +1044,59 @@ class SimReplayEngine:
             }
             suggestions = self._generate_review_suggestions(df, stats)
 
-        param_changes: dict = {}
-        ai_learning = None
-        ai_fallback = False
-        if recent:
-            try:
-                from quantpy.ai_learning_optimizer import AILearningOptimizer
+        pipe = run_tuning_pipeline(
+            mode="sim_review",
+            show_progress=show_progress,
+            auto_apply=True,
+            engine=self,
+            review_round=next_round,
+        )
+        param_changes = dict(pipe.get("param_changes") or {})
+        ai_learning = pipe.get("ai_learning")
+        ai_fallback = bool(pipe.get("ai_fallback"))
 
-                ai_opt = AILearningOptimizer(auto_apply=True)
-                ai_learning = ai_opt.run_learning_cycle(
-                    self,
-                    review_round=int(self.state.get("review_round", 0)) + 1,
-                    show_progress=show_progress,
-                )
-                param_changes = ai_learning.get("param_changes", {})
-                ai_suggestions = ai_learning.get("suggestions", [])
-                seen = set(suggestions)
-                for s in ai_suggestions:
-                    if s not in seen:
-                        suggestions.append(s)
-                        seen.add(s)
-            except Exception as exc:
-                logger.warning("AI 学习失败，回退规则引擎: %s", exc)
-                if show_progress:
-                    print(f"  AI 学习回退规则引擎: {exc}")
-                param_changes = self._auto_tune_params(stats)
+        if recent and not param_changes and (ai_fallback or (ai_learning or {}).get("skipped")):
+            from quantpy.tuning_pipeline import apply_rule_based_sim_params
+
+            rb = apply_rule_based_sim_params(self.config, stats)
+            if rb:
+                param_changes.update(rb)
                 ai_fallback = True
+                self.state["config"] = asdict(self.config)
+                self._save_state()
+
+        ai_suggestions = (ai_learning or {}).get("suggestions") or []
+        seen = set(suggestions)
+        for s in ai_suggestions:
+            if s not in seen:
+                suggestions.append(s)
+                seen.add(s)
 
         review = {
             "date": today,
-            "round": int(self.state.get("review_round", 0)) + 1,
+            "round": next_round,
             "stats": stats,
             "suggestions": suggestions,
             "param_changes": param_changes,
             "config_after": asdict(self.config),
             "ai_learning": ai_learning,
             "ai_fallback": ai_fallback,
+            "tuning_summary": pipe.get("tuning_summary"),
+            "pipeline_mode": "sim_review",
         }
 
         self.state["review_round"] = review["round"]
         self.state["last_review_date"] = today
         self.state.setdefault("param_history", []).append(review)
         self._save_state()
-
         self._save_review_report(review)
 
         if show_progress:
             if stats.get("trade_count"):
-                print(f"近{stats['trade_count']}笔: 胜率 {stats['win_rate']}% 均收益 {stats['avg_profit']}%")
+                print(
+                    f"近{stats['trade_count']}笔: 胜率 {stats['win_rate']}% "
+                    f"均收益 {stats['avg_profit']}%"
+                )
             print("\n【复盘建议】")
             for i, s in enumerate(suggestions, 1):
                 print(f"  {i}. {s}")
@@ -1077,6 +1106,12 @@ class SimReplayEngine:
                     print(f"  {k}: {v}")
 
         return review
+
+    def _auto_tune_params(self, stats: dict) -> dict:
+        """兼容旧调用：委托统一规则引擎。"""
+        from quantpy.tuning_pipeline import apply_rule_based_sim_params
+
+        return apply_rule_based_sim_params(self.config, stats)
 
     def _generate_review_suggestions(self, df: pd.DataFrame, stats: dict) -> List[str]:
         suggestions = []
@@ -1116,33 +1151,6 @@ class SimReplayEngine:
                 "A股 T+1：当日买入无法当日卖出，止损/止盈自次一交易日生效。"
             )
         return suggestions
-
-    def _auto_tune_params(self, stats: dict) -> dict:
-        changes = {}
-        if not stats.get("trade_count"):
-            return changes
-
-        if stats["win_rate"] < 45:
-            old = self.config.min_score
-            self.config.min_score = min(old + 5, 60)
-            changes["min_score"] = f"{old} → {self.config.min_score}"
-
-        if stats["avg_profit"] < -1:
-            old = self.config.max_open_gap_pct
-            self.config.max_open_gap_pct = max(old - 1.0, 4.0)
-            changes["max_open_gap_pct"] = f"{old} → {self.config.max_open_gap_pct}"
-
-        if stats.get("avg_hold", 0) > 2.5:
-            old = self.config.max_hold_days
-            self.config.max_hold_days = max(old - 1, 2)
-            changes["max_hold_days"] = f"{old} → {self.config.max_hold_days}"
-
-        if stats["win_rate"] >= 55 and stats["avg_profit"] > 2:
-            old = self.config.take_profit_pct
-            self.config.take_profit_pct = min(old + 1.0, 12.0)
-            changes["take_profit_pct"] = f"{old} → {self.config.take_profit_pct}"
-
-        return changes
 
     def _save_review_report(self, review: dict) -> Path:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1326,7 +1334,7 @@ class SimReplayEngine:
         self.state["positions"] = remain
 
     def _backtest_morning_buy(self, day: str, day_idx: int) -> None:
-        """回测：前一日强势 + 当日开盘价买入。"""
+        """回测：当日开盘价买入（含滑点/佣金）。"""
         if day_idx == 0:
             return
 
@@ -1351,66 +1359,91 @@ class SimReplayEngine:
             if blocked:
                 continue
             qty = self._calc_quantity(buy_price, slots)
-            if qty <= 0 or buy_price * qty > float(self.state["cash"]):
+            exec_price = round(buy_price * (1 + self.config.slippage_rate), 4)
+            cost = exec_price * qty * (1 + self.config.commission_rate)
+            if qty <= 0 or cost > float(self.state["cash"]):
                 continue
             zone_low, zone_high, _ = self.selector._buy_zone(buy_price)
             pos = SimPosition(
                 code=item["code"],
                 name=item["name"],
                 quantity=qty,
-                buy_price=round(buy_price, 2),
+                buy_price=exec_price,
                 buy_date=day,
                 stop_loss=round(buy_price * (1 + self.config.stop_loss_pct / 100), 2),
                 take_profit=round(buy_price * (1 + self.config.take_profit_pct / 100), 2),
                 score=item.get("score", 0),
                 tags=f"回测开盘买,买点{zone_low}-{zone_high}",
             )
-            self.state["cash"] -= buy_price * qty
+            self.state["cash"] -= cost
             self.state["positions"].append(asdict(pos))
             slots -= 1
 
-    def _backtest_select_for_day(self, day: str, sample_size: int = 150) -> List[dict]:
-        """历史日选股：与实盘同管线（UltraShortScanner + selection_tuning），仅用截至当日的 K 线。"""
+    def _backtest_select_for_day(self, day: str, sample_size: int = 300) -> List[dict]:
+        """历史日选股：scan_historical_day + 质量/开盘缺口过滤。
+
+        非生产策略口径：当前流动性池有幸存者偏差；历史无换手率；数字偏乐观。
+        """
         from quantpy.selection_tuning import build_selection_tuning
         from quantpy.paths import CACHE_DIR
 
         tuning = build_selection_tuning(for_sim=True)
         effective_min = max(self.config.min_score, tuning.ultra_min_score)
 
-        list_path = CACHE_DIR / "stock_list.csv"
-        if list_path.exists():
-            try:
-                market = pd.read_csv(list_path, dtype=str)
-            except OSError:
-                market = pd.DataFrame()
-        else:
-            market = pd.DataFrame()
+        market = get_market_spot(verbose=False)
         if market.empty:
-            market = get_market_spot(verbose=False)
+            list_path = CACHE_DIR / "stock_list.csv"
+            if list_path.exists():
+                try:
+                    market = pd.read_csv(list_path, dtype=str)
+                except OSError:
+                    market = pd.DataFrame()
         if market.empty:
             return []
 
         code_col = next((c for c in ("code", "代码", "symbol") if c in market.columns), None)
-        name_col = next((c for c in ("name", "名称") if c in market.columns), None)
         if not code_col:
             return []
-        codes = market[code_col].astype(str).str.zfill(6).head(sample_size).tolist()
+        pool = market.copy()
+        pool["_code"] = pool[code_col].astype(str).str.zfill(6)
+        pool["_amt"] = 0.0
+        for col in ("amount", "成交额", "volume", "成交量"):
+            if col in pool.columns:
+                pool["_amt"] = pd.to_numeric(pool[col], errors="coerce").fillna(0)
+                break
+        pool["_pct"] = 0.0
+        for col in ("pct_chg", "changepercent", "涨跌幅"):
+            if col in pool.columns:
+                pool["_pct"] = pd.to_numeric(pool[col], errors="coerce").fillna(0)
+                break
+        pool = pool.sort_values(["_amt", "_pct"], ascending=False).head(max(sample_size, 150))
+
+        scored = self.scanner.scan_historical_day(
+            pool=pool,
+            trade_date=day,
+            top_prefilter=min(sample_size, 300),
+            max_workers=8,
+            lookback_days=10,
+            min_score=effective_min,
+            show_progress=False,
+            tuning=tuning,
+        )
+        if scored.empty:
+            return []
 
         day_ts = pd.Timestamp(day)
         results: List[dict] = []
-
-        for code in codes:
-            hist = get_stock_hist(code, days=60, patch_live=False)
-            if hist.empty or len(hist) < 22:
+        for _, row in scored.iterrows():
+            code = str(row.get("code", "")).zfill(6)
+            name = str(row.get("name") or code)
+            hist = get_stock_hist(code, days=40, patch_live=False)
+            if hist.empty or len(hist) < 6:
                 continue
             hist = hist.copy()
             hist["date"] = pd.to_datetime(hist["date"])
             hist = hist[hist["date"] <= day_ts]
-            if hist.empty:
+            if hist.empty or hist["date"].iloc[-1].strftime("%Y-%m-%d") != day:
                 continue
-            if hist["date"].iloc[-1].strftime("%Y-%m-%d") != day:
-                continue
-
             today = hist.iloc[-1]
             open_px = float(today.get("open") or 0)
             if open_px <= 0:
@@ -1421,44 +1454,14 @@ class SimReplayEngine:
             gap_pct = (open_px - pre_close) / pre_close * 100
             if gap_pct > self.config.max_open_gap_pct or gap_pct < self.config.min_open_gap_pct:
                 continue
-
+            item = row.to_dict()
+            ok, _reason = self.selector._sim_ultra_quality_ok(item)
+            if not ok:
+                continue
             close_px = float(today["close"])
             pct = float(today.get("pct_chg") or 0)
             if pct == 0:
                 pct = (close_px - pre_close) / pre_close * 100
-
-            name = code
-            if name_col and not market.empty:
-                row = market[market[code_col].astype(str).str.zfill(6) == code]
-                if not row.empty:
-                    name = str(row.iloc[0][name_col])
-
-            spot = {
-                "changepercent": pct,
-                "turnover": float(today.get("turnover") or 0),
-                "price": close_px,
-                "open": open_px,
-                "high": float(today.get("high") or close_px),
-                "low": float(today.get("low") or close_px),
-                "pre_close": pre_close,
-            }
-            item = self.scanner._analyze_single(
-                code,
-                name,
-                spot=spot,
-                lookback_days=10,
-                tuning=tuning,
-                hist_df=hist,
-            )
-            if not item:
-                continue
-            score = float(item.get("ultra_short_score") or 0)
-            if score < effective_min:
-                continue
-            ok, _reason = self.selector._sim_ultra_quality_ok(item)
-            if not ok:
-                continue
-
             results.append({
                 "code": code,
                 "name": name,
@@ -1468,13 +1471,14 @@ class SimReplayEngine:
                 "pre_close": pre_close,
                 "gap_pct": round(gap_pct, 2),
                 "prev_pct": round(pct, 2),
-                "score": score,
+                "score": float(item.get("ultra_short_score") or item.get("score") or 0),
                 "tags": item.get("tags", ""),
                 "is_sealed_board": item.get("is_sealed_board"),
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[: self.config.max_positions * 2]
+
 
 
 def run_sim_daily(force: bool = False) -> dict:

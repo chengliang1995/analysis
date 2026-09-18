@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "updated_at": "2026-09-18T18:17:17",
+  "steps": [
+    "有效门槛：超短≥51 · 中线≥62 · MA20≥62 · 三倍量≥60"
+  ],
+  "live": {
+    "ultra_min_score": 51,
+    "midterm_min_score": 62,
+    "triple_min_score": 60,
+    "ma20_pullback_min_score": 62,
+    "midterm_reject_score_bands": [
+      [
+        70.0,
+        80.0
+      ]
+    ],
+    "ultra_tag_bonus": {
+      "涨停不破开": 8,
+      "强势封板": 6
+    },
+    "ultra_tag_penalty": {},
+    "ultra_penalize_3d_gain_above": 18.0,
+    "ultra_penalize_pct_above": null,
+    "ultra_penalize_unsealed_above_pct": 5.0,
+    "ultra_preferred_tags": [
+      "涨停不破开",
+      "强势封板",
+      "封板",
+      "连板"
+    ],
+    "require_ultra_tag_any": [
+      "强势封板",
+      "封板",
+      "涨停不破开",
+      "连板"
+    ],
+    "strict_tag_filter": true,
+    "ultra_demote_midhigh_unsealed": true,
+    "ultra_demote_high_unsealed": true,
+    "midterm_ma20_chase_penalty": 0,
+    "midterm_ma20_chase_ratio": 1.08,
+    "midterm_penalize_ret_20d_below": null,
+    "midterm_condition_bonus": {},
+    "midterm_condition_penalty": {},
+    "midterm_tag_bonus": {},
+    "midterm_tag_penalty": {},
+    "triple_condition_bonus": {},
+    "triple_condition_penalty": {},
+    "triple_tag_bonus": {},
+    "triple_tag_penalty": {},
+    "notes": [
+      "近30笔胜率30%/止损70%，启用封板硬筛+门槛≥48",
+      "模拟复盘胜率 35% 偏低，偏好封板/不破开（软筛选）",
+      "低评分(<60)标的胜率差，适度抬高入选门槛",
+      "评分60-75胜率26%偏低，略抬超短门槛",
+      "评分75-90胜率仅37%，抑制未封板中高分追涨",
+      "评分90+胜率仅44%，抑制未封板超高分",
+      "止损触发偏多，未封板大涨标的减分",
+      "模拟复盘胜率 35% 偏低，超短门槛≥48",
+      "评分70-80档胜率 39.1% 偏低，拒分档70–80（保留60–70/80+）",
+      "中线跟进10日胜率 47.8%（92 笔），因子已调优"
+    ],
+    "sources": [
+      "sim_config",
+      "sim_trades(n=121)",
+      "sim_midterm(n=23)",
+      "ai_learning",
+      "real_review",
+      "midterm_tracker"
+    ]
+  },
+  "sim": {
+    "ultra_min_score": 51,
+    "midterm_min_score": 62,
+    "triple_min_score": 60,
+    "ma20_pullback_min_score": 62,
+    "midterm_reject_score_bands": [
+      [
+        70.0,
+        80.0
+      ]
+    ],
+    "ultra_tag_bonus": {
+      "涨停不破开": 8,
+      "强势封板": 6
+    },
+    "ultra_tag_penalty": {},
+    "ultra_penalize_3d_gain_above": 18.0,
+    "ultra_penalize_pct_above": null,
+    "ultra_penalize_unsealed_above_pct": 5.0,
+    "ultra_preferred_tags": [
+      "涨停不破开",
+      "强势封板",
+      "封板",
+      "连板"
+    ],
+    "require_ultra_tag_any": [
+      "强势封板",
+      "封板",
+      "涨停不破开",
+      "连板"
+    ],
+    "strict_tag_filter": true,
+    "ultra_demote_midhigh_unsealed": true,
+    "ultra_demote_high_unsealed": true,
+    "midterm_ma20_chase_penalty": 0,
+    "midterm_ma20_chase_ratio": 1.08,
+    "midterm_penalize_ret_20d_below": null,
+    "midterm_condition_bonus": {},
+    "midterm_condition_penalty": {},
+    "midterm_tag_bonus": {},
+    "midterm_tag_penalty": {},
+    "triple_condition_bonus": {},
+    "triple_condition_penalty": {},
+    "triple_tag_bonus": {},
+    "triple_tag_penalty": {},
+    "notes": [
+      "近30笔胜率30%/止损70%，启用封板硬筛+门槛≥48",
+      "模拟复盘胜率 35% 偏低，偏好封板/不破开（软筛选）",
+      "低评分(<60)标的胜率差，适度抬高入选门槛",
+      "评分60-75胜率26%偏低，略抬超短门槛",
+      "评分75-90胜率仅37%，抑制未封板中高分追涨",
+      "评分90+胜率仅44%，抑制未封板超高分",
+      "止损触发偏多，未封板大涨标的减分",
+      "模拟复盘胜率 35% 偏低，超短门槛≥48",
+      "评分70-80档胜率 39.1% 偏低，拒分档70–80（保留60–70/80+）",
+      "中线跟进10日胜率 47.8%（92 笔），因子已调优"
+    ],
+    "sources": [
+      "sim_config",
+      "sim_trades(n=121)",
+      "sim_midterm(n=23)",
+      "ai_learning",
+      "real_review",
+      "midterm_tracker"
+    ]
+  },
+  "summary": "选股调优：超短≥51 · 中线≥62 · MA20回踩≥62 · 三倍量≥60\n拒分档：[70,80)\n依据：sim_config, sim_trades(n=121), sim_midterm(n=23), ai_learning, real_review, midterm_tracker\n  · 近30笔胜率30%/止损70%，启用封板硬筛+门槛≥48\n  · 模拟复盘胜率 35% 偏低，偏好封板/不破开（软筛选）\n  · 低评分(<60)标的胜率差，适度抬高入选门槛\n  · 评分60-75胜率26%偏低，略抬超短门槛\n  · 评分75-90胜率仅37%，抑制未封板中高分追涨\n  · 评分90+胜率仅44%，抑制未封板超高分",
+  "extras": {
+    "mode": "build_only",
+    "param_changes": {},
+    "ai_fallback": false,
+    "errors": []
+  }
+}

@@ -13,7 +13,7 @@ const ACTION_BUSY_LABEL = {
   review: "实盘复盘中…",
   scan: "超短扫描中…",
   sector: "板块推荐扫描中…",
-  "sim-backtest": "模拟回测中…",
+  "sim-backtest": "模拟回测中（参考口径）…",
   "sim-midterm": "模拟中线复盘中…",
   "sim-midterm-select": "观察池模拟选股中（评估观察池买点）…",
   "sim-ma20-select": "MA20回踩选股扫描中（20万模拟账户）…",

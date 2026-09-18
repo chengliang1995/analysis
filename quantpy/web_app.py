@@ -29,9 +29,6 @@ from quantpy import __version__ as APP_VERSION
 from quantpy.paths import LOG_DIR, OUTPUT_DIR, PROJECT_ROOT, REPORT_DIR, RETENTION_DAYS, STATIC_DIR, TEMPLATES_DIR
 from quantpy.portfolio import PortfolioManager
 from quantpy.retention import prune_retention_files
-from quantpy.sim_replay import SimReplayEngine
-from quantpy.sim_midterm import enrich_midterm_sim, run_sim_midterm_select
-from quantpy.ai_learning_optimizer import run_ai_learning
 from quantpy.midterm_portfolio_advisor import MidtermPortfolioAdvisor
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import (
@@ -44,7 +41,6 @@ from quantpy.stock_data import (
     lookup_instrument_by_name,
     price_step_for_code,
 )
-from quantpy.sector_recommender import run_sector_recommendations
 from quantpy.real_portfolio_reviewer import (
     load_latest_real_review,
     run_real_portfolio_review,
@@ -57,7 +53,6 @@ from quantpy.web_dashboard import (
     get_trades_data,
     load_latest_report_content,
     load_latest_report_meta,
-    refresh_holdings_quotes,
 )
 
 BASE_DIR = PROJECT_ROOT
@@ -563,364 +558,164 @@ def api_portfolio_remove(code: str):
 
 @app.route("/api/actions/<action>", methods=["POST"])
 def api_action(action: str):
+    """所有操作统一经 orchestration.dispatch_action。"""
+    from quantpy.orchestration import WEB_ACTION_ALIASES, dispatch_action
+
     force = request.args.get("force", "false").lower() == "true"
     days = request.args.get("days", 20, type=int)
     log = ""
-    message = ""
     extra: dict = {}
     prefetched_dashboard: Optional[dict] = None
+    key = WEB_ACTION_ALIASES.get(action, action)
+
+    kwargs: dict = {}
+    if key == "refresh":
+        pass
+    elif key == "report":
+        kwargs = {
+            "top_prefilter": 200,
+            "min_score": 35,
+            "days": 30,
+            "include_watchlist": True,
+        }
+    elif key == "sim":
+        kwargs = {"force": force, "show_progress": False}
+    elif key == "sim-review":
+        kwargs = {"show_progress": False}
+    elif key == "sim-backtest":
+        kwargs = {"days": days, "show_progress": False}
+    elif key == "ai-learn":
+        kwargs = {"show_progress": True, "auto_apply": True}
+    elif key == "review-tune":
+        kwargs = {"show_progress": True, "review_days": 90, "auto_apply": True}
+    elif key == "midterm":
+        kwargs = {
+            "full": True,
+            "apply_to_sim": True,
+            "show_progress": True,
+            "industry": str(request.args.get("industry") or "").strip() or None,
+            "performance": str(request.args.get("performance") or "").strip() or None,
+        }
+    elif key == "midterm-track":
+        kwargs = {"show_progress": True}
+    elif key == "midterm-triple-volume":
+        kwargs = {"force": force, "show_progress": True}
+    elif key == "triple-volume-watch":
+        kwargs = {"show_progress": True}
+    elif key == "alerts":
+        kwargs = {"show_progress": False}
+    elif key == "sim-midterm-select":
+        kwargs = {
+            "force": str(request.args.get("force") or "").lower() in ("1", "true", "yes"),
+            "use_cache": str(request.args.get("cache") or "").lower() in ("1", "true", "yes"),
+            "industry": str(request.args.get("industry") or "").strip() or None,
+            "performance": str(request.args.get("performance") or "").strip() or None,
+            "show_progress": True,
+        }
+    elif key == "sim-ma20":
+        kwargs = {
+            "force": str(request.args.get("force") or "").lower() in ("1", "true", "yes") or force,
+            "industry": str(request.args.get("industry") or "").strip() or None,
+            "show_progress": True,
+        }
+    elif key == "sim-midterm":
+        kwargs = {"show_progress": True}
+    elif key == "review":
+        kwargs = {"days": 90, "show_progress": False}
+    elif key == "scan":
+        kwargs = {"top_prefilter": 200, "min_score": 35}
+    elif key == "sector":
+        board_type = str(request.args.get("type") or "concept").strip().lower()
+        if board_type not in ("concept", "industry"):
+            board_type = "concept"
+        kwargs = {
+            "board_type": board_type,
+            "board_code": str(request.args.get("board") or "").strip().upper() or None,
+            "top_boards": 8,
+            "stocks_per_board": 5,
+            "show_progress": True,
+        }
 
     try:
-        if action == "refresh":
-            portfolio_stats, sim_data, log = refresh_holdings_quotes()
-            n_real = len(portfolio_stats.get("positions", []))
-            n_sim = sim_data.get("position_count", 0)
-            message = f"持仓行情已刷新（实盘 {n_real} 只 · 模拟 {n_sim} 只）"
-            prefetched_dashboard = get_dashboard_data(
-                portfolio_stats=portfolio_stats,
-                sim_data=sim_data,
-            )
-        elif action == "report":
-            from quantpy.orchestration import run_action_report
+        result, log = _run_quiet(dispatch_action, action, action=action, **kwargs)
+        if not isinstance(result, dict):
+            return jsonify({
+                "ok": False,
+                "message": "操作失败",
+                "log": log.strip(),
+                "data": get_dashboard_data(),
+            }), 500
 
-            result, log = _run_quiet(
-                run_action_report,
-                top_prefilter=200,
-                min_score=35,
-                days=30,
-                include_watchlist=True,
-                action="report",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "日报生成失败，请查看日志",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            message = result.get("message") or "日报已生成"
+        ok = bool(result.get("ok", True))
+        message = result.get("message") or ""
+        payload = result.get("payload") or {}
+
+        for k in (
+            "ultra_short", "triple_volume", "triple_volume_watchlist", "watch_eval",
+            "midterm", "midterm_content", "level_alerts", "sim_midterm", "sim_midterm_ma20",
+            "ai_learning", "midterm_tracker", "portfolio_review", "selection_tuning",
+            "review", "backtest", "sector", "review_content",
+        ):
+            if k in payload and payload[k] is not None:
+                extra[k] = payload[k]
+
+        if payload.get("tuning_summary"):
+            extra["tuning_content"] = {
+                "name": "选股策略调优",
+                "content": payload["tuning_summary"],
+            }
+        if key == "report" and ok:
             extra["report"] = load_latest_report_meta()
             extra["report_content"] = load_latest_report_content()
-        elif action == "sim":
-            engine = SimReplayEngine()
-            result, log = _run_quiet(engine.run_daily, force_select=force, show_progress=False)
-            closed = result.get("closed_today", 0) if isinstance(result, dict) else 0
-            picks = result.get("picks_today", 0) if isinstance(result, dict) else 0
-            message = f"模拟运行完成：平仓 {closed} 笔，新选 {picks} 只"
-        elif action == "sim-review":
-            engine = SimReplayEngine()
-            review, log = _run_quiet(engine.run_review, show_progress=False)
-            round_no = review.get("round", 0) if isinstance(review, dict) else 0
-            message = f"第 {round_no} 轮复盘完成"
-            if isinstance(review, dict):
-                extra["review"] = {
-                    "round": review.get("round"),
-                    "suggestions": review.get("suggestions", []),
-                    "ai_learning": review.get("ai_learning"),
-                }
-        elif action == "ai-learn":
-            result, log = _run_quiet(run_ai_learning, show_progress=False, auto_apply=True)
-            round_no = result.get("round", 0) if isinstance(result, dict) else 0
-            message = f"AI 策略学习完成（第 {round_no} 轮）"
-            extra["ai_learning"] = result
-        elif action == "review-tune":
-            from quantpy.orchestration import run_action_review_tune
-
-            result, log = _run_quiet(
-                run_action_review_tune,
-                show_progress=True,
-                review_days=90,
-                auto_apply=True,
-                action="review-tune",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "复盘调优失败",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            message = result.get("message") or "复盘调优完成"
-            payload = result.get("payload") or {}
-            extra["ai_learning"] = payload.get("ai_learning")
-            extra["midterm_tracker"] = payload.get("midterm_tracker")
-            extra["portfolio_review"] = payload.get("portfolio_review")
-            extra["selection_tuning"] = payload.get("selection_tuning")
-            if payload.get("tuning_summary"):
-                extra["tuning_content"] = {
-                    "name": "选股策略调优",
-                    "content": payload["tuning_summary"],
-                }
-        elif action == "midterm":
-            from quantpy.orchestration import run_action_midterm
-
-            industry = str(request.args.get("industry") or "").strip() or None
-            performance = str(request.args.get("performance") or "").strip() or None
-            result, log = _run_quiet(
-                run_action_midterm,
-                full=True,
-                industry=industry,
-                performance=performance,
-                apply_to_sim=True,
-                show_progress=True,
-                action="midterm",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "中线分析失败，请查看运行日志",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500 if (result or {}).get("message") != "暂无实盘持仓" else 400
-            message = result.get("message") or "中线分析完成"
-            payload = result.get("payload") or {}
-            midterm_result = payload.get("midterm") or {}
-            alerts = payload.get("level_alerts") or {}
-            pm_stats = payload.get("portfolio_stats")
-            if payload.get("sim_midterm"):
-                extra["sim_midterm"] = payload["sim_midterm"]
-            extra["midterm"] = midterm_result
-            extra["level_alerts"] = alerts
-            extra["midterm_content"] = payload.get("midterm_content") or {
-                "name": "实盘中线分析报告",
-                "content": midterm_result.get("markdown") or "",
-            }
-            prefetched_dashboard = get_dashboard_data(
-                portfolio_stats=pm_stats,
-                midterm=midterm_result,
-            )
-            prefetched_dashboard["level_alerts"] = alerts
-        elif action == "midterm-track":
-            from quantpy.orchestration import run_action_midterm_track
-
-            result, log = _run_quiet(
-                run_action_midterm_track,
-                show_progress=True,
-                action="midterm-track",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "中线跟进失败",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            message = result.get("message") or ""
-            payload = result.get("payload") or {}
-            if payload.get("selection_tuning"):
-                extra["selection_tuning"] = payload["selection_tuning"]
-            extra["midterm_tracker"] = payload.get("midterm_tracker")
-        elif action == "midterm-triple-volume":
-            from quantpy.orchestration import run_action_triple_volume
-
-            result, log = _run_quiet(
-                run_action_triple_volume,
-                force=force,
-                show_progress=True,
-                action="midterm-triple-volume",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "三倍量选股失败，请查看运行日志",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            message = result.get("message") or ""
-            payload = result.get("payload") or {}
-            tv = payload.get("triple_volume") or {}
-            extra["triple_volume"] = tv
+        if key == "midterm-triple-volume" and isinstance(extra.get("triple_volume"), dict):
+            tv = extra["triple_volume"]
             extra["triple_volume_content"] = {
                 "name": "三倍量选股报告",
                 "content": tv.get("markdown") or "",
             }
             if tv.get("watchlist"):
                 extra["triple_volume_watchlist"] = tv["watchlist"]
-        elif action == "triple-volume-watch":
-            from quantpy.orchestration import run_action_triple_watch
-
-            result, log = _run_quiet(
-                run_action_triple_watch,
-                show_progress=True,
-                action="triple-volume-watch",
+        if key == "refresh" and ok:
+            prefetched_dashboard = get_dashboard_data(
+                portfolio_stats=payload.get("portfolio_stats"),
+                sim_data=payload.get("sim_data"),
             )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "观察池评估失败",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            message = result.get("message") or ""
-            payload = result.get("payload") or {}
-            extra["triple_volume_watchlist"] = payload.get("triple_volume_watchlist")
-            extra["watch_eval"] = payload.get("watch_eval")
-        elif action == "alerts":
-            pm_stats = PortfolioManager().analyze()
-            if not pm_stats.get("has_data"):
-                return jsonify({"ok": False, "message": "暂无实盘持仓"}), 400
-            midterm, log = _run_quiet(
-                MidtermPortfolioAdvisor().run_quick_advice, pm_stats,
+        if key == "midterm" and ok:
+            midterm_result = payload.get("midterm") or {}
+            alerts = payload.get("level_alerts") or {}
+            prefetched_dashboard = get_dashboard_data(
+                portfolio_stats=payload.get("portfolio_stats"),
+                midterm=midterm_result if midterm_result.get("ok") else None,
             )
-            result = scan_midterm_level_alerts(
-                pm_stats, midterm.get("reviews") if isinstance(midterm, dict) else None, save=True,
-            )
-            n = result.get("alert_count", 0)
-            message = f"价位提醒检查完成：{n} 条" if n else "价位提醒检查完成：暂无触发"
-            extra["level_alerts"] = result
-        elif action == "sim-midterm-select":
-            force = str(request.args.get("force") or "").lower() in ("1", "true", "yes")
-            use_cache = str(request.args.get("cache") or "").lower() in ("1", "true", "yes")
-            industry = str(request.args.get("industry") or "").strip() or None
-            performance = str(request.args.get("performance") or "").strip() or None
-            engine = SimReplayEngine()
-            engine.reload_state()
-            result, log = _run_quiet(
-                run_sim_midterm_select,
-                engine,
-                show_progress=True,
-                force=force,
-                industry=industry,
-                performance=performance,
-                use_cache=use_cache,
-                action="sim-midterm-select",
-            )
-            if result is None:
-                return jsonify({
-                    "ok": False,
-                    "message": "模拟中线选股失败，请查看运行日志",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            if isinstance(result, dict) and result.get("ok"):
-                message = result.get("message") or "模拟中线选股完成"
-            elif isinstance(result, dict):
-                message = result.get("message") or "无推荐标的"
-            else:
-                message = "模拟中线选股失败"
-            extra["sim_midterm"] = result
-            if isinstance(result, dict) and not result.get("ok"):
-                payload = {
-                    "ok": False,
-                    "message": message,
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                    **extra,
+            if alerts:
+                prefetched_dashboard["level_alerts"] = alerts
+            if not extra.get("midterm_content"):
+                extra["midterm_content"] = {
+                    "name": "实盘中线分析报告",
+                    "content": midterm_result.get("markdown") or "",
                 }
-                return jsonify(payload), 200
-        elif action == "sim-ma20-select":
-            force = str(request.args.get("force") or "").lower() in ("1", "true", "yes")
-            industry = str(request.args.get("industry") or "").strip() or None
-            from quantpy.orchestration import run_action_sim_ma20
 
-            result, log = _run_quiet(
-                run_action_sim_ma20,
-                force=force,
-                show_progress=True,
-                industry=industry,
-                action="sim-ma20-select",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "MA20模拟选股失败，请查看运行日志",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            message = result.get("message") or "MA20模拟选股完成"
-            payload = result.get("payload") or {}
-            extra["sim_midterm_ma20"] = payload.get("sim_midterm_ma20") or result
-        elif action == "sim-midterm":
-            from quantpy.sim_midterm import (
-                check_midterm_exits,
-                run_midterm_sim_review,
-            )
+        if key == "sim-midterm-select" and not ok:
+            return jsonify({
+                "ok": False,
+                "message": message or "无推荐标的",
+                "log": log.strip(),
+                "data": get_dashboard_data(),
+                **extra,
+            }), 200
 
-            engine = SimReplayEngine()
-            engine.reload_state()
-            def _sim_midterm_run():
-                check_midterm_exits(engine, show_progress=True)
-                reviews = run_midterm_sim_review(engine, show_progress=True)
-                return {"reviews": reviews, "summary": enrich_midterm_sim(engine.state)}
+        if not ok:
+            if message.startswith("未知操作"):
+                return jsonify({"ok": False, "message": message}), 400
+            status = 400 if message == "暂无实盘持仓" else 500
+            return jsonify({
+                "ok": False,
+                "message": message or "操作失败",
+                "log": log.strip(),
+                "data": get_dashboard_data(),
+            }), status
 
-            result, log = _run_quiet(_sim_midterm_run, action="sim-midterm")
-            n = len(result.get("reviews", [])) if isinstance(result, dict) else 0
-            message = f"模拟中线复盘完成：{n} 只持仓"
-            extra["sim_midterm"] = result
-        elif action == "sim-backtest":
-            engine = SimReplayEngine()
-            result, log = _run_quiet(engine.replay_backtest, days=days, show_progress=False)
-            if isinstance(result, dict) and result:
-                message = (
-                    f"回测完成：权益 {result.get('equity', 0):,.0f} 元 "
-                    f"({result.get('total_return_pct', 0):+.2f}%)，"
-                    f"平仓 {result.get('closed_count', 0)} 笔"
-                )
-                extra["backtest"] = result
-            else:
-                message = "回测完成"
-        elif action == "review":
-            result, log = _run_quiet(run_real_portfolio_review, days=90, show_progress=False)
-            count = result.get("summary", {}).get("trade_count", 0) if isinstance(result, dict) else 0
-            message = f"实盘复盘完成：分析 {count} 笔平仓"
-            extra["portfolio_review"] = result
-            if isinstance(result, dict) and result.get("markdown"):
-                extra["review_content"] = {
-                    "name": "实盘操作复盘",
-                    "content": result["markdown"],
-                }
-        elif action == "scan":
-            from quantpy.orchestration import run_action_ultra_scan
-
-            result, log = _run_quiet(
-                run_action_ultra_scan,
-                top_prefilter=200,
-                min_score=35,
-                action="scan",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                return jsonify({
-                    "ok": False,
-                    "message": (result or {}).get("message") or "超短扫描失败",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            message = result.get("message") or ""
-            payload = result.get("payload") or {}
-            extra["ultra_short"] = payload.get("ultra_short") or []
-        elif action == "sector":
-            board_type = str(request.args.get("type") or "concept").strip().lower()
-            if board_type not in ("concept", "industry"):
-                board_type = "concept"
-            board_code = str(request.args.get("board") or "").strip().upper() or None
-            result, log = _run_quiet(
-                run_sector_recommendations,
-                board_type=board_type,
-                board_code=board_code,
-                top_boards=8,
-                stocks_per_board=5,
-                show_progress=True,
-                action="sector",
-            )
-            if not isinstance(result, dict) or not result.get("ok"):
-                msg = (result or {}).get("message") if isinstance(result, dict) else "板块推荐失败"
-                return jsonify({
-                    "ok": False,
-                    "message": msg or "板块推荐失败，请查看运行日志",
-                    "log": log.strip(),
-                    "data": get_dashboard_data(),
-                }), 500
-            stats = result.get("stats") or {}
-            label = result.get("board_type_label") or "板块"
-            message = (
-                f"{label}推荐完成：{stats.get('board_count', 0)} 个板块 · "
-                f"{stats.get('stock_count', 0)} 只标的"
-            )
-            extra["sector"] = result
-        else:
-            return jsonify({"ok": False, "message": f"未知操作: {action}"}), 400
-
-        payload = {
+        out = {
             "ok": True,
             "message": message,
             "log": log.strip(),
@@ -928,14 +723,14 @@ def api_action(action: str):
             **extra,
         }
         if extra.get("ultra_short") is not None:
-            payload["data"]["ultra_short"] = extra["ultra_short"]
+            out["data"]["ultra_short"] = extra["ultra_short"]
         if extra.get("sector") is not None:
-            payload["data"]["sector"] = extra["sector"]
+            out["data"]["sector"] = extra["sector"]
         if extra.get("midterm_tracker") is not None:
-            payload["data"]["midterm_tracker"] = extra["midterm_tracker"]
+            out["data"]["midterm_tracker"] = extra["midterm_tracker"]
         if extra.get("level_alerts") is not None:
-            payload["data"]["level_alerts"] = extra["level_alerts"]
-        return jsonify(payload)
+            out["data"]["level_alerts"] = extra["level_alerts"]
+        return jsonify(out)
     except Exception as exc:
         return jsonify({
             "ok": False,
@@ -943,6 +738,8 @@ def api_action(action: str):
             "log": log.strip() + "\n" + traceback.format_exc(),
             "data": get_dashboard_data(),
         }), 500
+
+
 
 
 def main(host: str = "127.0.0.1", port: int = 5050, debug: bool = False) -> None:

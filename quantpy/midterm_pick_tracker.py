@@ -569,9 +569,7 @@ def derive_interim_factor_tuning(summary: dict) -> Dict[str, Any]:
         if row["win_rate"] >= max(22, overall_wr + 5) and row["avg_return"] > -0.3:
             changes["midterm_condition_bonus"][key] = 6
             changes["notes"].append(f"中间强化 {label}（胜率{row['win_rate']}%）")
-        elif row["win_rate"] < max(12, overall_wr - 5) and row["count"] >= min_n:
-            changes["midterm_condition_penalty"][key] = 5
-            changes["notes"].append(f"中间降权 {label}（胜率{row['win_rate']}%）")
+        # 核心买点条件不降权
 
     for row in summary.get("by_tag", []):
         if row["count"] < min_n:
@@ -591,7 +589,8 @@ def derive_interim_factor_tuning(summary: dict) -> Dict[str, Any]:
             changes["midterm_tag_bonus"][tag] = 5
             if row["avg_return"] > 0:
                 changes["notes"].append(f"中间强化标签 {tag}（胜率{row['win_rate']}%）")
-        elif rel_weak:
+        # 核心买点标签不降权
+        elif rel_weak and tag not in MA20_TUNABLE_TAGS:
             changes["midterm_tag_penalty"][tag] = 6
             changes["notes"].append(f"中间降权标签 {tag}（胜率{row['win_rate']}%）")
 
@@ -749,7 +748,12 @@ def _derive_matured_factor_tuning(summary: dict) -> Dict[str, Any]:
             changes["notes"].append(f"跟进强化因子 {label}（胜率{row['win_rate']}%）")
         elif row["win_rate"] >= 52:
             changes["midterm_condition_bonus"][key] = 4
-        elif row["win_rate"] < 38 and row["count"] >= MIN_SAMPLES_FOR_PENALTY:
+        # 核心买点条件不降权
+        elif (
+            row["win_rate"] < 38
+            and row["count"] >= MIN_SAMPLES_FOR_PENALTY
+            and key not in MA20_TUNABLE_CONDITION_IDS
+        ):
             changes["midterm_condition_penalty"][key] = 5
             changes["notes"].append(f"跟进降权因子 {label}（胜率{row['win_rate']}%）")
 
@@ -768,9 +772,7 @@ def _derive_matured_factor_tuning(summary: dict) -> Dict[str, Any]:
         if row["win_rate"] >= 55:
             changes["midterm_tag_bonus"][tag] = 5
             changes["notes"].append(f"跟进强化标签 {tag}（胜率{row['win_rate']}%）")
-        elif row["win_rate"] < 35 and row["count"] >= MIN_SAMPLES_FOR_PENALTY:
-            changes["midterm_tag_penalty"][tag] = 4
-            changes["notes"].append(f"跟进降权标签 {tag}（胜率{row['win_rate']}%）")
+        # 核心买点标签不降权（仅加分）
 
     overall_wr = float(summary.get("win_rate", 0))
     if overall_wr < 40 and summary.get("matured_count", 0) >= 8:

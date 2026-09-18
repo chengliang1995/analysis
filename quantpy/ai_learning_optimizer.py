@@ -38,7 +38,7 @@ PARAM_BOUNDS: Dict[str, tuple[float, float]] = {
 class AILearningOptimizer:
     """超短策略学习优化：分析交易样本 → 生成建议 → 可选自动调参。"""
 
-    def __init__(self, auto_apply: bool = True, min_trades: int = 5):
+    def __init__(self, auto_apply: bool = True, min_trades: int = 15):
         self.auto_apply = auto_apply
         self.min_trades = min_trades
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

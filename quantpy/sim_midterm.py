@@ -854,7 +854,7 @@ def check_ma20_sim_exits(engine: SimReplayEngine, show_progress: bool = False) -
             sell_price = price
             reason = f"持仓{cfg.max_hold_days}日到期"
         else:
-            hist = get_stock_hist(code, days=30)
+            hist = get_stock_hist(code, days=30, patch_live=True)
             trend_exit, trend_reason = check_ma20_trend_exit(hist)
             if trend_exit:
                 sell_price = price

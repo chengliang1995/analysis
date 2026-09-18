@@ -935,9 +935,13 @@ def get_stock_hist(
     end: Optional[str] = None,
     days: int = 180,
     freq: str = "d",
-    patch_live: bool = True,
+    patch_live: bool = False,
 ) -> pd.DataFrame:
-    """获取单只股票历史 K 线。优先级: 腾讯 > qstock > AKShare > 新浪。"""
+    """获取单只股票历史 K 线。优先级: 腾讯 > qstock > AKShare > 新浪。
+
+    patch_live 默认 False，避免回测/复盘被盘中行情污染。
+    实盘扫描、持仓复盘、盘中下钻等需要当日最新 bar 时请显式传 True。
+    """
     if end is None:
         end = datetime.now().strftime("%Y%m%d")
     if start is None:
@@ -1022,9 +1026,9 @@ def get_stock_hist(
 
 
 def get_stock_recent_bars(code: str, days: int = 10) -> list[dict]:
-    """最近 N 个交易日 K 线（用于个股下钻）。"""
+    """最近 N 个交易日 K 线（用于个股下钻，含当日实时修正）。"""
     days = max(1, min(int(days), 60))
-    df = get_stock_hist(code, days=max(days * 4, 30))
+    df = get_stock_hist(code, days=max(days * 4, 30), patch_live=True)
     if df.empty:
         return []
 

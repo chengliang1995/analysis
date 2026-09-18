@@ -345,89 +345,250 @@ def run_action_review_tune(
     review_days: int = 90,
     auto_apply: bool = True,
 ) -> dict:
-    """先跑复盘（中线跟进 → AI 学习 → 实盘复盘），再汇总生成选股调优参数。"""
-    from quantpy.ai_learning_optimizer import run_ai_learning
-    from quantpy.midterm_pick_tracker import run_midterm_tracker_cycle
-    from quantpy.real_portfolio_reviewer import run_real_portfolio_review
-    from quantpy.selection_tuning import build_selection_tuning, format_tuning_summary
+    """统一调优管线：中线跟进 → AI 学习 → 实盘复盘 → 构建/同步/落盘。"""
+    from quantpy.tuning_pipeline import run_tuning_pipeline
 
-    steps: List[str] = []
-
-    if show_progress:
-        print("=" * 60)
-        print("复盘 → 选股策略调优")
-        print("=" * 60)
-
-    track = run_midterm_tracker_cycle(None, show_progress=show_progress)
-    track_summary = (track or {}).get("summary") or {}
-    steps.append(
-        f"中线跟进：跟踪 {track_summary.get('tracking_count', 0)} 只，"
-        f"成熟 {track_summary.get('matured_count', 0)} 只，"
-        f"胜率 {track_summary.get('win_rate', 0)}%"
+    out = run_tuning_pipeline(
+        mode="full",
+        show_progress=show_progress,
+        auto_apply=auto_apply,
+        review_days=review_days,
     )
-
-    ai = run_ai_learning(show_progress=show_progress, auto_apply=auto_apply)
-    steps.append(
-        f"AI学习第 {ai.get('round', 0)} 轮（{ai.get('engine', 'statistical')}）："
-        f"模拟样本 {ai.get('sample_count', 0)} 笔"
-    )
-    if ai.get("param_changes"):
-        steps.append(
-            "模拟参数：" + ", ".join(f"{k} {v}" for k, v in ai["param_changes"].items())
-        )
-
-    real = run_real_portfolio_review(days=max(review_days, 90), show_progress=show_progress)
-    if real.get("has_data"):
-        rs = real.get("summary") or {}
-        steps.append(
-            f"实盘复盘：{rs.get('trade_count', 0)} 笔，胜率 {rs.get('win_rate', 0)}%，"
-            f"均操作评分 {rs.get('avg_timing_score', 0)}"
-        )
-    else:
-        steps.append("实盘复盘：暂无清盘记录（跳过实盘侧调优）")
-
-    tuning = build_selection_tuning(for_sim=False)
-    tuning_sim = build_selection_tuning(for_sim=True)
-    summary_text = format_tuning_summary(tuning)
-
-    if show_progress:
-        print("\n" + "=" * 60)
-        print("选股策略调优（汇总，后续扫描自动生效）")
-        print("=" * 60)
-        print(summary_text)
-        print(
-            f"\n模拟盘扫描：超短≥{tuning_sim.ultra_min_score} · "
-            f"中线≥{tuning_sim.midterm_min_score} · 三倍量≥{tuning_sim.triple_min_score}"
-        )
-        if tuning.midterm_condition_bonus or tuning.midterm_tag_bonus:
-            print("\n【中线加分因子】")
-            for k, v in list(tuning.midterm_condition_bonus.items())[:6]:
-                print(f"  条件 {k}: +{v}")
-            for k, v in list(tuning.midterm_tag_bonus.items())[:4]:
-                print(f"  标签 {k}: +{v}")
-        if tuning.midterm_condition_penalty or tuning.midterm_tag_penalty:
-            print("\n【中线降权因子】")
-            for k, v in list(tuning.midterm_condition_penalty.items())[:6]:
-                print(f"  条件 {k}: -{v}")
-            for k, v in list(tuning.midterm_tag_penalty.items())[:4]:
-                print(f"  标签 {k}: -{v}")
-
-    message = "；".join(steps)
     return _result(
-        True,
-        message,
+        bool(out.get("ok", True)),
+        out.get("message") or "复盘调优完成",
         payload={
-            "midterm_tracker": track,
-            "ai_learning": ai,
-            "portfolio_review": real,
-            "selection_tuning": tuning.to_dict(),
-            "selection_tuning_sim": tuning_sim.to_dict(),
-            "tuning_summary": summary_text,
+            "midterm_tracker": out.get("midterm_tracker"),
+            "ai_learning": out.get("ai_learning"),
+            "portfolio_review": out.get("portfolio_review"),
+            "selection_tuning": out.get("selection_tuning"),
+            "selection_tuning_sim": out.get("selection_tuning_sim"),
+            "tuning_summary": out.get("tuning_summary"),
+            "param_changes": out.get("param_changes"),
+            "pipeline_mode": out.get("mode"),
+            "errors": out.get("errors") or [],
         },
     )
 
 
-# 供 CLI 映射：command → runner
+def run_action_ai_learn(
+    *,
+    show_progress: bool = True,
+    auto_apply: bool = True,
+) -> dict:
+    """仅 AI 学习 + 构建调优（统一管线 ai_only）。"""
+    from quantpy.tuning_pipeline import run_tuning_pipeline
+
+    out = run_tuning_pipeline(
+        mode="ai_only",
+        show_progress=show_progress,
+        auto_apply=auto_apply,
+    )
+    return _result(
+        bool(out.get("ok", True)),
+        out.get("message") or "AI 学习完成",
+        payload={
+            "ai_learning": out.get("ai_learning"),
+            "selection_tuning": out.get("selection_tuning"),
+            "selection_tuning_sim": out.get("selection_tuning_sim"),
+            "tuning_summary": out.get("tuning_summary"),
+            "param_changes": out.get("param_changes"),
+        },
+    )
+
+
+def run_action_sim(*, force: bool = False, show_progress: bool = False) -> dict:
+    from quantpy.sim_replay import SimReplayEngine
+
+    engine = SimReplayEngine()
+    result = engine.run_daily(force_select=force, show_progress=show_progress)
+    closed = result.get("closed_today", 0) if isinstance(result, dict) else 0
+    picks = result.get("picks_today", 0) if isinstance(result, dict) else 0
+    return _result(
+        True,
+        f"模拟运行完成：平仓 {closed} 笔，新选 {picks} 只",
+        payload={"sim_daily": result or {}},
+    )
+
+
+def run_action_sim_review(*, show_progress: bool = False) -> dict:
+    from quantpy.sim_replay import SimReplayEngine
+
+    engine = SimReplayEngine()
+    review = engine.run_review(show_progress=show_progress)
+    round_no = review.get("round", 0) if isinstance(review, dict) else 0
+    return _result(
+        True,
+        f"第 {round_no} 轮复盘完成",
+        payload={
+            "review": {
+                "round": (review or {}).get("round"),
+                "suggestions": (review or {}).get("suggestions", []),
+                "ai_learning": (review or {}).get("ai_learning"),
+                "tuning_summary": (review or {}).get("tuning_summary"),
+                "stats": (review or {}).get("stats"),
+            }
+        },
+    )
+
+
+def run_action_sim_backtest(*, days: int = 20, show_progress: bool = False) -> dict:
+    from quantpy.sim_replay import SimReplayEngine
+
+    engine = SimReplayEngine()
+    result = engine.replay_backtest(days=days, show_progress=show_progress)
+    if isinstance(result, dict) and result:
+        message = (
+            f"回测完成：权益 {result.get('equity', 0):,.0f} 元 "
+            f"({result.get('total_return_pct', 0):+.2f}%)，"
+            f"平仓 {result.get('closed_count', 0)} 笔"
+        )
+        return _result(True, message, payload={"backtest": result})
+    return _result(True, "回测完成", payload={"backtest": result or {}})
+
+
+def run_action_sim_midterm_select(
+    *,
+    force: bool = False,
+    show_progress: bool = True,
+    industry: Optional[str] = None,
+    performance: Optional[str] = None,
+    use_cache: bool = False,
+) -> dict:
+    from quantpy.sim_midterm import run_sim_midterm_select
+    from quantpy.sim_replay import SimReplayEngine
+
+    engine = SimReplayEngine()
+    engine.reload_state()
+    result = run_sim_midterm_select(
+        engine,
+        show_progress=show_progress,
+        force=force,
+        industry=industry,
+        performance=performance,
+        use_cache=use_cache,
+    )
+    if result is None:
+        return _result(False, "模拟中线选股失败")
+    if isinstance(result, dict) and result.get("ok"):
+        return _result(
+            True,
+            result.get("message") or "模拟中线选股完成",
+            payload={"sim_midterm": result},
+        )
+    if isinstance(result, dict):
+        return _result(
+            False,
+            result.get("message") or "无推荐标的",
+            payload={"sim_midterm": result},
+        )
+    return _result(False, "模拟中线选股失败")
+
+
+def run_action_sim_midterm(*, show_progress: bool = True) -> dict:
+    from quantpy.sim_midterm import (
+        check_midterm_exits,
+        enrich_midterm_sim,
+        run_midterm_sim_review,
+    )
+    from quantpy.sim_replay import SimReplayEngine
+
+    engine = SimReplayEngine()
+    engine.reload_state()
+    check_midterm_exits(engine, show_progress=show_progress)
+    reviews = run_midterm_sim_review(engine, show_progress=show_progress)
+    summary = enrich_midterm_sim(engine.state)
+    n = len(reviews or [])
+    return _result(
+        True,
+        f"模拟中线复盘完成：{n} 只持仓",
+        payload={"sim_midterm": {"reviews": reviews, "summary": summary}},
+    )
+
+
+def run_action_real_review(*, days: int = 90, show_progress: bool = False) -> dict:
+    from quantpy.real_portfolio_reviewer import run_real_portfolio_review
+
+    result = run_real_portfolio_review(days=days, show_progress=show_progress)
+    count = (result or {}).get("summary", {}).get("trade_count", 0) if isinstance(result, dict) else 0
+    payload: dict = {"portfolio_review": result or {}}
+    if isinstance(result, dict) and result.get("markdown"):
+        payload["review_content"] = {
+            "name": "实盘操作复盘",
+            "content": result["markdown"],
+        }
+    return _result(True, f"实盘复盘完成：分析 {count} 笔平仓", payload=payload)
+
+
+def run_action_sector(
+    *,
+    board_type: str = "concept",
+    board_code: Optional[str] = None,
+    top_boards: int = 8,
+    stocks_per_board: int = 5,
+    show_progress: bool = True,
+) -> dict:
+    from quantpy.sector_recommender import run_sector_recommendations
+
+    result = run_sector_recommendations(
+        board_type=board_type,
+        board_code=board_code,
+        top_boards=top_boards,
+        stocks_per_board=stocks_per_board,
+        show_progress=show_progress,
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        return _result(
+            False,
+            (result or {}).get("message") if isinstance(result, dict) else "板块推荐失败",
+            payload={"sector": result or {}},
+        )
+    stats = result.get("stats") or {}
+    label = result.get("board_type_label") or "板块"
+    message = (
+        f"{label}推荐完成：{stats.get('board_count', 0)} 个板块 · "
+        f"{stats.get('stock_count', 0)} 只标的"
+    )
+    return _result(True, message, payload={"sector": result})
+
+
+def run_action_alerts(*, show_progress: bool = False) -> dict:
+    from quantpy.midterm_level_alerts import scan_midterm_level_alerts
+    from quantpy.midterm_portfolio_advisor import MidtermPortfolioAdvisor
+    from quantpy.portfolio import PortfolioManager
+
+    pm_stats = PortfolioManager().analyze()
+    if not pm_stats.get("has_data"):
+        return _result(False, "暂无实盘持仓")
+    midterm = MidtermPortfolioAdvisor().run_quick_advice(pm_stats)
+    result = scan_midterm_level_alerts(
+        pm_stats,
+        midterm.get("reviews") if isinstance(midterm, dict) else None,
+        save=True,
+    )
+    n = result.get("alert_count", 0) if isinstance(result, dict) else 0
+    message = f"价位提醒检查完成：{n} 条" if n else "价位提醒检查完成：暂无触发"
+    return _result(True, message, payload={"level_alerts": result or {}})
+
+
+def run_action_refresh() -> dict:
+    from quantpy.web_dashboard import refresh_holdings_quotes
+
+    portfolio_stats, sim_data, log = refresh_holdings_quotes()
+    n_real = len(portfolio_stats.get("positions", []))
+    n_sim = sim_data.get("position_count", 0)
+    return _result(
+        True,
+        f"持仓行情已刷新（实盘 {n_real} 只 · 模拟 {n_sim} 只）",
+        payload={
+            "portfolio_stats": portfolio_stats,
+            "sim_data": sim_data,
+            "refresh_log": log,
+        },
+    )
+
+
+# 供 CLI / Web 映射：command → runner
 CLI_ACTION_MAP: Dict[str, Callable[..., dict]] = {
     "scan": run_action_ultra_scan,
     "midterm-triple-volume": run_action_triple_volume,
@@ -435,4 +596,35 @@ CLI_ACTION_MAP: Dict[str, Callable[..., dict]] = {
     "midterm-track": run_action_midterm_track,
     "sim-ma20": run_action_sim_ma20,
     "review-tune": run_action_review_tune,
+    "ai-learn": run_action_ai_learn,
+    "sim": run_action_sim,
+    "sim-review": run_action_sim_review,
+    "sim-backtest": run_action_sim_backtest,
+    "sim-midterm": run_action_sim_midterm,
+    "sim-midterm-select": run_action_sim_midterm_select,
+    "review": run_action_real_review,
+    "sector": run_action_sector,
+    "alerts": run_action_alerts,
+    "refresh": run_action_refresh,
 }
+
+# Web 别名（按钮 data-action 与 CLI 略有差异时在此对齐）
+WEB_ACTION_ALIASES: Dict[str, str] = {
+    "sim-ma20-select": "sim-ma20",
+}
+
+
+def dispatch_action(action: str, **kwargs: Any) -> dict:
+    """统一分发。未知 action 返回 ok=False。"""
+    key = WEB_ACTION_ALIASES.get(action, action)
+    runner = CLI_ACTION_MAP.get(key)
+    if runner is None:
+        return _result(False, f"未知操作: {action}")
+    # midterm / report / sim-ma20 等已在 map 外单独注册的也要覆盖
+    return runner(**kwargs)
+
+
+# midterm / report 此前已定义，补入 map
+CLI_ACTION_MAP["midterm"] = run_action_midterm
+CLI_ACTION_MAP["report"] = run_action_report
+

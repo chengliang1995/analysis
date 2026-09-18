@@ -13,9 +13,9 @@ from quantpy.paths import SIM_REVIEW_DIR, SIM_STATE_FILE
 
 ULTRA_SHORT_STRATEGIES = frozenset({"超短", "涨停", "短线"})
 
-# 调参最小样本：避免 2～3 笔噪声驱动门槛爬升
-SIM_TUNING_MIN_TRADES = 15
-SIM_TUNING_MIN_BUCKET = 8
+# 调参最小样本：≥30 笔才动门槛，避免噪声爬升（豆包建议对齐）
+SIM_TUNING_MIN_TRADES = 30
+SIM_TUNING_MIN_BUCKET = 10
 SIM_TUNING_RECENT_WINDOW = 30
 
 # 三倍量策略条件/标签（与中线分流，避免互相污染加减分）
@@ -160,8 +160,9 @@ def _route_condition_maps(
             continue
         if _is_legacy_midterm_condition(key) or key in MA20_HARD_GATE_CONDITION_IDS:
             continue
+        # 核心买点条件禁止降权（与 tag 路由一致）
         if key in MA20_TUNABLE_CONDITION_IDS:
-            mid_p[key] = int(val)
+            continue
     return mid_b, mid_p, tri_b, tri_p
 
 
@@ -187,8 +188,10 @@ def _route_tag_maps(
     for key, val in (penalty or {}).items():
         if key in TRIPLE_VOLUME_TAGS or key in LEGACY_DIVERGENCE_TAGS:
             continue
-        # 仅保留对当前策略有意义的降权（如当日偏热）
-        if key in MA20_TUNABLE_TAGS or _is_chase_tag(key) or key == "当日偏热":
+        # 核心买点标签只允许加分，禁止因旧样本噪声被降权
+        if key in MA20_TUNABLE_TAGS:
+            continue
+        if _is_chase_tag(key) or key == "当日偏热":
             mid_p[key] = int(val)
     return mid_b, mid_p, tri_b, tri_p
 
@@ -799,9 +802,11 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
         k: v for k, v in (tuning.midterm_tag_bonus or {}).items()
         if _is_midterm_tag_tunable(k)
     }
+    # 核心买点因子只允许加分，禁止降权（避免噪声把「回踩缩量」写成 -5）
+    tuning.midterm_condition_penalty = {}
     tuning.midterm_tag_penalty = {
         k: v for k, v in (tuning.midterm_tag_penalty or {}).items()
-        if k not in LEGACY_DIVERGENCE_TAGS
+        if k not in LEGACY_DIVERGENCE_TAGS and k not in MA20_TUNABLE_TAGS
     }
     return tuning
 

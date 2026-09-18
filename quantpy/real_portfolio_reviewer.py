@@ -366,7 +366,7 @@ class RealPortfolioReviewer:
             if code not in hist_cache:
                 if show_progress:
                     print(f"  分析 {code} K线…")
-                hist_cache[code] = get_stock_hist(code, days=120)
+                hist_cache[code] = get_stock_hist(code, days=120, patch_live=False)
             timing = self._analyze_timing(row, hist_cache[code])
             item = row.to_dict()
             item["bucket_label"] = bucket_label(item.get("bucket", "midterm"))

@@ -37,7 +37,7 @@ from quantpy.sim_replay import (
     run_sim_status,
 )
 from quantpy.report_format import format_markdown_table, truncate_display
-from quantpy.ai_learning_optimizer import load_latest_ai_learning, run_ai_learning
+from quantpy.ai_learning_optimizer import load_latest_ai_learning
 from quantpy.midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
 from quantpy.midterm_portfolio_advisor import run_midterm_advice
 from quantpy.triple_volume_watchlist import sync_and_evaluate_watchlist
@@ -711,7 +711,11 @@ def main() -> None:
         elif args.command == "sim-review":
             run_sim_review()
         elif args.command == "ai-learn":
-            run_ai_learning(show_progress=True, auto_apply=True)
+            from quantpy.orchestration import run_action_ai_learn
+
+            result = run_action_ai_learn(show_progress=True, auto_apply=True)
+            print(result.get("message") or "")
+            _cli_exit(result)
         elif args.command == "midterm":
             from quantpy.orchestration import run_action_midterm
 

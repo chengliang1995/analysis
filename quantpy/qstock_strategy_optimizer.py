@@ -386,9 +386,9 @@ class StrategyOptimizer:
 
         return result
 
-    def get_stock_data(self, code: str, days: int = 180) -> pd.DataFrame:
-        """获取股票历史数据。"""
-        return get_stock_hist(code, days=days)
+    def get_stock_data(self, code: str, days: int = 180, *, patch_live: bool = True) -> pd.DataFrame:
+        """获取股票历史数据；实盘涨停扫描默认带当日行情修正。"""
+        return get_stock_hist(code, days=days, patch_live=patch_live)
 
     def get_all_stocks(self) -> pd.DataFrame:
         """获取所有 A 股列表（多数据源自动降级）。"""
@@ -397,7 +397,7 @@ class StrategyOptimizer:
     def _scan_single_limit_up(self, code: str, name: str,
                               lookback_days: int) -> Optional[Dict]:
         hist_data = self.get_stock_data(code, days=lookback_days + 30)
-        signal = self.check_limit_up_signal(hist_data, lookback_days)
+        signal = self.check_limit_up_signal(hist_data, lookback_days, code=code)
         if not signal:
             return None
         return {'code': code, 'name': name, **signal}
@@ -464,70 +464,63 @@ class StrategyOptimizer:
 
     def backtest_signal(self, df: pd.DataFrame,
                        signal_column: str,
-                       hold_days: int = 20) -> pd.DataFrame:
+                       hold_days: int = 20,
+                       commission_rate: float = 0.00025,
+                       stamp_tax_rate: float = 0.0005,
+                       slippage_rate: float = 0.001) -> pd.DataFrame:
         """
-        基于信号回测
+        基于信号回测（T+1 开盘买 / 持有 hold_days 后收盘卖 / 扣费税滑点）。
 
-        Args:
-            df: 包含信号的数据
-            signal_column: 信号列名
-            hold_days: 持有天数
-
-        Returns:
-            回测结果
+        卖出位不足 hold_days 的信号跳过，不做末日强平，避免虚高收益。
         """
-        signals = df[df[signal_column] == 1].copy()
-
         results = []
         n = len(df)
+        signal_col = pd.to_numeric(df[signal_column], errors="coerce").fillna(0)
+        positions = np.where(signal_col.to_numpy() == 1)[0]
 
-        for idx in signals.index:
-            try:
-                signal_pos = df.index.get_loc(idx)
-                if isinstance(signal_pos, slice):
-                    signal_pos = signal_pos.start or 0
-            except KeyError:
-                continue
-
-            buy_pos = int(signal_pos) + 1
+        for pos in positions:
+            buy_pos = int(pos) + 1
             if buy_pos >= n:
                 continue
-
             buy_row = df.iloc[buy_pos]
             buy_date = buy_row.get("date", df.index[buy_pos])
             buy_price = float(buy_row.get("open") or buy_row["close"])
+            if buy_price <= 0:
+                continue
 
-            sell_pos = min(buy_pos + max(int(hold_days), 1), n - 1)
+            sell_pos = buy_pos + max(int(hold_days), 1)
+            if sell_pos >= n:
+                continue
             sell_row = df.iloc[sell_pos]
             sell_date = sell_row.get("date", df.index[sell_pos])
             sell_price = float(sell_row["close"])
-            actual_hold_days = sell_pos - buy_pos
+            if sell_price <= 0:
+                continue
 
-            if sell_price > 0 and buy_price > 0:
-                profit_pct = (sell_price - buy_price) / buy_price * 100
-                results.append({
-                    "buy_date": buy_date,
-                    "sell_date": sell_date,
-                    "buy_price": round(buy_price, 4),
-                    "sell_price": round(sell_price, 4),
-                    "profit_pct": round(profit_pct, 4),
-                    "hold_days": actual_hold_days,
-                })
+            buy_cost = buy_price * (1 + commission_rate + slippage_rate)
+            sell_net = sell_price * (1 - commission_rate - stamp_tax_rate - slippage_rate)
+            profit_pct = (sell_net - buy_cost) / buy_cost * 100
+            results.append({
+                "buy_date": buy_date,
+                "sell_date": sell_date,
+                "buy_price": round(buy_price, 4),
+                "sell_price": round(sell_price, 4),
+                "profit_pct": round(profit_pct, 4),
+                "hold_days": sell_pos - buy_pos,
+            })
 
         if results:
             result_df = pd.DataFrame(results)
-
-            print(f"\n{signal_column} 策略回测结果:")
+            print(f"\n{signal_column} 策略回测结果(扣费后):")
             print(f"  信号次数: {len(result_df)}")
             print(f"  平均收益: {result_df['profit_pct'].mean():.2f}%")
             print(f"  最高收益: {result_df['profit_pct'].max():.2f}%")
             print(f"  最低收益: {result_df['profit_pct'].min():.2f}%")
             print(f"  胜率: {(result_df['profit_pct'] > 0).sum() / len(result_df) * 100:.1f}%")
-
             return result_df
-        else:
-            print(f"{signal_column} 策略无信号")
-            return pd.DataFrame()
+
+        print(f"{signal_column} 策略无信号")
+        return pd.DataFrame()
 
     # ==================== 参数优化 ====================
 

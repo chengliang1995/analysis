@@ -222,10 +222,15 @@ class UltraShortScanner:
     if is_bse_code(code):
       return None
 
+    # 排除 ST / 退市整理股（涨停阈值低、流动性差）
+    name_text = str(name or "").upper()
+    if "ST" in name_text or "退" in str(name or ""):
+      return None
+
     if hist_df is not None and not hist_df.empty:
       hist = hist_df.copy()
     else:
-      hist = get_stock_hist(code, days=lookback_days + 25)
+      hist = get_stock_hist(code, days=lookback_days + 25, patch_live=True)
     if hist.empty or len(hist) < 5:
       return None
 
@@ -389,6 +394,12 @@ class UltraShortScanner:
     else:
       df["_turnover"] = 0
 
+    name_col = get_stock_name_column(df)
+    if name_col:
+      name_u = df[name_col].astype(str)
+      st_mask = name_u.str.upper().str.contains("ST", na=False) | name_u.str.contains("退", na=False)
+      df = df[~st_mask].copy()
+
     # 强势 OR 高换手；候选过少时自动放宽初筛
     thresholds = (
       (min_pct, min_turnover),
@@ -522,6 +533,152 @@ class UltraShortScanner:
 
     df = pd.DataFrame(results)
     return df.sort_values("ultra_short_score", ascending=False).reset_index(drop=True)
+
+  def scan_historical_day(
+    self,
+    pool: pd.DataFrame,
+    trade_date: str,
+    top_prefilter: int = 300,
+    max_workers: int = 8,
+    lookback_days: int = 10,
+    min_score: int = 35,
+    show_progress: bool = True,
+    tuning: Optional[object] = None,
+  ) -> pd.DataFrame:
+    """
+    历史某交易日超短扫描：用截止该日的 K 线重放真实评分管线。
+
+    与实盘差异（回测须注明）：无换手率加分；股票池常为当前快照（幸存者偏差）。
+    """
+    if tuning is None:
+      tuning = build_selection_tuning()
+    min_score = max(min_score, tuning.ultra_min_score)
+
+    if pool is None or pool.empty:
+      return pd.DataFrame()
+
+    code_col = get_stock_code_column(pool)
+    name_col = get_stock_name_column(pool)
+    if code_col:
+      pool = exclude_bse_from_df(pool, code_col)
+    if pool.empty:
+      return pd.DataFrame()
+
+    day_ts = pd.Timestamp(trade_date)
+    tasks = []
+    for _, row in pool.iterrows():
+      code = str(row[code_col]).zfill(6)
+      name = str(row[name_col]) if name_col else code
+      tasks.append((code, name))
+
+    def _fetch_hist(code: str, name: str) -> Optional[dict]:
+      try:
+        hist = get_stock_hist(code, days=lookback_days + 35, patch_live=False)
+        if hist.empty or len(hist) < 6:
+          return None
+        hist = hist.copy()
+        hist["date"] = pd.to_datetime(hist["date"])
+        cut = hist[hist["date"] <= day_ts]
+        if len(cut) < 6:
+          return None
+        cut = cut.tail(lookback_days + 25).reset_index(drop=True)
+        last = cut.iloc[-1]
+        if last["date"].strftime("%Y-%m-%d") != str(trade_date)[:10]:
+          return None
+        prev_close = float(cut["close"].iloc[-2])
+        pct = float(last.get("pct_chg", 0) or 0)
+        if pd.isna(pct) or pct == 0:
+          pct = (float(last["close"]) - prev_close) / prev_close * 100 if prev_close > 0 else 0
+        return {
+          "code": code,
+          "name": name,
+          "hist": cut,
+          "pct_chg": round(float(pct), 2),
+          "price": float(last["close"]),
+          "open": float(last["open"]),
+          "high": float(last["high"]),
+          "low": float(last["low"]),
+          "pre_close": round(prev_close, 2),
+        }
+      except Exception:
+        return None
+
+    fetched = []
+    done = 0
+    total = len(tasks)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+      futures = {executor.submit(_fetch_hist, c, n): c for c, n in tasks}
+      for future in as_completed(futures):
+        done += 1
+        if show_progress and done % 200 == 0:
+          print(f"  拉取进度 {done}/{total}")
+        try:
+          item = future.result()
+          if item:
+            fetched.append(item)
+        except Exception:
+          pass
+
+    if not fetched:
+      return pd.DataFrame()
+
+    picked = []
+    for th in (3.0, 2.0, 1.0, 0.0):
+      picked = [c for c in fetched if c["pct_chg"] >= th]
+      if len(picked) >= 30:
+        break
+    picked = sorted(picked, key=lambda c: c["pct_chg"], reverse=True)[:top_prefilter]
+
+    if show_progress:
+      print(f"历史日 {trade_date} 初筛 {len(picked)} 只，开始评分（门槛≥{min_score}）...")
+
+    results: List[Dict] = []
+    raw_hits: List[Dict] = []
+    done2 = 0
+    total2 = len(picked)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+      futures = {
+        executor.submit(
+          self._analyze_single,
+          c["code"],
+          c["name"],
+          {
+            "changepercent": c["pct_chg"],
+            "turnover": 0.0,
+            "price": c["price"],
+            "high": c["high"],
+            "low": c["low"],
+            "pre_close": c["pre_close"],
+            "open": c["open"],
+          },
+          lookback_days,
+          tuning,
+          c["hist"],
+        ): c["code"]
+        for c in picked
+      }
+      for future in as_completed(futures):
+        done2 += 1
+        if show_progress and done2 % 50 == 0:
+          print(f"  评分进度 {done2}/{total2}")
+        try:
+          item = future.result()
+          if not item:
+            continue
+          raw_hits.append(item)
+          if item["ultra_short_score"] >= min_score:
+            results.append(item)
+        except Exception:
+          pass
+
+    if not results and raw_hits:
+      soft = max(48, int(min_score) - 3)
+      if soft < min_score:
+        results = [x for x in raw_hits if x["ultra_short_score"] >= soft]
+
+    if not results:
+      return pd.DataFrame()
+    return pd.DataFrame(results).sort_values("ultra_short_score", ascending=False).reset_index(drop=True)
 
   def scan_codes(self, codes: List[str], lookback_days: int = 10) -> pd.DataFrame:
     """扫描指定代码列表。"""

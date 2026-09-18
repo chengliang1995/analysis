@@ -27,6 +27,7 @@ MIDTERM_TRACKER_FILE = DATA_DIR / "midterm_pick_tracker.json"
 TRIPLE_VOLUME_WATCHLIST_FILE = DATA_DIR / "triple_volume_watchlist.json"
 SCHEDULER_STATUS_FILE = DATA_DIR / "scheduler_status.json"
 SCHEDULER_PHASES_FILE = SCRIPTS_DIR / "phases.json"
+SELECTION_TUNING_STATE_FILE = DATA_DIR / "selection_tuning_state.json"
 
 # 落盘契约（选股产物）
 # - 超短 → output/ultra_short_YYYYMMDD.csv

@@ -521,7 +521,7 @@ class MidtermPortfolioAdvisor:
     ) -> dict:
         """单只股票中线技术面复盘。"""
         code = str(code).zfill(6)
-        hist = get_stock_hist(code, days=130)
+        hist = get_stock_hist(code, days=130, patch_live=True)
         if hist.empty or len(hist) < 30:
             return {
                 "code": code,
@@ -820,7 +820,7 @@ class MidtermPortfolioAdvisor:
         check_60m: bool = True,
         sector_hot: bool = True,
     ) -> Optional[dict]:
-        hist = get_stock_hist(code, days=120)
+        hist = get_stock_hist(code, days=120, patch_live=True)
         if hist.empty or len(hist) < MIDTERM_MIN_HIST_DAYS:
             return None
 

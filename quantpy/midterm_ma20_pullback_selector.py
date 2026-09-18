@@ -423,7 +423,7 @@ def run_ma20_pullback_market_scan(
     done = 0
 
     def _score_one(task: dict) -> Optional[dict]:
-        hist = get_stock_hist(task["code"], days=90)
+        hist = get_stock_hist(task["code"], days=90, patch_live=True)
         if hist.empty or len(hist) < 35:
             return None
         tech = evaluate_ma20_pullback_technicals(
