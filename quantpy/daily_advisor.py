@@ -663,8 +663,10 @@ def main() -> None:
             "midterm", "midterm-track", "midterm-triple-volume", "triple-volume-watch",
             "sim-ma20", "review-tune", "review", "alerts", "web",
             "strategy-eval", "strategy-ai",
+            "serenity", "serenity-track", "sim-serenity",
+            "short-term",
         ],
-        help="review-tune=复盘后调优选股, strategy-eval=全策略评估, strategy-ai=证据归因(+可选LLM)",
+        help="short-term=涨停基因短线; serenity/sim-serenity=卡脖子; review-tune=复盘后调优",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -675,6 +677,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=5050, help="web 命令：监听端口")
 
     parser.add_argument("--init", action="store_true", help="portfolio 命令：从 portfolio_config.json 重新加载")
+    parser.add_argument("--theme", type=str, default="", help="serenity：板块/产业链主题名")
+    parser.add_argument(
+        "--board-type",
+        type=str,
+        default="concept",
+        choices=["concept", "industry"],
+        help="serenity/sector：概念或行业",
+    )
+    parser.add_argument("--board-code", type=str, default="", help="serenity：指定板块代码如 BK0901")
+    parser.add_argument("--top-boards", type=int, default=3, help="serenity：匹配板块数")
+    parser.add_argument("--max-candidates", type=int, default=12, help="serenity：候选上限")
 
     args = parser.parse_args()
 
@@ -701,6 +714,15 @@ def main() -> None:
             result = run_action_ultra_scan(
                 top_prefilter=args.prefilter,
                 min_score=args.min_score,
+            )
+            print(result.get("message") or "")
+            _cli_exit(result)
+        elif args.command == "short-term":
+            from quantpy.orchestration import run_action_short_term
+
+            result = run_action_short_term(
+                max_candidates=args.max_candidates,
+                show_progress=True,
             )
             print(result.get("message") or "")
             _cli_exit(result)
@@ -789,6 +811,19 @@ def main() -> None:
             )
             print(result.get("message") or "")
             _cli_exit(result)
+        elif args.command == "sim-serenity":
+            from quantpy.orchestration import run_action_sim_serenity
+
+            result = run_action_sim_serenity(
+                theme=args.theme,
+                board_type=args.board_type,
+                board_code=args.board_code or None,
+                force=bool(args.force),
+                show_progress=True,
+                max_candidates=args.max_candidates,
+            )
+            print(result.get("message") or "")
+            _cli_exit(result)
         elif args.command == "review-tune":
             from quantpy.orchestration import run_action_review_tune
 
@@ -814,6 +849,25 @@ def main() -> None:
                 refresh_eval=True, use_llm=True, show_progress=True,
             )
             print(result.get("report_md") or "")
+        elif args.command == "serenity":
+            from quantpy.orchestration import run_action_serenity
+
+            result = run_action_serenity(
+                theme=args.theme,
+                board_type=args.board_type,
+                board_code=args.board_code or None,
+                top_boards=args.top_boards,
+                max_candidates=args.max_candidates,
+                show_progress=True,
+            )
+            print(result.get("message") or "")
+            _cli_exit(result)
+        elif args.command == "serenity-track":
+            from quantpy.orchestration import run_action_serenity_track
+
+            result = run_action_serenity_track(show_progress=True)
+            print(result.get("message") or "")
+            _cli_exit(result)
         elif args.command == "review":
             print("=" * 60)
             print("实盘操作复盘（买卖点分析）")

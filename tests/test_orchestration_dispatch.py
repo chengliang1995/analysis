@@ -23,6 +23,7 @@ def test_get_stock_hist_patch_live_defaults_false():
 def test_cli_action_map_covers_web_actions():
     expected = {
         "scan",
+        "short-term",
         "report",
         "midterm",
         "midterm-track",
@@ -34,10 +35,13 @@ def test_cli_action_map_covers_web_actions():
         "sim-midterm",
         "sim-midterm-select",
         "sim-ma20",
+        "sim-serenity",
         "review",
         "review-tune",
         "ai-learn",
         "sector",
+        "serenity",
+        "serenity-track",
         "alerts",
         "refresh",
     }
@@ -46,6 +50,10 @@ def test_cli_action_map_covers_web_actions():
 
 def test_web_alias_sim_ma20_select():
     assert WEB_ACTION_ALIASES.get("sim-ma20-select") == "sim-ma20"
+
+
+def test_web_alias_sim_serenity_select():
+    assert WEB_ACTION_ALIASES.get("sim-serenity-select") == "sim-serenity"
 
 
 def test_dispatch_unknown_action():

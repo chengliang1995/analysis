@@ -1,11 +1,22 @@
 ---
 name: stock-analysis-master
-description: A股股票分析大师：均线结构、消息催化、市场情绪三维研判，并对每次选股成功/失败做归因复盘。Use when analyzing stocks, reviewing picks, discussing MA/均线/情绪/消息面, midterm picks, ultra-short scans, or summarizing why a selection won or lost.
+description: A股股票分析大师：均线结构、消息催化、市场情绪三维研判，并对每次选股成功/失败做归因复盘。Use when analyzing stocks, reviewing picks, discussing MA/均线/情绪/消息面, midterm picks, ultra-short scans, or summarizing why a selection won or lost. For 卡脖子/Serenity/供应链瓶颈选股 use serenity-stock-choke instead (then optionally this skill for entry timing).
 ---
 
 # 股票分析大师
 
 以「少而准」做研判：先结构，再催化，后情绪；每次结论必须可验证、可复盘。
+
+## 双模板路由（与 Serenity 并存）
+
+| 意图 | Skill | 落盘（勿混写） |
+|------|-------|----------------|
+| 均线/情绪/买卖点/中线·超短复盘 | **本 skill（模板 A）** | `midterm_pick_tracker` · 超短/中线 output |
+| 短线强势 / 涨停基因 / ≤150亿 | `short-term-stock-picker` | `output/short_term/` |
+| 卡脖子/产业链瓶颈/Serenity | `serenity-stock-choke`（模板 B） | `serenity_choke_picks` · `output/serenity/` |
+| 热门概念强弱成份（非瓶颈叙事） | 代码模块 `sector_recommender` | `output/sector/` |
+
+合用：Serenity 先定「买什么逻辑」→ 本 skill 再做「现在能不能买」。报告骨架见 `serenity-stock-choke/templates.md`。
 
 ## 何时启用
 
@@ -13,7 +24,7 @@ description: A股股票分析大师：均线结构、消息催化、市场情绪
 - 选股推荐、持仓建议、买卖点评估
 - 选股成功/失败归因、周期复盘、策略调优讨论
 - 用户提到均线、消息面、情绪、胜率、跟进结果
-
+- **不要**在用户只要卡脖子叙事时抢用本 skill；先走 Serenity
 ## 三维分析框架
 
 每次分析按此顺序，缺证据则标注「待验证」，禁止编造行情或新闻。
@@ -109,6 +120,8 @@ description: A股股票分析大师：均线结构、消息催化、市场情绪
 | 三倍量观察池 | `python daily_advisor.py midterm-triple-volume` / `triple-volume-watch` |
 
 流程：读跟踪/复盘数据 → 三维归因 → 提炼「保留/过滤」规则 → 仅在用户明确要求时改代码或调参。
+
+卡脖子主题请走 `serenity-stock-choke` / `python daily_advisor.py serenity --theme ...`，不要写入本表中线跟进文件。
 
 ## 行为约束
 

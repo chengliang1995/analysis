@@ -14,6 +14,7 @@ from quantpy.paths import OUTPUT_DIR, PROJECT_ROOT, REPORT_DIR
 from quantpy.portfolio import PortfolioManager
 from quantpy.sim_replay import SimReplayEngine
 from quantpy.sim_midterm import enrich_midterm_sim, enrich_midterm_ma20_sim
+from quantpy.sim_serenity import enrich_serenity_sim
 from quantpy.ai_learning_optimizer import load_latest_ai_learning
 from quantpy.midterm_portfolio_advisor import (
     MidtermPortfolioAdvisor,
@@ -26,6 +27,8 @@ from quantpy.midterm_pick_tracker import load_tracker_summary
 from quantpy.midterm_level_alerts import scan_midterm_level_alerts
 from quantpy.stock_data import get_realtime_quotes
 from quantpy.sector_recommender import load_latest_sector
+from quantpy.serenity_choke_advisor import load_latest_serenity
+from quantpy.short_term_picker import load_latest_short_term
 from quantpy.real_portfolio_reviewer import load_latest_real_review
 from quantpy.trade_journal import TradeJournal
 
@@ -370,6 +373,7 @@ def _enrich_sim_portfolio(
         "ai_learning": load_latest_ai_learning(),
         "midterm": enrich_midterm_sim(engine.state, quotes_df=quotes_df),
         "midterm_ma20": enrich_midterm_ma20_sim(engine.state, quotes_df=quotes_df),
+        "serenity": enrich_serenity_sim(engine.state, quotes_df=quotes_df),
     }
 
 
@@ -387,6 +391,9 @@ def _collect_holding_codes() -> list[str]:
     } | {
         str(p["code"]).zfill(6)
         for p in sim_engine.state.get("midterm_ma20", {}).get("positions", [])
+    } | {
+        str(p["code"]).zfill(6)
+        for p in sim_engine.state.get("serenity", {}).get("positions", [])
     }
     return sorted(codes)
 
@@ -489,6 +496,8 @@ def get_dashboard_data(
         "level_alerts": level_alerts,
         "report": load_latest_report_meta(),
         "sector": load_latest_sector(),
+        "serenity": load_latest_serenity(),
+        "short_term": load_latest_short_term(),
         "midterm_tracker": midterm_tracker,
         "triple_volume": load_latest_triple_volume_advice(),
         "triple_volume_watchlist": load_watchlist_summary(evaluate=False),

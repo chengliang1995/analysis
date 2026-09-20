@@ -624,6 +624,12 @@ def api_action(action: str):
         kwargs = {"days": 90, "show_progress": False}
     elif key == "scan":
         kwargs = {"top_prefilter": 200, "min_score": 35}
+    elif key == "short-term":
+        kwargs = {
+            "max_candidates": int(request.args.get("max_candidates") or 50),
+            "max_analyze": int(request.args.get("max_analyze") or 400),
+            "show_progress": True,
+        }
     elif key == "sector":
         board_type = str(request.args.get("type") or "concept").strip().lower()
         if board_type not in ("concept", "industry"):
@@ -633,6 +639,32 @@ def api_action(action: str):
             "board_code": str(request.args.get("board") or "").strip().upper() or None,
             "top_boards": 8,
             "stocks_per_board": 5,
+            "show_progress": True,
+        }
+    elif key == "serenity":
+        board_type = str(request.args.get("type") or "concept").strip().lower()
+        if board_type not in ("concept", "industry"):
+            board_type = "concept"
+        kwargs = {
+            "theme": str(request.args.get("theme") or "").strip(),
+            "board_type": board_type,
+            "board_code": str(request.args.get("board") or "").strip().upper() or None,
+            "top_boards": int(request.args.get("top_boards") or 3),
+            "max_candidates": int(request.args.get("max_candidates") or 12),
+            "show_progress": True,
+        }
+    elif key == "serenity-track":
+        kwargs = {"show_progress": True}
+    elif key in ("sim-serenity", "sim-serenity-select"):
+        board_type = str(request.args.get("type") or "concept").strip().lower()
+        if board_type not in ("concept", "industry"):
+            board_type = "concept"
+        kwargs = {
+            "theme": str(request.args.get("theme") or "").strip(),
+            "board_type": board_type,
+            "board_code": str(request.args.get("board") or "").strip().upper() or None,
+            "force": str(request.args.get("force") or "").lower() in ("1", "true", "yes"),
+            "max_candidates": int(request.args.get("max_candidates") or 12),
             "show_progress": True,
         }
 
@@ -654,7 +686,8 @@ def api_action(action: str):
             "ultra_short", "triple_volume", "triple_volume_watchlist", "watch_eval",
             "midterm", "midterm_content", "level_alerts", "sim_midterm", "sim_midterm_ma20",
             "ai_learning", "midterm_tracker", "portfolio_review", "selection_tuning",
-            "review", "backtest", "sector", "review_content",
+            "review", "backtest", "sector", "serenity", "serenity_track", "sim_serenity",
+            "short_term", "review_content",
         ):
             if k in payload and payload[k] is not None:
                 extra[k] = payload[k]
@@ -726,6 +759,16 @@ def api_action(action: str):
             out["data"]["ultra_short"] = extra["ultra_short"]
         if extra.get("sector") is not None:
             out["data"]["sector"] = extra["sector"]
+        if extra.get("serenity") is not None:
+            out["data"]["serenity"] = extra["serenity"]
+        if extra.get("short_term") is not None:
+            out["data"]["short_term"] = extra["short_term"]
+        if extra.get("sim_serenity") is not None:
+            # 模拟盘摘要已在 get_dashboard_data().sim.serenity；此处把选股结果挂到 data 便于前端提示
+            out["data"].setdefault("sim", out["data"].get("sim") or {})
+            summary = (extra["sim_serenity"] or {}).get("summary")
+            if summary:
+                out["data"]["sim"]["serenity"] = summary
         if extra.get("midterm_tracker") is not None:
             out["data"]["midterm_tracker"] = extra["midterm_tracker"]
         if extra.get("level_alerts") is not None:

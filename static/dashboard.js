@@ -12,11 +12,15 @@ const ACTION_BUSY_LABEL = {
   report: "生成日报中…",
   review: "实盘复盘中…",
   scan: "超短扫描中…",
+  "short-term": "短线强势筛选中（涨停基因+均线）…",
   sector: "板块推荐扫描中…",
+  serenity: "Serenity 卡脖子扫描中…",
+  "serenity-track": "卡脖子跟进评估中…",
   "sim-backtest": "模拟回测中（参考口径）…",
   "sim-midterm": "模拟中线复盘中…",
   "sim-midterm-select": "观察池模拟选股中（评估观察池买点）…",
   "sim-ma20-select": "MA20回踩选股扫描中（20万模拟账户）…",
+  "sim-serenity-select": "Serenity 卡脖子模拟选股中（20万账户）…",
   "ai-learn": "AI 策略学习中…",
   "midterm-track": "中线跟进评估中…",
 };
@@ -27,14 +31,18 @@ const ACTION_TIMEOUT_MS = {
   report: 1200000,
   review: 300000,
   scan: 300000,
+  "short-term": 900000,
   sector: 300000,
+  serenity: 600000,
+  "serenity-track": 300000,
   "sim-backtest": 300000,
   "sim-midterm-select": 900000,
   "sim-ma20-select": 1200000,
+  "sim-serenity-select": 900000,
   default: 180000,
 };
 const LONG_RUNNING_ACTIONS = new Set([
-  "midterm", "midterm-triple-volume", "triple-volume-watch", "report", "review", "scan", "sector", "sim-backtest", "sim-midterm-select", "sim-ma20-select", "ai-learn", "midterm-track",
+  "midterm", "midterm-triple-volume", "triple-volume-watch", "report", "review", "scan", "short-term", "sector", "serenity", "serenity-track", "sim-backtest", "sim-midterm-select", "sim-ma20-select", "sim-serenity-select", "ai-learn", "midterm-track",
 ]);
 let lastDashboardData = null;
 
@@ -695,6 +703,105 @@ function renderSector(sector) {
   stocksEl.querySelectorAll("tr.drill-row").forEach((row) => {
     row.addEventListener("click", () => openStockDrilldown(row.dataset.code, row.dataset.name));
   });
+}
+
+function renderSerenity(serenity) {
+  const badge = document.getElementById("serenity-badge");
+  const summaryEl = document.getElementById("serenity-summary");
+  const boardsEl = document.getElementById("serenity-boards-table");
+  const stocksEl = document.getElementById("serenity-stocks-table");
+  if (!badge || !boardsEl || !stocksEl) return;
+
+  if (!serenity || (!serenity.candidates && !serenity.matched_boards)) {
+    badge.textContent = "输入主题后扫描";
+    boardsEl.innerHTML = `<div class="empty">与「板块推荐」独立：按供应链瓶颈主题筛候选，勿与中线跟踪混用</div>`;
+    stocksEl.innerHTML = `<div class="empty">暂无候选</div>`;
+    if (summaryEl) summaryEl.style.display = "none";
+    return;
+  }
+
+  const stats = serenity.stats || {};
+  const theme = serenity.theme || "";
+  badge.textContent = `${theme || "Serenity"} · ${stats.candidate_count || (serenity.candidates || []).length} 只`;
+  if (serenity.generated_at && summaryEl) {
+    summaryEl.textContent =
+      `更新：${serenity.generated_at} · strategy=${serenity.strategy_id || "serenity_choke"} · ` +
+      `板块 ${stats.board_count || 0} · 候选 ${stats.candidate_count || 0}`;
+    summaryEl.style.display = "block";
+  }
+  if (theme) {
+    const themeInput = document.getElementById("serenity-theme");
+    if (themeInput && !themeInput.value) themeInput.value = theme;
+  }
+  if (serenity.board_type) {
+    const typeEl = document.getElementById("serenity-board-type");
+    if (typeEl) typeEl.value = serenity.board_type;
+  }
+
+  const boards = serenity.matched_boards || [];
+  if (!boards.length) {
+    boardsEl.innerHTML = `<div class="empty">未匹配到板块</div>`;
+  } else {
+    const head = ["板块", "代码", "涨幅%", "匹配"].map((h) => `<th>${h}</th>`).join("");
+    const body = boards.map((b) =>
+      `<tr class="serenity-board-row" data-code="${escapeHtml(b.code || "")}" data-name="${escapeHtml(b.name || "")}">` +
+      `<td>${escapeHtml(b.name || "")}</td><td>${escapeHtml(b.code || "")}</td>` +
+      `<td>${fmtPct(b.pct_chg)}</td><td>${escapeHtml(b.match_mode || "name_match")}</td></tr>`
+    ).join("");
+    boardsEl.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    boardsEl.querySelectorAll(".serenity-board-row").forEach((row) => {
+      row.addEventListener("click", () => {
+        const sel = document.getElementById("serenity-board-select");
+        const themeInput = document.getElementById("serenity-theme");
+        if (sel && row.dataset.code) sel.value = row.dataset.code;
+        if (themeInput && row.dataset.name) themeInput.value = row.dataset.name;
+      });
+    });
+  }
+
+  const recs = serenity.candidates || [];
+  if (!recs.length) {
+    stocksEl.innerHTML = `<div class="empty">当前主题无候选（可换主题或指定板块代码）</div>`;
+    return;
+  }
+  const head2 = ["板块", "代码", "名称", "现价", "涨跌%", "市值亿", "均线", "评分", "标签"]
+    .map((h) => `<th>${h}</th>`).join("");
+  const body2 = recs.map((x) =>
+    `<tr class="drill-row" data-code="${escapeHtml(x.code)}" data-name="${escapeHtml(x.name || "")}">` +
+    `<td>${escapeHtml(x.board_name || "")}</td><td>${x.code}</td><td>${escapeHtml(x.name || "")}</td>` +
+    `<td>${x.price != null ? Number(x.price).toFixed(2) : "—"}</td>` +
+    `<td>${fmtPct(x.pct_chg)}</td>` +
+    `<td>${x.market_cap != null ? Number(x.market_cap).toFixed(0) : "—"}</td>` +
+    `<td>${escapeHtml(x.ma_structure || "—")}</td>` +
+    `<td>${x.score ?? "—"}</td>` +
+    `<td>${escapeHtml((x.tags || []).join(", ") || "—")}</td></tr>`
+  ).join("");
+  stocksEl.innerHTML = `<table><thead><tr>${head2}</tr></thead><tbody>${body2}</tbody></table>`;
+  stocksEl.querySelectorAll("tr.drill-row").forEach((row) => {
+    row.addEventListener("click", () => openStockDrilldown(row.dataset.code, row.dataset.name));
+  });
+}
+
+async function loadSerenityBoardOptions() {
+  const boardType = document.getElementById("serenity-board-type")?.value || "concept";
+  const sel = document.getElementById("serenity-board-select");
+  if (!sel) return;
+  const current = sel.value;
+  try {
+    const res = await fetch(`/api/sector/boards?type=${encodeURIComponent(boardType)}`);
+    const data = await parseJsonResponse(res);
+    const items = data.items || [];
+    sel.innerHTML = `<option value="">按主题名匹配</option>`;
+    items.slice(0, 120).forEach((b) => {
+      const opt = document.createElement("option");
+      opt.value = b.code || "";
+      opt.textContent = `${b.name || b.code} (${fmtPct(b.pct_chg)})`;
+      sel.appendChild(opt);
+    });
+    if (current) sel.value = current;
+  } catch (e) {
+    appendLog("Serenity 加载板块列表失败: " + e.message);
+  }
 }
 
 async function loadSectorBoardOptions() {
@@ -1441,6 +1548,7 @@ function renderSim(s) {
   );
   renderSimMidterm(s.midterm);
   renderSimMa20(s.midterm_ma20);
+  renderSimSerenity(s.serenity);
 }
 
 function renderSimMidterm(mt) {
@@ -1569,6 +1677,63 @@ function renderSimMa20(mt) {
   );
 }
 
+function renderSimSerenity(mt) {
+  const m = mt || {};
+  const cfg = m.config || {};
+  const statsEl = document.getElementById("sim-serenity-stats");
+  const scanEl = document.getElementById("sim-serenity-scan-table");
+  const tableEl = document.getElementById("sim-serenity-table");
+  const closedEl = document.getElementById("sim-serenity-closed-table");
+  if (!statsEl) return;
+  const badge = document.getElementById("sim-serenity-badge");
+  if (badge) {
+    const theme = m.last_theme ? ` · ${m.last_theme}` : "";
+    badge.textContent = `20万 · 卡脖子${theme} · ${m.position_count || 0}/${cfg.max_positions || 5}仓`;
+  }
+  const themeInput = document.getElementById("sim-serenity-theme");
+  if (themeInput && m.last_theme && !themeInput.value) {
+    themeInput.value = m.last_theme;
+  }
+  renderStats(statsEl, [
+    ["总权益", m.equity != null ? `${fmtMoney(m.equity)} 元` : "—"],
+    ["现金", m.cash != null ? `${fmtMoney(m.cash)} 元` : "—"],
+    ["总收益", m.total_return_pct != null ? fmtPct(m.total_return_pct) : "—"],
+    ["止盈/止损", `${cfg.take_profit_pct || 20}% / ${cfg.stop_loss_pct || -8}%`],
+  ]);
+  const scan = Array.isArray(m.last_scan) ? m.last_scan : [];
+  renderTable(
+    scanEl,
+    ["代码", "名称", "评分", "现价", "均线", "板块", "标签"],
+    scan.map((x) => [
+      x.code, x.name, x.score || "—", x.price,
+      x.ma_structure || "—",
+      x.board_name || "—",
+      (x.tags || "").slice(0, 24) || "—",
+    ]),
+    "暂无扫描结果，填写主题后点「卡脖子模拟选股」"
+  );
+  const positions = Array.isArray(m.positions) ? m.positions : [];
+  renderTable(
+    tableEl,
+    ["代码", "名称", "主题", "评分", "数量", "买入", "现价", "浮盈%", "可卖"],
+    positions.map((x) => [
+      x.code, x.name, x.theme || "—", x.score || "—", x.quantity, x.buy_price, x.current_price,
+      fmtPct(x.profit_pct),
+      x.t_plus_one_locked ? "T+1锁" : (x.sellable_today !== false ? "可卖" : "—"),
+    ]),
+    "Serenity 模拟空仓"
+  );
+  renderTable(
+    closedEl,
+    ["代码", "名称", "买入", "卖出", "收益%", "天数", "原因"],
+    (m.closed_trades || []).map((x) => [
+      x.code, x.name, x.buy_price, x.sell_price,
+      fmtPct(x.profit_pct), x.hold_days, x.exit_reason || "",
+    ]),
+    "暂无 Serenity 模拟平仓"
+  );
+}
+
 async function refreshSimPanel() {
   try {
     const res = await fetch("/api/sim");
@@ -1596,6 +1761,55 @@ function renderUltraShort(list) {
     ]),
     "暂无扫描结果，点击「超短扫描」"
   );
+}
+
+function renderShortTerm(payload) {
+  const badge = document.getElementById("short-term-badge");
+  const summaryEl = document.getElementById("short-term-summary");
+  const tableEl = document.getElementById("short-term-table");
+  if (!tableEl) return;
+  const data = payload || {};
+  const cands = data.candidates || [];
+  const stats = data.stats || {};
+  if (badge) {
+    badge.textContent = cands.length
+      ? `${cands.length} 只 · ${data.source || "—"}`
+      : "点击「短线强势」";
+  }
+  if (summaryEl) {
+    if (data.generated_at) {
+      summaryEl.textContent =
+        `更新：${data.generated_at} · 分析 ${stats.analyzed || 0} · 通过 ${stats.passed || 0} · 市值≤${stats.market_cap_max_yi || 150}亿`;
+      summaryEl.style.display = "block";
+    } else {
+      summaryEl.style.display = "none";
+    }
+  }
+  renderTable(
+    tableEl,
+    ["代码", "名称", "涨停20日", "市值亿", "现价", "换手%", "量比", "评分", "板块", "行业"],
+    cands.map((x) => [
+      x.code, x.name, x.limit_up_count_20d ?? "—",
+      x.market_cap_yi != null ? Number(x.market_cap_yi).toFixed(1) : "—",
+      x.price != null ? Number(x.price).toFixed(2) : "—",
+      x.turnover != null ? Number(x.turnover).toFixed(2) : "—",
+      x.vol_ratio_5d != null ? Number(x.vol_ratio_5d).toFixed(2) : "—",
+      x.score ?? "—",
+      x.board || "—",
+      (x.industry || "—").toString().slice(0, 10),
+    ]),
+    "暂无结果：涨停基因 + MA多头 + 市值≤150亿"
+  );
+  tableEl.querySelectorAll("tbody tr").forEach((row) => {
+    const code = row.children[0]?.textContent?.trim();
+    const name = row.children[1]?.textContent?.trim();
+    if (code && /^\d{6}$/.test(code)) {
+      row.classList.add("drill-row");
+      row.dataset.code = code;
+      row.dataset.name = name || "";
+      row.addEventListener("click", () => openStockDrilldown(code, name || ""));
+    }
+  });
 }
 
 function renderLevelAlerts(la) {
@@ -1788,6 +2002,65 @@ function switchFormTab(tab) {
 }
 
 const MAIN_TAB_KEY = "quantpy_main_tab";
+const REAL_SUB_TAB_KEY = "quantpy_real_sub_tab";
+const SIM_SUB_TAB_KEY = "quantpy_sim_sub_tab";
+const REAL_SUB_TABS = new Set(["holdings", "midterm", "sector", "serenity", "ultra", "ops"]);
+const SIM_SUB_TABS = new Set(["ultra", "midterm", "ma20", "serenity"]);
+const ACTION_VIEW_MAP = {
+  refresh: ["real", "holdings"],
+  report: ["real", "holdings"],
+  alerts: ["real", "holdings"],
+  review: ["real", "ops"],
+  scan: ["real", "ultra"],
+  "short-term": ["real", "ultra"],
+  sector: ["real", "sector"],
+  serenity: ["real", "serenity"],
+  "serenity-track": ["real", "serenity"],
+  midterm: ["real", "midterm"],
+  "midterm-triple-volume": ["real", "midterm"],
+  "triple-volume-watch": ["real", "midterm"],
+  "midterm-track": ["real", "midterm"],
+  "review-tune": ["real", "ops"],
+  "ai-learn": ["real", "ops"],
+  sim: ["sim", "ultra"],
+  "sim-review": ["sim", "ultra"],
+  "sim-backtest": ["sim", "ultra"],
+  "sim-midterm": ["sim", "midterm"],
+  "sim-midterm-select": ["sim", "midterm"],
+  "sim-ma20-select": ["sim", "ma20"],
+  "sim-serenity-select": ["sim", "serenity"],
+};
+
+function switchRealSubTab(tab) {
+  if (!REAL_SUB_TABS.has(tab)) tab = "holdings";
+  document.querySelectorAll("[data-real-sub]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.realSub === tab);
+  });
+  document.querySelectorAll("[data-real-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.realPanel === tab);
+  });
+  localStorage.setItem(REAL_SUB_TAB_KEY, tab);
+}
+
+function switchSimSubTab(tab) {
+  if (!SIM_SUB_TABS.has(tab)) tab = "ultra";
+  document.querySelectorAll("[data-sim-sub]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.simSub === tab);
+  });
+  document.querySelectorAll("[data-sim-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.simPanel === tab);
+  });
+  localStorage.setItem(SIM_SUB_TAB_KEY, tab);
+}
+
+function focusActionView(action) {
+  const mapped = ACTION_VIEW_MAP[action];
+  if (!mapped) return;
+  const [main, sub] = mapped;
+  switchMainTab(main);
+  if (main === "real") switchRealSubTab(sub);
+  if (main === "sim") switchSimSubTab(sub);
+}
 
 function switchMainTab(tab) {
   if (tab !== "real" && tab !== "sim") tab = "real";
@@ -1944,9 +2217,11 @@ function renderAll(data) {
   try { renderLevelAlerts(data.level_alerts); } catch (e) { console.error("renderLevelAlerts", e); }
   try { renderTradeReview(data.portfolio_review); } catch (e) { console.error("renderTradeReview", e); }
   try { renderUltraShort(data.ultra_short); } catch (e) { console.error("renderUltraShort", e); }
+  try { renderShortTerm(data.short_term); } catch (e) { console.error("renderShortTerm", e); }
   try { renderMidtermTracker(data.midterm_tracker); } catch (e) { console.error("renderMidtermTracker", e); }
   try { renderTripleVolumeFromData(data); } catch (e) { console.error("renderTripleVolume", e); }
   try { renderSector(data.sector); } catch (e) { console.error("renderSector", e); }
+  try { renderSerenity(data.serenity); } catch (e) { console.error("renderSerenity", e); }
   try { renderSuggestions(data); } catch (e) { console.error("renderSuggestions", e); }
   try { renderRecentTrades(data.trades); } catch (e) { console.error("renderRecentTrades", e); }
   try {
@@ -2289,6 +2564,20 @@ async function runAction(action, force, opts = {}) {
     const q = qs.toString();
     url = q ? `/api/actions/sim-ma20-select?${q}` : `/api/actions/sim-ma20-select`;
   }
+  if (action === "sim-serenity-select") {
+    const qs = new URLSearchParams();
+    if (force) qs.set("force", "true");
+    const theme =
+      document.getElementById("sim-serenity-theme")?.value?.trim() ||
+      document.getElementById("serenity-theme")?.value?.trim() ||
+      "";
+    const boardType = document.getElementById("serenity-board-type")?.value || "concept";
+    const board = document.getElementById("serenity-board-select")?.value || "";
+    if (theme) qs.set("theme", theme);
+    qs.set("type", boardType);
+    if (board) qs.set("board", board);
+    url = `/api/actions/sim-serenity-select?${qs.toString()}`;
+  }
   if (action === "sim-midterm-select") {
     const qs = new URLSearchParams();
     if (force) qs.set("force", "true");
@@ -2308,6 +2597,24 @@ async function runAction(action, force, opts = {}) {
     if (board) qs.set("board", board);
     url = `/api/actions/sector?${qs.toString()}`;
   }
+  if (action === "serenity") {
+    const qs = new URLSearchParams();
+    const theme = document.getElementById("serenity-theme")?.value?.trim() || "";
+    const boardType = document.getElementById("serenity-board-type")?.value || "concept";
+    const board = document.getElementById("serenity-board-select")?.value || "";
+    if (!theme && !board) {
+      setLoading(false);
+      showToast("请先填写主题（如光模块），或指定板块", true);
+      return;
+    }
+    if (theme) qs.set("theme", theme);
+    qs.set("type", boardType);
+    if (board) qs.set("board", board);
+    url = `/api/actions/serenity?${qs.toString()}`;
+  }
+  if (action === "serenity-track") {
+    url = `/api/actions/serenity-track`;
+  }
   const timeoutMs = ACTION_TIMEOUT_MS[action] || ACTION_TIMEOUT_MS.default;
   if (LONG_RUNNING_ACTIONS.has(action)) {
     openLogPanel(`[${new Date().toLocaleTimeString()}] ${action} 执行中，请稍候…\n（进度将自动刷新，全市场扫描约 1～3 分钟）\n`);
@@ -2325,6 +2632,8 @@ async function runAction(action, force, opts = {}) {
     if (body.data) {
       if (body.ultra_short) body.data.ultra_short = body.ultra_short;
       if (body.sector) body.data.sector = body.sector;
+      if (body.serenity) body.data.serenity = body.serenity;
+      if (body.short_term) body.data.short_term = body.short_term;
       if (body.level_alerts) body.data.level_alerts = body.level_alerts;
       if (body.midterm) {
         body.data.portfolio = body.data.portfolio || {};
@@ -2340,15 +2649,37 @@ async function runAction(action, force, opts = {}) {
         body.data.triple_volume_watchlist = body.triple_volume_watchlist;
       }
       renderAll(body.data);
-      if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select", "sim-ma20-select"].includes(action)) {
+      if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select", "sim-ma20-select", "sim-serenity-select"].includes(action)) {
         refreshSimPanel().catch(() => {});
       }
     }
     if (action === "scan" && body.ultra_short) {
       document.getElementById("ultra-badge").textContent = "刚刚扫描";
     }
+    if (action === "short-term" && body.ok) {
+      const badge = document.getElementById("short-term-badge");
+      if (badge) badge.textContent = "刚刚更新";
+      const st = body.short_term || body.data?.short_term;
+      if (st?.markdown) {
+        openReport({ name: "短线强势股筛选", content: st.markdown });
+      }
+    }
     if (action === "sector" && body.ok) {
       document.getElementById("sector-badge").textContent = "刚刚更新";
+    }
+    if (action === "serenity" && body.ok) {
+      const badge = document.getElementById("serenity-badge");
+      if (badge) badge.textContent = "刚刚更新";
+      const serenity = body.serenity || body.data?.serenity;
+      if (serenity?.markdown) {
+        openReport({
+          name: `Serenity 卡脖子 · ${serenity.theme || ""}`,
+          content: serenity.markdown,
+        });
+      }
+    }
+    if (action === "serenity-track" && body.ok) {
+      showToast(body.message || "卡脖子跟进完成");
     }
     if (action === "report" && body.ok) {
       openReport(body.report_content);
@@ -2372,11 +2703,7 @@ async function runAction(action, force, opts = {}) {
       });
     }
     if (body.ok) {
-      if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select", "sim-ma20-select"].includes(action)) {
-        switchMainTab("sim");
-      } else if (["midterm", "midterm-triple-volume", "triple-volume-watch", "alerts", "review"].includes(action)) {
-        switchMainTab("real");
-      }
+      focusActionView(action);
     }
     showToast(body.message || (body.ok ? "完成" : "失败"), !body.ok);
   } catch (e) {
@@ -2400,7 +2727,15 @@ async function runAction(action, force, opts = {}) {
 document.querySelectorAll("[data-main-tab]").forEach((btn) => {
   btn.addEventListener("click", () => switchMainTab(btn.dataset.mainTab));
 });
+document.querySelectorAll("[data-real-sub]").forEach((btn) => {
+  btn.addEventListener("click", () => switchRealSubTab(btn.dataset.realSub));
+});
+document.querySelectorAll("[data-sim-sub]").forEach((btn) => {
+  btn.addEventListener("click", () => switchSimSubTab(btn.dataset.simSub));
+});
 switchMainTab(localStorage.getItem(MAIN_TAB_KEY) || "real");
+switchRealSubTab(localStorage.getItem(REAL_SUB_TAB_KEY) || "holdings");
+switchSimSubTab(localStorage.getItem(SIM_SUB_TAB_KEY) || "ultra");
 
 document.querySelectorAll("[data-action]").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -2509,6 +2844,15 @@ document.getElementById("sector-board-type").addEventListener("change", () => {
 });
 document.getElementById("btn-sector-boards-load").addEventListener("click", () => {
   loadSectorBoardOptions().then(() => showToast("板块列表已加载")).catch((e) => showToast(e.message, true));
+});
+
+document.getElementById("serenity-board-type")?.addEventListener("change", () => {
+  const sel = document.getElementById("serenity-board-select");
+  if (sel) sel.value = "";
+  loadSerenityBoardOptions().catch(() => {});
+});
+document.getElementById("btn-serenity-boards-load")?.addEventListener("click", () => {
+  loadSerenityBoardOptions().then(() => showToast("板块列表已加载")).catch((e) => showToast(e.message, true));
 });
 
 renderMidtermSelectConditions(DEFAULT_MIDTERM_CONDITIONS);

@@ -84,6 +84,14 @@
 
 ## 与仓库模块的数据字段提示
 
+### 双模板落盘（勿混）
+
+| 路径 | 归属 |
+|------|------|
+| `data/midterm_pick_tracker.json` | 模板 A · 中线量化 |
+| `output/sector/` | 热门板块强弱（非卡脖子） |
+| `data/serenity_choke_picks.json` · `output/serenity/` | 模板 B · Serenity |
+
 ### `midterm_pick_tracker`
 
 - 关注 `summary.win_rate`、`avg_return`、`factor_insights`

@@ -1,46 +1,84 @@
     <div class="main-tab-panel" id="tab-sim">
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>超短模拟持仓</h2><span class="badge">20万 · 扫描价买卖 · T+1</span></div>
-        <div class="stats" id="sim-stats"></div>
-        <div class="table-wrap" id="sim-table"></div>
-      </section>
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>超短平仓记录</h2><span class="badge">最近10笔</span></div>
-        <div class="table-wrap" id="closed-table"></div>
-      </section>
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head">
-          <h2>中线模拟持仓</h2>
-          <span class="badge" id="sim-mid-badge">15万 · 三倍量 · 最多5仓</span>
-          <button type="button" class="secondary" data-action="sim-midterm-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">观察池模拟选股</button>
-        </div>
-        <div class="stats" id="sim-mid-stats"></div>
-        <div class="table-wrap" id="sim-mid-table"></div>
-      </section>
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>中线选股记录</h2><span class="badge" id="sim-mid-pick-badge">—</span></div>
-        <div class="table-wrap" id="sim-mid-pick-table"></div>
-      </section>
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>中线模拟复盘</h2><span class="badge" id="sim-mid-review-badge">—</span></div>
-        <div class="table-wrap" id="sim-mid-review-table"></div>
-      </section>
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>中线模拟平仓</h2><span class="badge">最近10笔</span></div>
-        <div class="table-wrap" id="sim-mid-closed-table"></div>
-      </section>
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head">
-          <h2>MA20回踩模拟</h2>
-          <span class="badge" id="sim-ma20-badge">20万 · MA20突破·MA5回踩 · 最多5仓</span>
-          <button type="button" class="secondary" data-action="sim-ma20-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">MA20回踩选股</button>
-        </div>
-        <div class="stats" id="sim-ma20-stats"></div>
-        <div class="table-wrap" id="sim-ma20-scan-table"></div>
-        <div class="table-wrap" id="sim-ma20-table"></div>
-      </section>
-      <section class="panel" style="margin-bottom:20px">
-        <div class="panel-head"><h2>MA20模拟平仓</h2><span class="badge">最近10笔</span></div>
-        <div class="table-wrap" id="sim-ma20-closed-table"></div>
-      </section>
+      <div class="sub-tabs" id="sim-sub-tabs" role="tablist">
+        <button type="button" class="active" data-sim-sub="ultra">超短</button>
+        <button type="button" data-sim-sub="midterm">中线三倍量</button>
+        <button type="button" data-sim-sub="ma20">MA20</button>
+        <button type="button" data-sim-sub="serenity">卡脖子</button>
+      </div>
+
+      <div class="sub-tab-panel active" id="sim-sub-ultra" data-sim-panel="ultra">
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>超短模拟持仓</h2><span class="badge">20万 · 扫描价买卖 · T+1</span></div>
+          <div class="stats" id="sim-stats"></div>
+          <div class="table-wrap" id="sim-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>超短平仓记录</h2><span class="badge">最近10笔</span></div>
+          <div class="table-wrap" id="closed-table"></div>
+        </section>
+      </div>
+
+      <div class="sub-tab-panel" id="sim-sub-midterm" data-sim-panel="midterm">
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <h2>中线模拟持仓</h2>
+            <span class="badge" id="sim-mid-badge">15万 · 三倍量 · 最多5仓</span>
+            <button type="button" class="secondary" data-action="sim-midterm-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">观察池模拟选股</button>
+          </div>
+          <div class="stats" id="sim-mid-stats"></div>
+          <div class="table-wrap" id="sim-mid-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>中线选股记录</h2><span class="badge" id="sim-mid-pick-badge">—</span></div>
+          <div class="table-wrap" id="sim-mid-pick-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>中线模拟复盘</h2><span class="badge" id="sim-mid-review-badge">—</span></div>
+          <div class="table-wrap" id="sim-mid-review-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>中线模拟平仓</h2><span class="badge">最近10笔</span></div>
+          <div class="table-wrap" id="sim-mid-closed-table"></div>
+        </section>
+      </div>
+
+      <div class="sub-tab-panel" id="sim-sub-ma20" data-sim-panel="ma20">
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <h2>MA20回踩模拟</h2>
+            <span class="badge" id="sim-ma20-badge">20万 · MA20突破·MA5回踩 · 最多5仓</span>
+            <button type="button" class="secondary" data-action="sim-ma20-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">MA20回踩选股</button>
+          </div>
+          <div class="stats" id="sim-ma20-stats"></div>
+          <div class="table-wrap" id="sim-ma20-scan-table"></div>
+          <div class="table-wrap" id="sim-ma20-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>MA20模拟平仓</h2><span class="badge">最近10笔</span></div>
+          <div class="table-wrap" id="sim-ma20-closed-table"></div>
+        </section>
+      </div>
+
+      <div class="sub-tab-panel" id="sim-sub-serenity" data-sim-panel="serenity">
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <h2>Serenity 卡脖子模拟</h2>
+            <span class="badge" id="sim-serenity-badge">20万 · 供应链瓶颈 · 最多5仓</span>
+            <button type="button" class="secondary" data-action="sim-serenity-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">卡脖子模拟选股</button>
+          </div>
+          <div class="rec-filters" style="margin-bottom:8px">
+            <div>
+              <label for="sim-serenity-theme">主题</label>
+              <input type="text" id="sim-serenity-theme" placeholder="如：光模块（可空=沿用上次）" style="min-width:160px" />
+            </div>
+          </div>
+          <div class="stats" id="sim-serenity-stats"></div>
+          <div class="table-wrap" id="sim-serenity-scan-table"></div>
+          <div class="table-wrap" id="sim-serenity-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>Serenity 模拟平仓</h2><span class="badge">最近10笔</span></div>
+          <div class="table-wrap" id="sim-serenity-closed-table"></div>
+        </section>
+      </div>
     </div>

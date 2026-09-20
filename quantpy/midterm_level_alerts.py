@@ -366,11 +366,11 @@ def scan_midterm_level_alerts(
         ]
 
     price_map = {
-        str(p["code"]).zfill(6): float(p.get("current_price", 0))
+        str(p["code"]).zfill(6): float(p.get("current_price") or 0)
         for p in positions
     }
     cost_map = {
-        str(p["code"]).zfill(6): float(p.get("cost_price", 0))
+        str(p["code"]).zfill(6): float(p.get("cost_price") or 0)
         for p in positions
     }
 

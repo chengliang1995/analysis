@@ -75,6 +75,35 @@ def run_action_ultra_scan(
     )
 
 
+def run_action_short_term(
+    *,
+    max_candidates: int = 50,
+    max_analyze: int = 400,
+    show_progress: bool = True,
+) -> dict:
+    """短线强势股（涨停基因+均线多头），独立于 ultra scan。"""
+    from quantpy.short_term_picker import run_short_term_pick
+
+    result = run_short_term_pick(
+        max_candidates=max_candidates,
+        max_analyze=max_analyze,
+        show_progress=show_progress,
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        return _result(
+            False,
+            (result or {}).get("message") if isinstance(result, dict) else "短线筛选失败",
+            payload={"short_term": result or {}},
+        )
+    stats = result.get("stats") or {}
+    message = (
+        f"短线强势筛选完成：通过 {stats.get('passed', 0)} · "
+        f"返回 {stats.get('returned', 0)}（来源 {result.get('source')}）"
+    )
+    artifacts = [result["artifact"]] if result.get("artifact") else []
+    return _result(True, message, payload={"short_term": result}, artifacts=artifacts)
+
+
 def run_action_triple_volume(
     *,
     force: bool = False,
@@ -339,6 +368,45 @@ def run_action_sim_ma20(
     )
 
 
+def run_action_sim_serenity(
+    *,
+    theme: str = "",
+    board_type: str = "concept",
+    board_code: Optional[str] = None,
+    force: bool = False,
+    show_progress: bool = True,
+    max_candidates: int = 12,
+) -> dict:
+    """Serenity 卡脖子模拟选股（独立 20 万账户）。"""
+    from quantpy.sim_replay import SimReplayEngine
+    from quantpy.sim_serenity import run_sim_serenity_select
+
+    engine = SimReplayEngine()
+    engine.reload_state()
+    result = run_sim_serenity_select(
+        engine,
+        theme=theme,
+        board_type=board_type,
+        board_code=board_code,
+        show_progress=show_progress,
+        force=force,
+        max_candidates=max_candidates,
+    )
+    if not isinstance(result, dict):
+        return _result(False, "Serenity 模拟选股失败")
+    if result.get("error") or not result.get("ok", True):
+        return _result(
+            False,
+            result.get("message") or "Serenity 模拟选股失败",
+            payload={"sim_serenity": result},
+        )
+    return _result(
+        True,
+        result.get("message") or "Serenity 模拟选股完成",
+        payload={"sim_serenity": result},
+    )
+
+
 def run_action_review_tune(
     *,
     show_progress: bool = True,
@@ -552,6 +620,54 @@ def run_action_sector(
     return _result(True, message, payload={"sector": result})
 
 
+def run_action_serenity(
+    *,
+    theme: str = "",
+    board_type: str = "concept",
+    board_code: Optional[str] = None,
+    top_boards: int = 3,
+    max_candidates: int = 12,
+    record_picks: bool = True,
+    show_progress: bool = True,
+) -> dict:
+    """Serenity 卡脖子主题选股（独立桶，不写 midterm_pick_tracker）。"""
+    from quantpy.serenity_choke_advisor import run_serenity_scan
+
+    result = run_serenity_scan(
+        theme,
+        board_type=board_type,
+        board_code=board_code,
+        top_boards=top_boards,
+        max_candidates=max_candidates,
+        record_picks=record_picks,
+        show_progress=show_progress,
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        return _result(
+            False,
+            (result or {}).get("message") if isinstance(result, dict) else "Serenity 扫描失败",
+            payload={"serenity": result or {}},
+        )
+    stats = result.get("stats") or {}
+    message = (
+        f"Serenity 完成：主题「{result.get('theme') or board_code}」· "
+        f"板块 {stats.get('board_count', 0)} · 候选 {stats.get('candidate_count', 0)}"
+    )
+    return _result(True, message, payload={"serenity": result})
+
+
+def run_action_serenity_track(*, show_progress: bool = True) -> dict:
+    from quantpy.serenity_choke_advisor import run_serenity_track
+
+    result = run_serenity_track(show_progress=show_progress)
+    summary = (result or {}).get("summary") or {}
+    message = (
+        f"Serenity 跟进完成：开放 {summary.get('open_n')} · "
+        f"闭环 {summary.get('closed_n')} · 胜率 {summary.get('win_rate')}"
+    )
+    return _result(True, message, payload={"serenity_track": result or {}})
+
+
 def run_action_alerts(*, show_progress: bool = False) -> dict:
     from quantpy.midterm_level_alerts import scan_midterm_level_alerts
     from quantpy.midterm_portfolio_advisor import MidtermPortfolioAdvisor
@@ -591,10 +707,12 @@ def run_action_refresh() -> dict:
 # 供 CLI / Web 映射：command → runner
 CLI_ACTION_MAP: Dict[str, Callable[..., dict]] = {
     "scan": run_action_ultra_scan,
+    "short-term": run_action_short_term,
     "midterm-triple-volume": run_action_triple_volume,
     "triple-volume-watch": run_action_triple_watch,
     "midterm-track": run_action_midterm_track,
     "sim-ma20": run_action_sim_ma20,
+    "sim-serenity": run_action_sim_serenity,
     "review-tune": run_action_review_tune,
     "ai-learn": run_action_ai_learn,
     "sim": run_action_sim,
@@ -604,6 +722,8 @@ CLI_ACTION_MAP: Dict[str, Callable[..., dict]] = {
     "sim-midterm-select": run_action_sim_midterm_select,
     "review": run_action_real_review,
     "sector": run_action_sector,
+    "serenity": run_action_serenity,
+    "serenity-track": run_action_serenity_track,
     "alerts": run_action_alerts,
     "refresh": run_action_refresh,
 }
@@ -611,6 +731,7 @@ CLI_ACTION_MAP: Dict[str, Callable[..., dict]] = {
 # Web 别名（按钮 data-action 与 CLI 略有差异时在此对齐）
 WEB_ACTION_ALIASES: Dict[str, str] = {
     "sim-ma20-select": "sim-ma20",
+    "sim-serenity-select": "sim-serenity",
 }
 
 

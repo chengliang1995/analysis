@@ -303,7 +303,7 @@ tr.drill-row td:first-child { color: #93c5fd; }
 .stats.stats-3 { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 700px) { .stats.stats-3 { grid-template-columns: repeat(2, 1fr); } }
 .main-tabs {
-  display: flex; gap: 8px; margin-bottom: 16px;
+  display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
 }
 .main-tabs button {
   padding: 12px 28px; font-size: 0.95rem; font-weight: 600;
@@ -315,6 +315,26 @@ tr.drill-row td:first-child { color: #93c5fd; }
 }
 .main-tab-panel { display: none; }
 .main-tab-panel.active { display: block; }
+
+.sub-tabs {
+  display: flex; gap: 6px; margin: 0 0 16px; flex-wrap: wrap;
+  padding: 6px; background: rgba(15, 23, 42, 0.55);
+  border: 1px solid var(--border); border-radius: 12px;
+  position: sticky; top: 8px; z-index: 20;
+  backdrop-filter: blur(8px);
+}
+.sub-tabs button {
+  padding: 8px 14px; font-size: 0.82rem; font-weight: 600;
+  background: transparent; color: var(--muted);
+  border: 1px solid transparent; border-radius: 8px;
+}
+.sub-tabs button:hover { color: #e2e8f0; background: rgba(148, 163, 184, 0.12); }
+.sub-tabs button.active {
+  color: #fff; background: #334155; border-color: #475569;
+}
+.sub-tab-panel { display: none; }
+.sub-tab-panel.active { display: block; }
+
 .toolbar.hidden { display: none; }
 .panel-head.sub h3 { font-size: 0.95rem; font-weight: 600; }
 

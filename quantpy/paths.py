@@ -28,11 +28,14 @@ TRIPLE_VOLUME_WATCHLIST_FILE = DATA_DIR / "triple_volume_watchlist.json"
 SCHEDULER_STATUS_FILE = DATA_DIR / "scheduler_status.json"
 SCHEDULER_PHASES_FILE = SCRIPTS_DIR / "phases.json"
 SELECTION_TUNING_STATE_FILE = DATA_DIR / "selection_tuning_state.json"
+SERENITY_PICKS_FILE = DATA_DIR / "serenity_choke_picks.json"
 
 # 落盘契约（选股产物）
 # - 超短 → output/ultra_short_YYYYMMDD.csv
+# - 短线强势（涨停基因）→ output/short_term/
 # - 中线 → output/midterm/midterm_*.json
 # - 三倍量 → output/midterm/triple_volume_*.json
 # - 观察池 → data/triple_volume_watchlist.json
 # - 中线跟进 → data/midterm_pick_tracker.json
+# - Serenity 卡脖子 → output/serenity/ · data/serenity_choke_picks.json（独立，勿混 midterm）
 # - 定时状态 → data/scheduler_status.json
