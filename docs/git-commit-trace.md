@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-09-20 09:40 | 85859c9
+
+- **message**: fix: 盈亏口径对齐、证据驱动选股政策与学习闭环
+- **why**: 缺价/费用/交易日统一口径；按全策略评估把中线主路径改为突破日并收紧弱策略；评估→政策→调参→归因可重跑
+- **files**:
+  - `quantpy/trade_math.py` — 缺价不入账、费用、交易日
+  - `quantpy/strategy_policy.py` / `ai_strategy_analyst.py` — 证据政策与归因
+  - `quantpy/sim_midterm.py` / `midterm_triple_volume_selector.py` — 突破日主买点
+  - `quantpy/tuning_pipeline.py` / `selection_tuning.py` / `daily_advisor.py` — 闭环与 CLI
+  - `scripts/evaluate_all_strategies.py` / `tests/test_*.py` — 评估与校验
+  - `.cursor/skills/finance-analysis/` — 金融分析 skill 入库
+- **stats**: 28 files changed, +2326/-225
+- **chat**: 审视修复 → 策略评估优化 → strategy-eval/ai/review-tune → 提交
+
+---
+
 ## 2026-09-18 18:24 | c7562e7
 
 - **message**: 架构优化：patch_live 默认 False，Web action 收敛到 orchestration
