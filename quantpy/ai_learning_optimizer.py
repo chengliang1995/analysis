@@ -9,6 +9,7 @@ AI 学习优化模块
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict
 from datetime import datetime
@@ -23,6 +24,7 @@ from quantpy.sim_replay import SimConfig
 from quantpy.trade_journal import TradeJournal
 
 OUTPUT_DIR = AI_LEARNING_DIR
+logger = logging.getLogger(__name__)
 
 PARAM_BOUNDS: Dict[str, tuple[float, float]] = {
     "min_score": (35, 65),
@@ -165,9 +167,18 @@ class AILearningOptimizer:
                     selection_changes["triple_min_score"] = max(
                         int(selection_changes.get("triple_min_score", 60) or 60), 68,
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("中线跟进因子并入 AI 学习失败: %s", exc)
         suggestions = self._build_suggestions(analytics, param_deltas, config, selection_changes)
+        # 注入策略政策结论（有证据才追加）
+        try:
+            from quantpy.strategy_policy import load_policy
+
+            for act in load_policy().actions[:4]:
+                if act not in suggestions:
+                    suggestions.append(act)
+        except Exception as exc:
+            logger.warning("加载策略政策失败: %s", exc)
         suggestions = self._maybe_llm_enhance(analytics, suggestions, config)
 
         param_changes: Dict[str, str] = {}
@@ -682,8 +693,13 @@ class AILearningOptimizer:
         model = os.environ.get("AI_MODEL", "gpt-4o-mini")
 
         prompt = (
-            "你是 A 股超短线量化顾问。根据以下交易统计，给出 3-5 条可执行的策略优化建议"
-            "（选股逻辑、买卖点、仓位纪律），每条一句话，不要重复已有内容。\n\n"
+            "你是 A 股超短/中线量化复盘助手。下面 JSON 是唯一允许引用的证据。"
+            "给出 3-5 条可执行建议（选股、买卖点、纪律）。\n"
+            "硬性规则：\n"
+            "1) 每条必须引用证据中已有的数字（胜率/均益/样本），禁止编造。\n"
+            "2) n<8 或缺失字段不得下强弱结论。\n"
+            "3) 不要重复「已有建议」列表中的句子。\n"
+            "4) 结尾隐含「不是投资建议」口径，不要推荐具体买卖价。\n\n"
             f"统计：{json.dumps(analytics, ensure_ascii=False)}\n"
             f"当前参数：{json.dumps(asdict(config), ensure_ascii=False)}\n"
             f"已有建议：{suggestions}"

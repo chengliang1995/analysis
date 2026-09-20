@@ -273,14 +273,37 @@ def generate_daily_report(
     midterm = run_midterm_advice(portfolio_stats, show_progress=True)
     watch_payload: dict = {}
     watch_eval: dict = {}
+    breakout_recs: list = []
+    # 主路径：三倍量突破日（证据胜率显著高于观察池缩量）
+    print("\n" + "=" * 60)
+    print("三倍量突破日跟进（主路径）")
+    print("=" * 60)
+    try:
+        from quantpy.midterm_triple_volume_selector import get_breakout_day_recommendations
+
+        breakout_recs = get_breakout_day_recommendations(force_select=False, show_progress=False)
+        if breakout_recs:
+            for i, r in enumerate(breakout_recs[:5], 1):
+                print(
+                    f"  ★ {i}. {r.get('name')}({r.get('code')}) "
+                    f"评分{r.get('midterm_score')} 量{r.get('volume_ratio')}倍 "
+                    f"{r.get('reason', '')[:40]}"
+                )
+        else:
+            print("  今日暂无突破日报告候选（可先跑 midterm-triple-volume）")
+    except Exception as exc:
+        print(f"  突破日加载跳过: {exc}")
+
     if include_watchlist:
         print("\n" + "=" * 60)
-        print("三倍量观察池（每日选股入池 · 站稳MA5 + 缩量买入）")
+        print("三倍量观察池（次选·缩量站稳MA5，历史胜率偏低）")
         print("=" * 60)
         watch_payload = sync_and_evaluate_watchlist(show_progress=True)
         watch_eval = watch_payload.get("eval") or {}
         for i, a in enumerate(watch_eval.get("alerts", [])[:5], 1):
-            print(f"  ★ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
+            print(f"  ○ {i}. {a.get('name')}({a.get('code')}) {a.get('reason', '')}")
+        if not (watch_eval.get("alerts") or []):
+            print("  （无当日有效缩量买点）")
     for i, s in enumerate(midterm.get("review_summaries", []), 1):
         print(f"  复盘 {i}. {s}")
     for i, s in enumerate(midterm.get("optimize_suggestions", []), 1):
@@ -587,6 +610,12 @@ def generate_daily_report(
             "recommendations": midterm.get("recommendations", []),
             "optimize_suggestions": midterm.get("optimize_suggestions", []),
         },
+        "triple_volume_breakout": breakout_recs[:10],
+        "triple_volume_watchlist": {
+            "alerts": (watch_eval.get("alerts") or [])[:10],
+            "summary": (watch_payload.get("summary") or watch_eval.get("summary") or {}),
+            "role": "secondary",
+        },
         "portfolio_review": portfolio_review if portfolio_review else None,
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -633,8 +662,9 @@ def main() -> None:
             "sim", "sim-backtest", "sim-review", "sim-status", "ai-learn",
             "midterm", "midterm-track", "midterm-triple-volume", "triple-volume-watch",
             "sim-ma20", "review-tune", "review", "alerts", "web",
+            "strategy-eval", "strategy-ai",
         ],
-        help="review-tune=复盘后调优选股, sim-ma20=MA20回踩模拟选股, midterm=实盘中线分析, midterm-track=中线跟进, midterm-triple-volume=三倍量选股, triple-volume-watch=观察池评估, review=实盘操作复盘",
+        help="review-tune=复盘后调优选股, strategy-eval=全策略评估, strategy-ai=证据归因(+可选LLM)",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -768,6 +798,22 @@ def main() -> None:
                 auto_apply=True,
             )
             _cli_exit(result)
+        elif args.command == "strategy-eval":
+            from quantpy.strategy_policy import refresh_policy
+
+            policy = refresh_policy(run_eval=True)
+            print("已写入 output/strategy_eval/all_strategies_eval.md 与 strategy_policy.json")
+            for a in policy.actions:
+                print(f"  · {a}")
+            if not policy.actions:
+                print("  （样本未触发新约束）")
+        elif args.command == "strategy-ai":
+            from quantpy.ai_strategy_analyst import run_strategy_ai_analysis
+
+            result = run_strategy_ai_analysis(
+                refresh_eval=True, use_llm=True, show_progress=True,
+            )
+            print(result.get("report_md") or "")
         elif args.command == "review":
             print("=" * 60)
             print("实盘操作复盘（买卖点分析）")

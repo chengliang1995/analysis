@@ -50,15 +50,13 @@ def _today() -> str:
 
 
 def _hold_calendar_days(buy_date: str, as_of: Optional[str] = None) -> int:
+    """持仓天数按交易日；无买入日时返回大数，避免误触『新仓』保护。"""
     buy = str(buy_date or "")[:10]
     if not buy:
         return 999
-    try:
-        end = datetime.strptime((as_of or _today())[:10], "%Y-%m-%d")
-        start = datetime.strptime(buy, "%Y-%m-%d")
-        return max(int((end - start).days), 0)
-    except ValueError:
-        return 999
+    from quantpy.trade_math import hold_trading_days
+
+    return hold_trading_days(buy, (as_of or _today())[:10])
 
 
 def _analyze_recent_trend(bars: List[dict]) -> dict:

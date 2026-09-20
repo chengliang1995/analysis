@@ -635,8 +635,15 @@ class SimReplayEngine:
             if new != old:
                 merged[key] = new
                 changed = True
-        # 旧版仅有 round_trip_cost_pct 时，保留其收益扣减口径，不强制覆盖分项费率默认
+        # 旧版仅有 round_trip_cost_pct 时：已迁移到分项费率后清零，避免双重扣费
         clean = {k: merged.get(k, defaults[k]) for k in defaults}
+        if float(clean.get("round_trip_cost_pct") or 0) > 0 and (
+            float(clean.get("commission_rate") or 0) > 0
+            or float(clean.get("slippage_rate") or 0) > 0
+        ):
+            if clean["round_trip_cost_pct"] != 0:
+                clean["round_trip_cost_pct"] = 0.0
+                changed = True
         state["config"] = clean
         self.config = SimConfig(**clean)
         self.selector = MorningSelector(self.config)
@@ -687,10 +694,14 @@ class SimReplayEngine:
             return True
         return self._norm_date(buy_date) < self._norm_date(as_of_date or self._today())
 
+    def _hold_trading_days(self, buy_date: str, as_of_date: Optional[str] = None) -> int:
+        from quantpy.trade_math import hold_trading_days
+
+        return hold_trading_days(buy_date, as_of_date or self._today())
+
     def _hold_calendar_days(self, buy_date: str, as_of_date: Optional[str] = None) -> int:
-        buy = pd.Timestamp(self._norm_date(buy_date))
-        as_of = pd.Timestamp(self._norm_date(as_of_date or self._today()))
-        return max(int((as_of - buy).days), 0)
+        """兼容旧名：持仓天数按交易日计。"""
+        return self._hold_trading_days(buy_date, as_of_date)
 
     def _is_select_window(self) -> bool:
         now = datetime.now().time()
@@ -803,7 +814,7 @@ class SimReplayEngine:
             if qty <= 0:
                 skipped_buy.append(f"{name}({code}): 资金不足")
                 continue
-            # 成交价含买入滑点；现金扣减含佣金
+            # 成交价含买入滑点；现金扣减含佣金。止损/止盈按实际成本价重算。
             exec_price = round(buy_price * (1 + self.config.slippage_rate), 4)
             cost = exec_price * qty * (1 + self.config.commission_rate)
             if cost > float(self.state["cash"]):
@@ -814,10 +825,17 @@ class SimReplayEngine:
             tag_extra = ""
             if meta.get("morning_tags"):
                 tag_extra = "," + ",".join(meta["morning_tags"])
-            stop_loss = float(meta.get("stop_loss_ref") or round(
+            stop_loss = round(
+                exec_price * (1 + self.config.stop_loss_pct / 100), 2,
+            )
+            take_profit = round(
+                exec_price * (1 + self.config.take_profit_pct / 100), 2,
+            )
+            # 早盘参考价保留扫描口径，便于对照；持仓触发线用成本价
+            ref_stop = float(meta.get("stop_loss_ref") or round(
                 buy_price * (1 + self.config.stop_loss_pct / 100), 2,
             ))
-            take_profit = float(meta.get("take_profit_ref") or round(
+            ref_take = float(meta.get("take_profit_ref") or round(
                 buy_price * (1 + self.config.take_profit_pct / 100), 2,
             ))
             pos = SimPosition(
@@ -826,8 +844,8 @@ class SimReplayEngine:
                 quantity=qty,
                 buy_price=exec_price,
                 buy_date=today,
-                stop_loss=round(stop_loss, 2),
-                take_profit=round(take_profit, 2),
+                stop_loss=stop_loss,
+                take_profit=take_profit,
                 score=float(row.get("final_score", row.get("ultra_short_score", 0))),
                 tags=f"{row.get('tags', '')}{tag_extra},买点{zone}".strip(","),
             )
@@ -836,8 +854,8 @@ class SimReplayEngine:
                 "scan_price": meta.get("scan_price", buy_price),
                 "buy_price_ref": meta.get("buy_price_ref", buy_price),
                 "sell_price_ref": meta.get("sell_price_ref", buy_price),
-                "stop_loss_ref": stop_loss,
-                "take_profit_ref": take_profit,
+                "stop_loss_ref": ref_stop,
+                "take_profit_ref": ref_take,
                 "buy_zone": zone,
                 "is_sealed_board": bool(row.get("is_sealed_board")),
             })
@@ -892,7 +910,7 @@ class SimReplayEngine:
             low = float(q.get("low", price))
             high = float(q.get("high", price))
             buy_date = self._norm_date(p["buy_date"])
-            hold_days = self._hold_calendar_days(buy_date, today)
+            hold_days = self._hold_trading_days(buy_date, today)
 
             if not self._is_sellable(buy_date, today):
                 remain.append(p)
@@ -924,10 +942,10 @@ class SimReplayEngine:
                 reason = f"止盈({self.config.take_profit_pct}%)"
             elif hold_days >= self.config.max_hold_days:
                 sell_price = price
-                reason = f"超短到期({self.config.max_hold_days}日)"
+                reason = f"超短到期({self.config.max_hold_days}交易日)"
             elif hold_days >= 2 and price >= p["buy_price"] * 1.03:
                 sell_price = price
-                reason = "持2日盈利3%落袋"
+                reason = "持2交易日盈利3%落袋"
 
             p["sell_price_ref"] = round(price, 2)
 
@@ -935,7 +953,10 @@ class SimReplayEngine:
                 trade = self._close_position(p, today, sell_price, reason, hold_days)
                 closed.append(trade)
                 if show_progress:
-                    print(f"  卖出 {p['name']}({code}) @{sell_price} {reason} 收益 {trade.profit_pct:+.2f}%")
+                    print(
+                        f"  卖出 {p['name']}({code}) @{trade.sell_price} {reason} "
+                        f"收益 {trade.profit_pct:+.2f}%"
+                    )
             else:
                 remain.append(p)
 
@@ -947,8 +968,10 @@ class SimReplayEngine:
     def _close_position(
         self, p: dict, sell_date: str, sell_price: float, reason: str, hold_days: int
     ) -> SimTrade:
-        # 卖出：滑点后成交；回款扣佣金+印花税。旧版 round_trip_cost_pct>0 时额外兼容扣减。
-        exec_price = round(float(sell_price) * (1 - self.config.slippage_rate), 4)
+        # 卖出：滑点后成交；回款扣佣金+印花税。记录价=成交价，与现金变动一致。
+        # 旧版 round_trip_cost_pct 仅在升级未清零时兼容扣减（见 _upgrade_sim_config）。
+        trigger_price = float(sell_price)
+        exec_price = round(trigger_price * (1 - self.config.slippage_rate), 4)
         buy_cost = float(p["buy_price"]) * p["quantity"] * (1 + self.config.commission_rate)
         proceeds = exec_price * p["quantity"] * (
             1 - self.config.commission_rate - self.config.stamp_tax_rate
@@ -963,9 +986,9 @@ class SimReplayEngine:
             code=p["code"],
             name=p["name"],
             buy_date=p["buy_date"],
-            buy_price=round(float(p["buy_price"]), 2),
+            buy_price=round(float(p["buy_price"]), 4),
             sell_date=sell_date,
-            sell_price=round(float(sell_price), 2),
+            sell_price=round(exec_price, 4),
             quantity=p["quantity"],
             profit_pct=profit_pct,
             profit_amount=profit_amount,
@@ -977,7 +1000,8 @@ class SimReplayEngine:
         rec.update({
             "scan_price": p.get("scan_price", p["buy_price"]),
             "buy_price_ref": p.get("buy_price_ref", p["buy_price"]),
-            "sell_price_ref": p.get("sell_price_ref", round(sell_price, 2)),
+            "sell_price_ref": p.get("sell_price_ref", round(trigger_price, 2)),
+            "trigger_price": round(trigger_price, 4),
             "stop_loss_ref": p.get("stop_loss_ref", p.get("stop_loss")),
             "take_profit_ref": p.get("take_profit_ref", p.get("take_profit")),
             "buy_zone": p.get("buy_zone", ""),
@@ -1180,15 +1204,22 @@ class SimReplayEngine:
         return fname
 
     def get_summary(self) -> dict:
+        from quantpy.trade_math import mark_position
+
         positions = self.state.get("positions", [])
         cash = float(self.state.get("cash", 0))
         mv = 0.0
+        quote_missing = 0
         if positions:
             quotes = get_realtime_quotes([p["code"] for p in positions])
             qmap = quotes.set_index("code") if not quotes.empty else pd.DataFrame()
             for p in positions:
-                px = float(qmap.loc[p["code"], "close"]) if p["code"] in qmap.index else p["buy_price"]
-                mv += px * p["quantity"]
+                code = p["code"]
+                raw = float(qmap.loc[code, "close"]) if code in qmap.index else 0.0
+                marked = mark_position(p["buy_price"], p["quantity"], raw if raw > 0 else None)
+                if not marked["quote_ok"]:
+                    quote_missing += 1
+                mv += marked["market_value"]
 
         equity = cash + mv
         initial = float(self.state.get("initial_capital", self.config.capital))
@@ -1200,6 +1231,7 @@ class SimReplayEngine:
             "positions": positions,
             "closed_count": len(self.state.get("closed_trades", [])),
             "trading_day_count": self.state.get("trading_day_count", 0),
+            "quote_missing_count": quote_missing,
         }
 
     def print_status(self) -> dict:
@@ -1325,7 +1357,7 @@ class SimReplayEngine:
                 reason = "到期"
             elif hold_days >= 2 and close >= p["buy_price"] * 1.03:
                 sell_price = close
-                reason = "持2日盈利"
+                reason = "持2交易日盈利"
 
             if sell_price is not None:
                 self._close_position(p, day, sell_price, reason, hold_days)
@@ -1370,8 +1402,8 @@ class SimReplayEngine:
                 quantity=qty,
                 buy_price=exec_price,
                 buy_date=day,
-                stop_loss=round(buy_price * (1 + self.config.stop_loss_pct / 100), 2),
-                take_profit=round(buy_price * (1 + self.config.take_profit_pct / 100), 2),
+                stop_loss=round(exec_price * (1 + self.config.stop_loss_pct / 100), 2),
+                take_profit=round(exec_price * (1 + self.config.take_profit_pct / 100), 2),
                 score=item.get("score", 0),
                 tags=f"回测开盘买,买点{zone_low}-{zone_high}",
             )

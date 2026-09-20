@@ -98,9 +98,9 @@ def _is_sellable(buy_date: str, cfg: MidtermSimConfig, as_of: Optional[str] = No
 
 
 def _hold_days(buy_date: str, as_of: Optional[str] = None) -> int:
-    buy = pd.Timestamp(_norm_date(buy_date))
-    end = pd.Timestamp(_norm_date(as_of or _today()))
-    return max(int((end - buy).days), 0)
+    from quantpy.trade_math import hold_trading_days
+
+    return hold_trading_days(buy_date, as_of or _today())
 
 
 def _calc_midterm_quantity(
@@ -446,7 +446,7 @@ def check_midterm_exits(engine: SimReplayEngine, show_progress: bool = False) ->
             reason = f"止盈({cfg.take_profit_pct}%)"
         elif hold >= cfg.max_hold_days:
             sell_price = price
-            reason = f"持仓{cfg.max_hold_days}日到期"
+            reason = f"持仓{cfg.max_hold_days}交易日到期"
 
         if sell_price is None:
             remain.append(p)
@@ -543,8 +543,12 @@ def run_sim_midterm_select(
     prefilter: int = 800,
 ) -> dict:
     """
-    模拟盘中线选股：仅从三倍量观察池读取买点（缩量站稳 MA5），不扫突破。
+    模拟盘中线选股主路径：三倍量「突破日」跟进（一阳穿三线）。
+
+    证据（midterm_pick_tracker 满期）：三倍量突破胜率约 63% / 均益约 +5.8%；
+    观察池缩量再买结算胜率约 15%，仅作无突破日候选时的次选补仓。
     """
+    from quantpy.midterm_triple_volume_selector import get_breakout_day_recommendations
     from quantpy.triple_volume_watchlist import (
         get_buy_signal_recommendations,
         sync_and_evaluate_watchlist,
@@ -553,33 +557,56 @@ def run_sim_midterm_select(
     del industry, performance, use_cache, prefilter
     try:
         _progress("=" * 50, show_progress)
-        _progress("模拟中线选股（三倍量观察池 · 15万账户）", show_progress)
+        _progress("模拟中线选股（三倍量突破日 · 15万账户）", show_progress)
         ensure_midterm_state(engine.state)
         held = _sim_held_codes(engine)
 
+        # 次选：仍同步观察池，供无突破日标的时补位
         watch_result = sync_and_evaluate_watchlist(show_progress=show_progress)
-        buy_recs = get_buy_signal_recommendations(today_only=True)
-        buy_recs, price_skipped = _apply_today_buy_prices(buy_recs)
-        buy_recs = [r for r in buy_recs if str(r.get("code", "")).zfill(6) not in held]
-
         summary = watch_result.get("summary") or {}
         watching_n = int(summary.get("watching_count") or 0)
         signal_n = int(summary.get("buy_signal_count") or 0)
 
+        breakout_recs = get_breakout_day_recommendations(
+            force_select=force, show_progress=show_progress,
+        )
+        breakout_recs, price_skipped = _apply_today_buy_prices(breakout_recs)
+        breakout_recs = [
+            r for r in breakout_recs if str(r.get("code", "")).zfill(6) not in held
+        ]
+
+        entry_source = "triple_volume_breakout_day"
+        buy_recs = breakout_recs
+        if not buy_recs:
+            watch_recs = get_buy_signal_recommendations(today_only=True)
+            watch_recs, watch_skip = _apply_today_buy_prices(watch_recs)
+            price_skipped.extend(watch_skip)
+            watch_recs = [
+                r for r in watch_recs if str(r.get("code", "")).zfill(6) not in held
+            ]
+            if watch_recs:
+                entry_source = "triple_volume_watchlist_secondary"
+                buy_recs = watch_recs
+                _progress(
+                    "  今日无突破日标的，降级使用观察池缩量买点（历史胜率偏低）",
+                    show_progress,
+                )
+
         closed = check_midterm_exits(engine, show_progress=show_progress)
         logged: List[dict] = []
-        buy_result: dict = {"bought": [], "skipped": [], "message": "观察池暂无可用买点"}
+        buy_result: dict = {"bought": [], "skipped": [], "message": "暂无可用买点"}
 
         if buy_recs:
             _progress(
-                f"  今日观察池买点 {len(buy_recs)} 只（池中信号 {signal_n} · 观察中 {watching_n}）",
+                f"  候选 {len(buy_recs)} 只 · 来源 {entry_source}"
+                f"（观察中 {watching_n} · 池信号 {signal_n}）",
                 show_progress,
             )
             logged = record_midterm_picks(
                 engine,
                 buy_recs,
                 show_progress=show_progress,
-                source="triple_volume_watchlist",
+                source=entry_source,
             )
             buy_result = run_midterm_sim_buy(
                 engine, buy_recs, show_progress=show_progress, force=force,
@@ -587,57 +614,56 @@ def run_sim_midterm_select(
             if price_skipped:
                 buy_result.setdefault("skipped", []).extend(price_skipped)
         else:
-            skip_hint = f"（过滤 {len(price_skipped)} 只非今日/无行情）" if price_skipped else ""
+            skip_hint = f"（过滤 {len(price_skipped)} 只）" if price_skipped else ""
             _progress(
-                f"  今日暂无买点{skip_hint}（信号 {signal_n} · 观察中 {watching_n}）",
+                f"  今日暂无买点{skip_hint}（突破日 0 · 池信号 {signal_n} · 观察中 {watching_n}）",
                 show_progress,
             )
             buy_result = {
                 "bought": [],
                 "skipped": price_skipped,
-                "message": "今日无观察池买点",
+                "message": "今日无突破日/观察池买点",
             }
 
         reviews = run_midterm_sim_review(engine, show_progress=show_progress)
 
         buy_n = len(buy_result.get("bought", []))
-        ok = bool(buy_recs or buy_n or watching_n)
+        ok = bool(buy_recs or buy_n or watching_n or breakout_recs)
 
         if buy_n:
-            message = f"观察池选取 {len(buy_recs)} 只，买入 {buy_n} 只"
+            message = f"{entry_source} 选取 {len(buy_recs)} 只，买入 {buy_n} 只"
         elif buy_recs:
-            message = f"观察池 {len(buy_recs)} 只买点均未成交"
-        elif watching_n:
-            message = f"观察中 {watching_n} 只，暂无缩量站稳MA5买点"
+            message = f"{entry_source} {len(buy_recs)} 只买点均未成交"
         else:
-            message = "观察池为空，请先运行三倍量选股入池"
+            message = buy_result.get("message") or "无买点"
 
-        _progress(f"  完成：{message}", show_progress)
         return {
             "ok": ok,
             "message": message,
-            "strategy": "triple_volume_watchlist",
+            "closed": closed,
+            "logged": logged,
+            "buy_result": buy_result,
+            "reviews": reviews,
+            "strategy": entry_source,
             "buy_recommendations": buy_recs,
             "recommendations": buy_recs,
-            "watchlist": watch_result,
-            "select_stats": {"strategy": "triple_volume_watchlist", "source": "watchlist"},
-            "closed_today": closed,
-            "pick_logged": len(logged),
-            "bought": buy_result.get("bought", []),
-            "skipped": buy_result.get("skipped", []),
-            "reviews": reviews,
+            "breakout_count": len(breakout_recs),
+            "watchlist_summary": summary,
+            "select_stats": {
+                "strategy": entry_source,
+                "source": entry_source,
+                "breakout_day": entry_source.endswith("breakout_day"),
+            },
             "summary": enrich_midterm_sim(engine.state),
         }
     except Exception as exc:
-        import traceback
-
-        err = traceback.format_exc()
-        _progress(f"  [失败] {exc}", show_progress)
-        _progress(err, show_progress)
+        _progress(f"  [模拟中线] 选股失败: {exc}", show_progress)
         return {
             "ok": False,
-            "message": f"选股失败: {exc}",
-            "error": err,
+            "message": str(exc),
+            "bought": [],
+            "skipped": [],
+            "strategy": "triple_volume_breakout_day",
             "summary": enrich_midterm_sim(engine.state),
         }
 
@@ -673,6 +699,8 @@ def apply_midterm_recommendations_to_sim(
 
 def enrich_midterm_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) -> dict:
     """构造 API 用的模拟中线账户摘要。"""
+    from quantpy.trade_math import mark_position
+
     mt = ensure_midterm_state(state)
     cfg = MidtermSimConfig(**{**asdict(MidtermSimConfig()), **mt.get("config", {})})
     positions = list(mt.get("positions", []))
@@ -690,27 +718,25 @@ def enrich_midterm_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) ->
     today = _today()
     enriched = []
     total_mv = 0.0
+    quote_missing = 0
     capital = float(mt.get("initial_capital", cfg.capital))
 
     for p in positions:
         code = str(p["code"]).zfill(6)
-        current = (
-            float(qmap.loc[code, "close"])
-            if qmap is not None and code in qmap.index
-            else p["buy_price"]
-        )
-        mv = current * p["quantity"]
-        cost = p["buy_price"] * p["quantity"]
-        total_mv += mv
-        profit_pct = (current - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0
+        raw = float(qmap.loc[code, "close"]) if qmap is not None and code in qmap.index else 0.0
+        marked = mark_position(p["buy_price"], p["quantity"], raw if raw > 0 else None)
+        if not marked["quote_ok"]:
+            quote_missing += 1
+        total_mv += marked["market_value"]
         sellable = _is_sellable(p["buy_date"], cfg, today)
         enriched.append({
             **p,
-            "current_price": round(current, 2),
-            "market_value": round(mv, 2),
-            "profit_amount": round(mv - cost, 2),
-            "profit_pct": round(profit_pct, 2),
-            "weight_pct": round(mv / capital * 100, 2) if capital else 0,
+            "current_price": marked["current_price"],
+            "market_value": marked["market_value"],
+            "profit_amount": marked["profit_amount"],
+            "profit_pct": marked["profit_pct"],
+            "quote_ok": marked["quote_ok"],
+            "weight_pct": round(marked["market_value"] / capital * 100, 2) if capital else 0,
             "sellable_today": sellable,
             "t_plus_one_locked": cfg.t_plus_one and not sellable,
         })
@@ -731,6 +757,7 @@ def enrich_midterm_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) ->
         "equity": round(equity, 2),
         "total_return_pct": round((equity - initial) / initial * 100, 2) if initial else 0,
         "position_count": len(enriched),
+        "quote_missing_count": quote_missing,
         "closed_count": len(closed),
         "positions": enriched,
         "closed_trades": closed[:10],
@@ -852,7 +879,7 @@ def check_ma20_sim_exits(engine: SimReplayEngine, show_progress: bool = False) -
             reason = f"止损({cfg.stop_loss_pct}%)"
         elif hold >= cfg.max_hold_days:
             sell_price = price
-            reason = f"持仓{cfg.max_hold_days}日到期"
+            reason = f"持仓{cfg.max_hold_days}交易日到期"
         else:
             hist = get_stock_hist(code, days=30, patch_live=True)
             trend_exit, trend_reason = check_ma20_trend_exit(hist)
@@ -1120,6 +1147,8 @@ def run_sim_ma20_pullback_select(
 
 
 def enrich_midterm_ma20_sim(state: dict, quotes_df: Optional[pd.DataFrame] = None) -> dict:
+    from quantpy.trade_math import mark_position
+
     mt = ensure_midterm_ma20_state(state)
     cfg = MidtermMa20SimConfig(**{**asdict(MidtermMa20SimConfig()), **mt.get("config", {})})
     positions = list(mt.get("positions", []))
@@ -1137,26 +1166,24 @@ def enrich_midterm_ma20_sim(state: dict, quotes_df: Optional[pd.DataFrame] = Non
     today = _today()
     enriched = []
     total_mv = 0.0
+    quote_missing = 0
     capital = float(mt.get("initial_capital", cfg.capital))
 
     for p in positions:
         code = str(p["code"]).zfill(6)
-        current = (
-            float(qmap.loc[code, "close"])
-            if qmap is not None and code in qmap.index
-            else p["buy_price"]
-        )
-        mv = current * p["quantity"]
-        cost = p["buy_price"] * p["quantity"]
-        total_mv += mv
-        profit_pct = (current - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0
+        raw = float(qmap.loc[code, "close"]) if qmap is not None and code in qmap.index else 0.0
+        marked = mark_position(p["buy_price"], p["quantity"], raw if raw > 0 else None)
+        if not marked["quote_ok"]:
+            quote_missing += 1
+        total_mv += marked["market_value"]
         enriched.append({
             **p,
-            "current_price": round(current, 2),
-            "market_value": round(mv, 2),
-            "profit_amount": round(mv - cost, 2),
-            "profit_pct": round(profit_pct, 2),
-            "weight_pct": round(mv / capital * 100, 2) if capital else 0,
+            "current_price": marked["current_price"],
+            "market_value": marked["market_value"],
+            "profit_amount": marked["profit_amount"],
+            "profit_pct": marked["profit_pct"],
+            "quote_ok": marked["quote_ok"],
+            "weight_pct": round(marked["market_value"] / capital * 100, 2) if capital else 0,
             "sellable_today": _is_sellable(p["buy_date"], cfg, today),
             "t_plus_one_locked": cfg.t_plus_one and not _is_sellable(p["buy_date"], cfg, today),
             "principal_withdrawn": bool(p.get("principal_withdrawn")),
@@ -1178,6 +1205,7 @@ def enrich_midterm_ma20_sim(state: dict, quotes_df: Optional[pd.DataFrame] = Non
         "equity": round(equity, 2),
         "total_return_pct": round((equity - initial) / initial * 100, 2) if initial else 0,
         "position_count": len(enriched),
+        "quote_missing_count": quote_missing,
         "closed_count": len(closed),
         "positions": enriched,
         "closed_trades": closed[:10],

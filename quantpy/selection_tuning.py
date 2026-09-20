@@ -105,9 +105,9 @@ class SelectionTuning:
 
     ultra_min_score: int = 35
     midterm_min_score: int = 62
-    triple_min_score: int = 60
-    # MA20 回踩独立门槛（勿与 midterm_min_score 混用）
-    ma20_pullback_min_score: int = 62
+    triple_min_score: int = 68
+    # MA20 回踩独立门槛（样本偏弱，默认 68 且强制缩量）
+    ma20_pullback_min_score: int = 68
     # 拒分档：如 [(70, 80)] 表示拒绝 [70,80)，保留 60–70 与 80+
     midterm_reject_score_bands: List = field(default_factory=list)
     ultra_tag_bonus: Dict[str, int] = field(default_factory=dict)
@@ -133,6 +133,10 @@ class SelectionTuning:
     triple_condition_penalty: Dict[str, int] = field(default_factory=dict)
     triple_tag_bonus: Dict[str, int] = field(default_factory=dict)
     triple_tag_penalty: Dict[str, int] = field(default_factory=dict)
+    # 证据政策：中线主买入路径（突破日 vs 观察池缩量）
+    midterm_entry_mode: str = "breakout_day"
+    demote_watchlist_as_primary: bool = True
+    demote_ma20_as_primary: bool = True
     notes: List[str] = field(default_factory=list)
     sources: List[str] = field(default_factory=list)
 
@@ -778,11 +782,11 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
         )
         tuning.ultra_min_score = 55
     tuning.midterm_min_score = int(max(58, min(72, tuning.midterm_min_score)))
-    # MA20 独立门槛：不低于中线底线，但不受中线误抬到 68+ 绑架
-    ma20_floor = int(getattr(tuning, "ma20_pullback_min_score", 62) or 62)
-    ma20_floor = max(62, min(70, ma20_floor, tuning.midterm_min_score))
-    tuning.ma20_pullback_min_score = int(max(58, min(72, ma20_floor)))
-    tuning.triple_min_score = int(max(55, min(80, tuning.triple_min_score)))
+    # MA20 独立门槛：证据显示原 62 档偏松，默认区间 68–72
+    ma20_floor = int(getattr(tuning, "ma20_pullback_min_score", 68) or 68)
+    ma20_floor = max(68, min(72, ma20_floor))
+    tuning.ma20_pullback_min_score = int(ma20_floor)
+    tuning.triple_min_score = int(max(68, min(80, tuning.triple_min_score)))
     # 清理空转的硬筛加减分、旧背离与追涨标签
     tuning.triple_condition_bonus = {}
     tuning.triple_condition_penalty = {}
@@ -808,6 +812,17 @@ def build_selection_tuning(*, for_sim: bool = False) -> SelectionTuning:
         k: v for k, v in (tuning.midterm_tag_penalty or {}).items()
         if k not in LEGACY_DIVERGENCE_TAGS and k not in MA20_TUNABLE_TAGS
     }
+
+    # 证据政策：有样本才改约束，禁止无证据抬参
+    try:
+        from quantpy.strategy_policy import apply_policy_to_tuning, load_policy
+
+        applied = apply_policy_to_tuning(tuning, load_policy())
+        if applied:
+            tuning.notes.append(f"策略政策已应用: {', '.join(applied)}")
+    except Exception:
+        pass
+
     return tuning
 
 

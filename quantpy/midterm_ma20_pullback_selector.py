@@ -29,7 +29,8 @@ from quantpy.stock_data import (
 )
 
 MIN_DAILY_AMOUNT_WAN = 5000
-MA20_PULLBACK_MIN_SCORE = 62
+MA20_PULLBACK_MIN_SCORE = 68
+# 历史跟进：MA20 回踩样本胜率偏低，回踩缩量改为硬条件
 BREAKOUT_LOOKBACK = 15
 # 回踩窗口略放宽，避免常态 0 命中（原约 ±1.5%）
 MA5_TOUCH_LOW = 0.985
@@ -249,9 +250,11 @@ def evaluate_ma20_pullback_technicals(
     tags.append("回踩MA5")
 
     vol_shrink = _volume_shrink(hist)
-    if vol_shrink:
-        conditions.append("vol_shrink_pullback")
-        tags.append("回踩缩量")
+    # 硬条件：无缩量回踩则不做（样本显示无缩量的追涨式回踩拖累胜率）
+    if not vol_shrink:
+        return None
+    conditions.append("vol_shrink_pullback")
+    tags.append("回踩缩量")
 
     # 远离 MA5 追涨不加仓
     if price > ma5 * 1.03:
@@ -261,9 +264,8 @@ def evaluate_ma20_pullback_technicals(
     ret_20d = _safe_pct(price, float(close.iloc[-21])) if len(close) >= 21 else 0.0
     ret_60d = _safe_pct(price, float(close.iloc[-61])) if len(close) >= 61 else 0.0
 
-    score = 58
-    if vol_shrink:
-        score += 10
+    score = 62
+    score += 10  # 已强制缩量
     if ma5 > ma10 > ma20:
         score += 8
         tags.append("均线多头")

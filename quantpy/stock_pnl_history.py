@@ -12,12 +12,9 @@ from quantpy.trade_journal import TradeJournal
 
 
 def _hold_days(buy_date: str, sell_date: str) -> int:
-    try:
-        buy = datetime.strptime(str(buy_date)[:10], "%Y-%m-%d")
-        sell = datetime.strptime(str(sell_date)[:10], "%Y-%m-%d")
-        return max((sell - buy).days, 0)
-    except ValueError:
-        return 0
+    from quantpy.trade_math import hold_trading_days
+
+    return hold_trading_days(buy_date, sell_date)
 
 
 def _trade_key(row: dict) -> tuple:
@@ -30,13 +27,18 @@ def _trade_key(row: dict) -> tuple:
 
 
 def _row_from_closed(c: dict) -> dict:
+    from quantpy.trade_math import realized_cash_pnl
+
     buy_p = float(c.get("cost_price", 0))
     sell_p = float(c.get("sell_price", 0))
     qty = int(c.get("quantity", 0))
-    profit_amount = float(c.get("profit_amount", (sell_p - buy_p) * qty))
-    profit_pct = float(
-        c.get("profit_pct", (sell_p - buy_p) / buy_p * 100 if buy_p else 0)
-    )
+    if "profit_amount" in c and c.get("profit_amount") is not None:
+        profit_amount = float(c["profit_amount"])
+        profit_pct = float(
+            c.get("profit_pct", (sell_p - buy_p) / buy_p * 100 if buy_p else 0)
+        )
+    else:
+        profit_amount, profit_pct, _, _ = realized_cash_pnl(buy_p, sell_p, qty)
     return {
         "code": str(c.get("code", "")).zfill(6),
         "name": c.get("name", ""),
@@ -155,18 +157,17 @@ def get_stock_pnl_history(
                 continue
             name = name or pos.name
             from quantpy.stock_data import get_latest_price
+            from quantpy.trade_math import mark_position
 
             price = get_latest_price(code)
-            cost = pos.cost_price * pos.quantity
-            mv = price * pos.quantity if price > 0 else cost
-            profit_amount = mv - cost
-            profit_pct = (price - pos.cost_price) / pos.cost_price * 100 if pos.cost_price > 0 else 0
+            marked = mark_position(pos.cost_price, pos.quantity, price if price > 0 else None)
             current = {
                 "quantity": pos.quantity,
                 "cost_price": pos.cost_price,
-                "current_price": round(price, 2) if price > 0 else None,
-                "profit_amount": round(profit_amount, 2),
-                "profit_pct": round(profit_pct, 2),
+                "current_price": marked["current_price"],
+                "profit_amount": marked["profit_amount"],
+                "profit_pct": marked["profit_pct"],
+                "quote_ok": marked["quote_ok"],
                 "strategy": pos.strategy,
                 "bucket": classify_bucket(pos.strategy),
                 "buy_date": pos.buy_date,

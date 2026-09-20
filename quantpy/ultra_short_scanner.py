@@ -368,12 +368,12 @@ class UltraShortScanner:
     turnover_col = next((c for c in ("turnover", "turnoverratio", "换手率") if c in df.columns), None)
 
     if pct_col:
-      df["_pct"] = pd.to_numeric(df[pct_col], errors="coerce").fillna(0)
+      df["_pct"] = pd.to_numeric(df[pct_col], errors="coerce")
     else:
-      df["_pct"] = 0
+      df["_pct"] = pd.NA
 
-    # 涨跌幅全 0 时用现价/昨收重算
-    if (df["_pct"].abs() <= 0.01).mean() > 0.95:
+    # 涨跌幅几乎全空/全 0 时用现价/昨收重算；缺失保持 NaN，不填 0
+    if (df["_pct"].fillna(0).abs() <= 0.01).mean() > 0.95:
       price = None
       for c in ("price", "close", "trade"):
         if c in df.columns:
@@ -387,12 +387,12 @@ class UltraShortScanner:
       if price is not None and pre is not None:
         rebuilt = ((price - pre) / pre * 100).where(pre > 0)
         if rebuilt.notna().any() and int((rebuilt.fillna(0).abs() > 0.01).sum()) >= 30:
-          df["_pct"] = rebuilt.fillna(0)
+          df["_pct"] = rebuilt
 
     if turnover_col:
-      df["_turnover"] = pd.to_numeric(df[turnover_col], errors="coerce").fillna(0)
+      df["_turnover"] = pd.to_numeric(df[turnover_col], errors="coerce")
     else:
-      df["_turnover"] = 0
+      df["_turnover"] = pd.NA
 
     name_col = get_stock_name_column(df)
     if name_col:
@@ -400,7 +400,7 @@ class UltraShortScanner:
       st_mask = name_u.str.upper().str.contains("ST", na=False) | name_u.str.contains("退", na=False)
       df = df[~st_mask].copy()
 
-    # 强势 OR 高换手；候选过少时自动放宽初筛
+    # 强势 OR 高换手；候选过少时自动放宽初筛。NaN 不参与比较（不会被当成 0%）。
     thresholds = (
       (min_pct, min_turnover),
       (max(min_pct - 1.0, 2.0), max(min_turnover - 0.5, 1.5)),
@@ -414,9 +414,9 @@ class UltraShortScanner:
       if len(filtered) >= 30:
         break
     if filtered.empty:
-      # 仍空：按涨幅排序取头部，避免完全无候选
-      filtered = df.sort_values("_pct", ascending=False).head(80).copy()
-    filtered["_sort"] = filtered["_pct"] * 0.6 + filtered["_turnover"] * 0.4
+      # 仍空：按涨幅排序取头部（NaN 排后），避免完全无候选
+      filtered = df.sort_values("_pct", ascending=False, na_position="last").head(80).copy()
+    filtered["_sort"] = filtered["_pct"].fillna(0) * 0.6 + filtered["_turnover"].fillna(0) * 0.4
     return filtered.sort_values("_sort", ascending=False)
 
   def scan_market(

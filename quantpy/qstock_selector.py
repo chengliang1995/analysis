@@ -278,23 +278,23 @@ class QStockSelector:
                           start_date: Optional[str] = None,
                           end_date: Optional[str] = None) -> pd.DataFrame:
         """
-        简单的持有期回测
+        最近 hold_days 日收益（当前截面标的）。
 
-        Args:
-            selected_stocks: 选中的股票
-            hold_days: 持有天数
-            start_date: 开始日期 YYYYMMDD
-            end_date: 结束日期 YYYYMMDD
-
-        Returns:
-            回测结果
+        注意：selected_stocks 是最新筛选结果，不是 historically point-in-time。
+        本函数只度量「若 hold_days 交易日前买入今日榜内标的」的近期收益，
+        不能当作策略验证回测（存在选股前视偏差）。
         """
         if start_date is None:
-            start_date = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
+            start_date = (datetime.now() - timedelta(days=max(hold_days * 2, 90))).strftime('%Y%m%d')
         if end_date is None:
             end_date = self.today
 
         results = []
+        print(
+            f"\n[口径] 近期持有期收益（非策略回测）："
+            f"买入=最新K线往前第 {hold_days} 根收盘价，卖出=最新收盘价；"
+            f"筛选条件为当前截面。"
+        )
 
         for idx, stock in selected_stocks.iterrows():
             code = stock.get('code', stock.get('代码', ''))
@@ -304,16 +304,15 @@ class QStockSelector:
             try:
                 hist_data = self.get_stock_hist(str(code).zfill(6), start_date, end_date)
 
-                if hist_data.empty or len(hist_data) < hold_days:
+                if hist_data.empty or len(hist_data) < hold_days + 1:
                     continue
 
                 hist_data = hist_data.sort_values('date') if 'date' in hist_data.columns else hist_data
-                buy_price = hist_data.iloc[0]['close']
-
-                if len(hist_data) > hold_days:
-                    sell_price = hist_data.iloc[hold_days]['close']
-                else:
-                    sell_price = hist_data.iloc[-1]['close']
+                # 买在 hold_days 根之前，卖在最新一根 —— 避免「用今日条件买入90天前」的假回测
+                buy_price = float(hist_data.iloc[-(hold_days + 1)]['close'])
+                sell_price = float(hist_data.iloc[-1]['close'])
+                if buy_price <= 0:
+                    continue
 
                 profit_pct = (sell_price - buy_price) / buy_price * 100
 
@@ -323,7 +322,8 @@ class QStockSelector:
                     'buy_price': buy_price,
                     'sell_price': sell_price,
                     'profit_pct': profit_pct,
-                    'hold_days': min(hold_days, len(hist_data))
+                    'hold_days': hold_days,
+                    'note': 'current_cross_section_recent_return',
                 })
 
             except Exception as e:
@@ -332,14 +332,14 @@ class QStockSelector:
 
         if results:
             result_df = pd.DataFrame(results)
-            print(f"\n回测结果 ({hold_days}天持有期):")
+            print(f"\n近期收益统计 ({hold_days} 交易日窗口，{len(result_df)} 只):")
             print(f"  平均收益: {result_df['profit_pct'].mean():.2f}%")
             print(f"  最高收益: {result_df['profit_pct'].max():.2f}%")
             print(f"  最低收益: {result_df['profit_pct'].min():.2f}%")
             print(f"  胜率: {(result_df['profit_pct'] > 0).sum() / len(result_df) * 100:.1f}%")
             return result_df
         else:
-            print("回测完成，无有效数据")
+            print("无有效数据（窗口不足或行情缺失）")
             return pd.DataFrame()
 
     def optimize_parameters(self, stock_list: pd.DataFrame,

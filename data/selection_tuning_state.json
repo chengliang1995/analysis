@@ -1,14 +1,21 @@
 {
   "version": 1,
-  "updated_at": "2026-09-18T18:17:17",
+  "updated_at": "2026-09-20T09:37:26",
   "steps": [
-    "有效门槛：超短≥51 · 中线≥62 · MA20≥62 · 三倍量≥60"
+    "中线跟进：跟踪 13 只，成熟 92 只，胜率 47.8%",
+    "AI学习第 21 轮（statistical）：模拟样本 30 笔",
+    "模拟参数：min_score 48 → 51.0, max_open_gap_pct 6.5 → 6.0, buy_premium_pct 0.4 → 0.3, min_open_gap_pct 0.7 → 0.9",
+    "实盘复盘：24 笔，胜率 50.0%，均操作评分 69.2",
+    "策略政策：中线主路径=三倍量突破日（n=27 胜率63.0% 均益5.78%）；观察池缩量再买不作主路径（n=103 胜率15.5% 均益-2.02%）；MA20回踩非主路径（n≥10 胜率25.0%），门槛≥68+强制缩量",
+    "策略AI归因：statistical · 6 条结论",
+    "有效门槛：超短≥51 · 中线≥62 · MA20≥68 · 三倍量≥70",
+    "已同步 SimConfig.min_score ← tuning_sim.ultra_min_score"
   ],
   "live": {
     "ultra_min_score": 51,
     "midterm_min_score": 62,
-    "triple_min_score": 60,
-    "ma20_pullback_min_score": 62,
+    "triple_min_score": 70,
+    "ma20_pullback_min_score": 68,
     "midterm_reject_score_bands": [
       [
         70.0,
@@ -49,6 +56,9 @@
     "triple_condition_penalty": {},
     "triple_tag_bonus": {},
     "triple_tag_penalty": {},
+    "midterm_entry_mode": "breakout_day",
+    "demote_watchlist_as_primary": true,
+    "demote_ma20_as_primary": true,
     "notes": [
       "近30笔胜率30%/止损70%，启用封板硬筛+门槛≥48",
       "模拟复盘胜率 35% 偏低，偏好封板/不破开（软筛选）",
@@ -59,7 +69,13 @@
       "止损触发偏多，未封板大涨标的减分",
       "模拟复盘胜率 35% 偏低，超短门槛≥48",
       "评分70-80档胜率 39.1% 偏低，拒分档70–80（保留60–70/80+）",
-      "中线跟进10日胜率 47.8%（92 笔），因子已调优"
+      "中线跟进10日胜率 47.8%（92 笔），因子已调优",
+      "中线主路径=三倍量突破日（n=27 胜率63.0% 均益5.78%）",
+      "观察池缩量再买不作主路径（n=103 胜率15.5% 均益-2.02%）",
+      "MA20回踩非主路径（n≥10 胜率25.0%），门槛≥68+强制缩量",
+      "底背离停用主轴（n=13 胜率30.8%）",
+      "超短强制封板硬筛+门槛≥51（模拟 n=121 胜率34.7%）",
+      "策略政策已应用: ultra_force_seal_filter"
     ],
     "sources": [
       "sim_config",
@@ -67,14 +83,15 @@
       "sim_midterm(n=23)",
       "ai_learning",
       "real_review",
-      "midterm_tracker"
+      "midterm_tracker",
+      "strategy_policy"
     ]
   },
   "sim": {
     "ultra_min_score": 51,
     "midterm_min_score": 62,
-    "triple_min_score": 60,
-    "ma20_pullback_min_score": 62,
+    "triple_min_score": 70,
+    "ma20_pullback_min_score": 68,
     "midterm_reject_score_bands": [
       [
         70.0,
@@ -115,6 +132,9 @@
     "triple_condition_penalty": {},
     "triple_tag_bonus": {},
     "triple_tag_penalty": {},
+    "midterm_entry_mode": "breakout_day",
+    "demote_watchlist_as_primary": true,
+    "demote_ma20_as_primary": true,
     "notes": [
       "近30笔胜率30%/止损70%，启用封板硬筛+门槛≥48",
       "模拟复盘胜率 35% 偏低，偏好封板/不破开（软筛选）",
@@ -125,7 +145,13 @@
       "止损触发偏多，未封板大涨标的减分",
       "模拟复盘胜率 35% 偏低，超短门槛≥48",
       "评分70-80档胜率 39.1% 偏低，拒分档70–80（保留60–70/80+）",
-      "中线跟进10日胜率 47.8%（92 笔），因子已调优"
+      "中线跟进10日胜率 47.8%（92 笔），因子已调优",
+      "中线主路径=三倍量突破日（n=27 胜率63.0% 均益5.78%）",
+      "观察池缩量再买不作主路径（n=103 胜率15.5% 均益-2.02%）",
+      "MA20回踩非主路径（n≥10 胜率25.0%），门槛≥68+强制缩量",
+      "底背离停用主轴（n=13 胜率30.8%）",
+      "超短强制封板硬筛+门槛≥51（模拟 n=121 胜率34.7%）",
+      "策略政策已应用: ultra_force_seal_filter"
     ],
     "sources": [
       "sim_config",
@@ -133,14 +159,84 @@
       "sim_midterm(n=23)",
       "ai_learning",
       "real_review",
-      "midterm_tracker"
+      "midterm_tracker",
+      "strategy_policy"
     ]
   },
-  "summary": "选股调优：超短≥51 · 中线≥62 · MA20回踩≥62 · 三倍量≥60\n拒分档：[70,80)\n依据：sim_config, sim_trades(n=121), sim_midterm(n=23), ai_learning, real_review, midterm_tracker\n  · 近30笔胜率30%/止损70%，启用封板硬筛+门槛≥48\n  · 模拟复盘胜率 35% 偏低，偏好封板/不破开（软筛选）\n  · 低评分(<60)标的胜率差，适度抬高入选门槛\n  · 评分60-75胜率26%偏低，略抬超短门槛\n  · 评分75-90胜率仅37%，抑制未封板中高分追涨\n  · 评分90+胜率仅44%，抑制未封板超高分",
+  "summary": "选股调优：超短≥51 · 中线≥62 · MA20回踩≥68 · 三倍量≥70\n拒分档：[70,80)\n依据：sim_config, sim_trades(n=121), sim_midterm(n=23), ai_learning, real_review, midterm_tracker, strategy_policy\n  · 近30笔胜率30%/止损70%，启用封板硬筛+门槛≥48\n  · 模拟复盘胜率 35% 偏低，偏好封板/不破开（软筛选）\n  · 低评分(<60)标的胜率差，适度抬高入选门槛\n  · 评分60-75胜率26%偏低，略抬超短门槛\n  · 评分75-90胜率仅37%，抑制未封板中高分追涨\n  · 评分90+胜率仅44%，抑制未封板超高分",
   "extras": {
-    "mode": "build_only",
-    "param_changes": {},
+    "mode": "full",
+    "param_changes": {
+      "min_score": "48 → 51.0",
+      "max_open_gap_pct": "6.5 → 6.0",
+      "buy_premium_pct": "0.4 → 0.3",
+      "min_open_gap_pct": "0.7 → 0.9",
+      "sync_min_score": "48 → 51"
+    },
     "ai_fallback": false,
-    "errors": []
+    "errors": [],
+    "strategy_policy": {
+      "updated_at": "2026-09-20T09:37:26",
+      "midterm_entry_mode": "breakout_day",
+      "prefer_breakout_day": true,
+      "demote_watchlist_as_primary": true,
+      "demote_ma20_as_primary": true,
+      "demote_divergence_as_primary": true,
+      "ultra_force_seal_filter": true,
+      "ultra_min_score_floor": 51,
+      "triple_min_score_floor": 68,
+      "ma20_min_score_floor": 68,
+      "evidence": {
+        "triple_breakout": {
+          "n": 27,
+          "win_rate": 63.0,
+          "avg": 5.78
+        },
+        "watchlist_shrink": {
+          "n": 103,
+          "win_rate": 15.5,
+          "avg": -2.02
+        },
+        "ma20_tracker": {
+          "n": 8,
+          "win_rate": 25.0,
+          "avg": -4.18
+        },
+        "ma20_sim": {
+          "n": 10,
+          "win_rate": 20.0,
+          "avg": -0.56
+        },
+        "divergence": {
+          "n": 13,
+          "win_rate": 30.8,
+          "avg": -2.27
+        },
+        "sim_ultra": {
+          "n": 121,
+          "win_rate": 34.7,
+          "avg": 0.64
+        }
+      },
+      "actions": [
+        "中线主路径=三倍量突破日（n=27 胜率63.0% 均益5.78%）",
+        "观察池缩量再买不作主路径（n=103 胜率15.5% 均益-2.02%）",
+        "MA20回踩非主路径（n≥10 胜率25.0%），门槛≥68+强制缩量",
+        "底背离停用主轴（n=13 胜率30.8%）",
+        "超短强制封板硬筛+门槛≥51（模拟 n=121 胜率34.7%）"
+      ],
+      "notes": [
+        "不是投资建议；政策仅在样本达标时改选股约束"
+      ]
+    },
+    "ai_attribution_path": "D:\\api\\quantpy-stock-analysis\\output\\ai_analysis\\strategy_attribution_20260920.json",
+    "ai_attribution_conclusions": [
+      "中线主路径=三倍量突破日（n=27 胜率63.0% 均益5.78%）",
+      "观察池缩量再买不作主路径（n=103 胜率15.5% 均益-2.02%）",
+      "MA20回踩非主路径（n≥10 胜率25.0%），门槛≥68+强制缩量",
+      "底背离停用主轴（n=13 胜率30.8%）",
+      "超短强制封板硬筛+门槛≥51（模拟 n=121 胜率34.7%）",
+      "不是投资建议；结论仅对已结算样本成立。"
+    ]
   }
 }

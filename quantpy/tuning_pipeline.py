@@ -155,6 +155,8 @@ def run_tuning_pipeline(
     track = None
     ai = None
     real = None
+    strategy_policy = None
+    ai_attribution = None
     param_changes: Dict[str, str] = {}
     ai_fallback = False
     errors: List[str] = []
@@ -274,6 +276,39 @@ def run_tuning_pipeline(
             logger.warning("实盘复盘失败: %s", exc)
             steps.append(f"实盘复盘失败: {type(exc).__name__}")
 
+    # --- 1b) 证据政策：全策略评估 → 政策（有样本才改约束）---
+    strategy_policy = None
+    ai_attribution = None
+    if mode in ("full", "build_only"):
+        try:
+            from quantpy.strategy_policy import refresh_policy
+
+            # build_only 用已有 eval；full 重跑评估
+            strategy_policy = refresh_policy(run_eval=(mode == "full"))
+            if strategy_policy.actions:
+                steps.append("策略政策：" + "；".join(strategy_policy.actions[:3]))
+            else:
+                steps.append("策略政策：样本未触发新约束（不空转抬参）")
+        except Exception as exc:
+            errors.append(f"strategy_policy:{type(exc).__name__}")
+            logger.warning("策略政策刷新失败: %s", exc)
+            steps.append(f"策略政策失败: {type(exc).__name__}")
+
+    if mode in ("full",):
+        try:
+            from quantpy.ai_strategy_analyst import run_strategy_ai_analysis
+
+            ai_attribution = run_strategy_ai_analysis(
+                refresh_eval=False, use_llm=True, show_progress=show_progress,
+            )
+            n_conc = len((ai_attribution or {}).get("conclusions") or [])
+            steps.append(
+                f"策略AI归因：{ai_attribution.get('engine')} · {n_conc} 条结论"
+            )
+        except Exception as exc:
+            errors.append(f"ai_attribution:{type(exc).__name__}")
+            logger.warning("策略AI归因失败: %s", exc)
+
     # --- 2) 单一构建入口 ---
     tuning = build_selection_tuning(for_sim=False)
     tuning_sim = build_selection_tuning(for_sim=True)
@@ -308,6 +343,9 @@ def run_tuning_pipeline(
             "param_changes": param_changes,
             "ai_fallback": ai_fallback,
             "errors": errors,
+            "strategy_policy": (strategy_policy.to_dict() if strategy_policy else None),
+            "ai_attribution_path": (ai_attribution or {}).get("report_json"),
+            "ai_attribution_conclusions": ((ai_attribution or {}).get("conclusions") or [])[:8],
         },
     )
 
@@ -339,6 +377,8 @@ def run_tuning_pipeline(
         "param_changes": param_changes,
         "midterm_tracker": track,
         "ai_learning": ai,
+        "ai_attribution": ai_attribution,
+        "strategy_policy": strategy_policy.to_dict() if strategy_policy else None,
         "portfolio_review": real,
         "selection_tuning": tuning.to_dict(),
         "selection_tuning_sim": tuning_sim.to_dict(),

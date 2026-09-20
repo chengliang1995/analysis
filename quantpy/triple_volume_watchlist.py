@@ -27,17 +27,19 @@ PRE_VOLUME_MAX_RATIO = 1.0
 # 买点相对突破价：收紧追涨与破位容差（原 +3% / -5%）
 BUY_MAX_EXTEND_PCT = 2.0
 BUY_MAX_DRAWDOWN_PCT = -3.0
-# 入池：量比与评分底线（观察池历史胜率约 15%，进一步提质）
+# 入池：量比与评分底线（观察池缩量买历史胜率约 15%，仅作次选；主路径见突破日跟进）
 INTAKE_MIN_VOLUME_RATIO = 3.2
 INTAKE_MIN_SCORE_FLOOR = 72.0
 MAX_ITEMS = 200
 # 同步近期选股报告的日历日窗口（覆盖观察期 + 缓冲）
 INGEST_LOOKBACK_DAYS = 20
-# 观察结束胜率：结算价相对突破价收益超过 5% 记为赢
+# 观察结束胜率：结算价相对突破价收益超过 5% 记为赢（严于跟进池 +3%，勿与突破日口径混比）
 WIN_THRESHOLD_PCT = 5.0
 COMPLETED_STATUSES = frozenset({"buy_signal", "expired"})
 # 买入提示列表仅展示信号日当天且仍满足条件的标的
 BUY_PROMPT_SAME_DAY_ONLY = True
+# 主路径说明：突破日跟进胜率显著高于缩量再买（见 output/strategy_eval）
+PRIMARY_ENTRY_MODE = "breakout_day"  # breakout_day | watchlist_shrink
 
 
 def _default_state() -> dict:

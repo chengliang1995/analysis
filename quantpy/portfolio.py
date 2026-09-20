@@ -315,11 +315,13 @@ class PortfolioManager:
         adjust_capital: bool = True,
         trade_id: str = "",
     ) -> ClosedPosition:
+        from quantpy.trade_math import realized_cash_pnl
+
         qty = int(quantity)
         cost = float(cost_price)
         sell = float(sell_price)
-        profit_amount = round((sell - cost) * qty, 2)
-        profit_pct = round((sell - cost) / cost * 100, 2) if cost > 0 else 0.0
+        # 实盘录入价视为成交价，只扣佣金+印花税，不再加滑点
+        profit_amount, profit_pct, _, _ = realized_cash_pnl(cost, sell, qty)
         bucket = classify_bucket(strategy)
         closed = ClosedPosition(
             code=str(code).zfill(6),
@@ -553,12 +555,14 @@ class PortfolioManager:
 
         pnl_by_code = build_pnl_summary_by_code()
 
+        from quantpy.trade_math import mark_position
+
+        quote_missing_count = 0
         for pos in self._portfolio.positions:
             price = self._fetch_price(pos.code, quote_map)
-            market_value = price * pos.quantity
-            cost_amount = pos.cost_amount
-            profit_amount = market_value - cost_amount
-            profit_pct = (price - pos.cost_price) / pos.cost_price * 100 if pos.cost_price > 0 else 0
+            marked = mark_position(pos.cost_price, pos.quantity, price if price > 0 else None)
+            if not marked["quote_ok"]:
+                quote_missing_count += 1
             bucket = classify_bucket(pos.strategy)
 
             rows.append({
@@ -566,11 +570,12 @@ class PortfolioManager:
                 "name": pos.name,
                 "quantity": pos.quantity,
                 "cost_price": pos.cost_price,
-                "current_price": round(price, 2),
-                "cost_amount": round(cost_amount, 2),
-                "market_value": round(market_value, 2),
-                "profit_amount": round(profit_amount, 2),
-                "profit_pct": round(profit_pct, 2),
+                "current_price": marked["current_price"],
+                "cost_amount": marked["cost_amount"],
+                "market_value": marked["market_value"],
+                "profit_amount": marked["profit_amount"],
+                "profit_pct": marked["profit_pct"],
+                "quote_ok": marked["quote_ok"],
                 "weight_pct": 0.0,
                 "bucket": bucket,
                 "bucket_label": bucket_label(bucket),
@@ -583,8 +588,8 @@ class PortfolioManager:
                     "win_rate": 0.0,
                 }),
             })
-            total_market_value += market_value
-            total_cost += cost_amount
+            total_market_value += marked["market_value"]
+            total_cost += marked["cost_amount"]
 
         ultra_capital = self._portfolio.ultra_short_capital
         mid_capital = self._portfolio.midterm_capital
@@ -672,6 +677,7 @@ class PortfolioManager:
             "closed_positions": closed_rows,
             "invested_pct": invested_pct,
             "position_count": position_count,
+            "quote_missing_count": quote_missing_count,
             "positions": rows,
             "quote_time": str(quote_map["quote_time"].iloc[0]) if not quote_map.empty and "quote_time" in quote_map.columns else "",
             "trade_date": str(quote_map["trade_date"].iloc[0]) if not quote_map.empty and "trade_date" in quote_map.columns else "",
@@ -855,6 +861,8 @@ class PortfolioManager:
         print(f"预估现金:   {stats['cash_estimated']:,.0f} 元")
         print(f"账户权益:   {stats['equity_estimated']:,.0f} 元")
         print(f"浮动盈亏:   {stats['total_float_pnl']:+,.0f} 元 ({stats['total_float_pnl_pct']:+.2f}%)")
+        if stats.get("quote_missing_count"):
+            print(f"缺行情:     {stats['quote_missing_count']} 只（市值按成本计，浮盈不入账）")
         print(
             f"已实现盈亏: {stats.get('total_realized_pnl', 0):+,.0f} 元 | "
             f"累计盈亏: {stats.get('total_pnl', 0):+,.0f} 元 ({stats.get('total_return_pct', 0):+.2f}%)"

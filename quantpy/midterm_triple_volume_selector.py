@@ -677,6 +677,90 @@ def load_latest_triple_volume_advice() -> dict:
         return {}
 
 
+def load_today_triple_volume_recommendations() -> List[dict]:
+    """仅返回「今日」三倍量选股报告中的标的（突破日跟进）。"""
+    today = datetime.now().strftime("%Y%m%d")
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    path = OUTPUT_DIR / f"triple_volume_{today}.json"
+    data: dict = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+    if not data:
+        data = load_latest_triple_volume_advice()
+        gen = str(data.get("generated_at") or "")[:10]
+        if gen and gen != today_iso:
+            return []
+    return list(data.get("recommendations") or [])
+
+
+def filter_breakout_day_buys(
+    recommendations: List[dict],
+    *,
+    min_score: Optional[float] = None,
+    min_volume_ratio: float = 3.0,
+) -> List[dict]:
+    """突破日买入过滤：评分/量比门槛 + 排除涨幅风险区。
+
+    跟进池证据：trend=三倍量突破 满期胜率约 63%、均益约 +5.8%（≥+3%/10日）。
+    观察池缩量再买胜率约 15%，不作主路径。
+    """
+    from quantpy.selection_tuning import build_selection_tuning
+
+    floor = float(
+        min_score
+        if min_score is not None
+        else build_selection_tuning().triple_min_score
+    )
+    out: List[dict] = []
+    for rec in recommendations:
+        score = float(rec.get("midterm_score") or 0)
+        if score < floor:
+            continue
+        vr = float(rec.get("volume_ratio") or 0)
+        if vr < min_volume_ratio:
+            continue
+        pct = float(rec.get("pct_chg") or rec.get("changepercent") or 0)
+        if is_triple_pct_chase_risky(pct):
+            continue
+        item = dict(rec)
+        price = float(item.get("price") or item.get("close") or 0)
+        if price <= 0:
+            continue
+        tags = str(item.get("tags") or "")
+        if "一阳穿三线" not in tags and "突破日" not in tags:
+            tags = f"{tags},一阳穿三线,突破日买入".strip(",")
+        elif "突破日" not in tags:
+            tags = f"{tags},突破日买入"
+        item["tags"] = tags
+        item["reason"] = str(
+            item.get("reason")
+            or f"三倍量一阳穿三线 · 量{vr:.1f}倍 · 突破日跟进"
+        )[:200]
+        item["entry_mode"] = "breakout_day"
+        out.append(item)
+    out.sort(key=lambda x: float(x.get("midterm_score") or 0), reverse=True)
+    return out
+
+
+def get_breakout_day_recommendations(
+    *,
+    force_select: bool = False,
+    show_progress: bool = False,
+    top_n: int = TOP_N_DEFAULT,
+) -> List[dict]:
+    """优先读今日报告；无报告且 force_select 时现场扫描。"""
+    recs = load_today_triple_volume_recommendations()
+    if not recs and force_select:
+        result = run_triple_volume_select(
+            show_progress=show_progress, force=True, top_n=top_n,
+        )
+        recs = list(result.get("recommendations") or [])
+    return filter_breakout_day_buys(recs)
+
+
 def run_triple_volume_select(
     exclude_codes: Optional[List[str]] = None,
     show_progress: bool = True,

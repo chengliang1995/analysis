@@ -292,6 +292,8 @@ def _enrich_sim_portfolio(
     engine: SimReplayEngine,
     quotes_df: Optional[pd.DataFrame] = None,
 ) -> dict:
+    from quantpy.trade_math import mark_position
+
     positions = list(engine.state.get("positions", []))
     if quotes_df is not None and not quotes_df.empty:
         qmap = quotes_df.copy()
@@ -306,21 +308,25 @@ def _enrich_sim_portfolio(
 
     enriched = []
     total_market_value = 0.0
+    quote_missing = 0
     for p in positions:
         code = str(p["code"]).zfill(6)
-        current = float(qmap.loc[code, "close"]) if qmap is not None and code in qmap.index else p["buy_price"]
-        cost_amount = p["buy_price"] * p["quantity"]
-        market_value = current * p["quantity"]
-        total_market_value += market_value
-        profit_pct = (current - p["buy_price"]) / p["buy_price"] * 100 if p["buy_price"] else 0.0
+        raw = 0.0
+        if qmap is not None and code in qmap.index:
+            raw = float(qmap.loc[code, "close"])
+        marked = mark_position(p["buy_price"], p["quantity"], raw if raw > 0 else None)
+        if not marked["quote_ok"]:
+            quote_missing += 1
+        total_market_value += marked["market_value"]
         sellable = engine._is_sellable(p["buy_date"], today)
         enriched.append({
             **p,
-            "current_price": round(current, 2),
-            "sell_price_ref": round(current, 2),
-            "market_value": round(market_value, 2),
-            "profit_amount": round(market_value - cost_amount, 2),
-            "profit_pct": round(profit_pct, 2),
+            "current_price": marked["current_price"],
+            "sell_price_ref": marked["current_price"] if marked["quote_ok"] else p.get("sell_price_ref"),
+            "market_value": marked["market_value"],
+            "profit_amount": marked["profit_amount"],
+            "profit_pct": marked["profit_pct"],
+            "quote_ok": marked["quote_ok"],
             "weight_pct": 0.0,
             "sellable_today": sellable,
             "t_plus_one_locked": engine.config.t_plus_one and not sellable,
@@ -346,6 +352,7 @@ def _enrich_sim_portfolio(
         "total_return_pct": round((equity - initial) / initial * 100, 2) if initial else 0.0,
         "closed_count": len(closed),
         "trading_day_count": engine.state.get("trading_day_count", 0),
+        "quote_missing_count": quote_missing,
         "position_count": len(enriched),
         "positions": enriched,
         "closed_trades": closed[:10],

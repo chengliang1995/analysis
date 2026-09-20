@@ -35,29 +35,25 @@ class TradeRecord:
 
     @property
     def profit_pct(self) -> float:
+        from quantpy.trade_math import realized_cash_pnl
+
         if self.buy_price <= 0:
             return 0.0
-        return (self.sell_price - self.buy_price) / self.buy_price * 100
+        _, pct, _, _ = realized_cash_pnl(self.buy_price, self.sell_price, self.quantity)
+        return pct
 
     @property
     def profit_amount(self) -> float:
-        return (self.sell_price - self.buy_price) * self.quantity
+        from quantpy.trade_math import realized_cash_pnl
+
+        amt, _, _, _ = realized_cash_pnl(self.buy_price, self.sell_price, self.quantity)
+        return amt
 
     @property
     def hold_days(self) -> int:
-        try:
-            from quantpy.midterm_pick_tracker import _trading_days_between
+        from quantpy.trade_math import hold_trading_days
 
-            buy_d = self.buy_date[:10]
-            sell_d = self.sell_date[:10]
-            cal = _trading_days_between(buy_d, sell_d)
-            if cal:
-                return max(len(cal) - 1, 0)
-            buy = datetime.strptime(buy_d, "%Y-%m-%d")
-            sell = datetime.strptime(sell_d, "%Y-%m-%d")
-            return max((sell - buy).days, 0)
-        except ValueError:
-            return 0
+        return hold_trading_days(self.buy_date, self.sell_date)
 
     def to_dict(self) -> dict:
         return asdict(self)
