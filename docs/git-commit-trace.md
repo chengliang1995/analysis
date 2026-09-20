@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-09-20 14:00 | b869539
+
+- **message**: feat: 接入 Serenity 卡脖子与短线强势选股，并优化仪表盘 Tab
+- **why**: 双模板/涨停基因选股独立落盘并接模拟盘；缺价价位提醒崩溃修复；二级 Tab 缩短仪表盘
+- **files**:
+  - `.cursor/skills/serenity-stock-choke/` / `short-term-stock-picker/` — 新 skill
+  - `quantpy/serenity_choke_advisor.py` / `sim_serenity.py` / `short_term_picker.py` — 选股与 20 万模拟账户
+  - `quantpy/midterm_level_alerts.py` — `current_price=None` 容错
+  - `static/dashboard.*` / `templates/partials/*` — 二级 Tab 与面板
+  - `tests/test_*.py` — 回归
+- **stats**: 28 files changed, +3090/-276
+- **chat**: Serenity 入库 · 短线 skill 适配 · Tab 优化 · 提交
+
+---
+
 ## 2026-09-20 09:51 | 3447f5c
 
 - **message**: fix: RSI 横盘 NaN 与涨停策略板块阈值对齐
