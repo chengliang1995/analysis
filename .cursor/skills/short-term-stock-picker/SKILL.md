@@ -44,6 +44,7 @@ description: >-
 | 需求 | 入口 |
 |------|------|
 | 扫描落盘 | `quantpy/short_term_picker.py` · `python daily_advisor.py short-term` |
+| **模拟盘 20 万** | `quantpy/sim_short_term.py` · `python daily_advisor.py sim-short-term` · 仪表盘「短线强势模拟选股」 |
 | 行情/市值 | `get_market_spot` |
 | K 线 | `get_stock_hist(patch_live=False)` |
 | 涨停池（可选加速） | AKShare `stock_zt_pool_em` + 本地 cache；失败则用 K 线回推涨停次数 |

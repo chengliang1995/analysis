@@ -15,6 +15,7 @@ from quantpy.portfolio import PortfolioManager
 from quantpy.sim_replay import SimReplayEngine
 from quantpy.sim_midterm import enrich_midterm_sim, enrich_midterm_ma20_sim
 from quantpy.sim_serenity import enrich_serenity_sim
+from quantpy.sim_short_term import enrich_short_term_sim
 from quantpy.ai_learning_optimizer import load_latest_ai_learning
 from quantpy.midterm_portfolio_advisor import (
     MidtermPortfolioAdvisor,
@@ -374,6 +375,7 @@ def _enrich_sim_portfolio(
         "midterm": enrich_midterm_sim(engine.state, quotes_df=quotes_df),
         "midterm_ma20": enrich_midterm_ma20_sim(engine.state, quotes_df=quotes_df),
         "serenity": enrich_serenity_sim(engine.state, quotes_df=quotes_df),
+        "short_term": enrich_short_term_sim(engine.state, quotes_df=quotes_df),
     }
 
 
@@ -394,6 +396,9 @@ def _collect_holding_codes() -> list[str]:
     } | {
         str(p["code"]).zfill(6)
         for p in sim_engine.state.get("serenity", {}).get("positions", [])
+    } | {
+        str(p["code"]).zfill(6)
+        for p in sim_engine.state.get("short_term", {}).get("positions", [])
     }
     return sorted(codes)
 

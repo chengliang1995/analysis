@@ -36,6 +36,7 @@ def test_cli_action_map_covers_web_actions():
         "sim-midterm-select",
         "sim-ma20",
         "sim-serenity",
+        "sim-short-term",
         "review",
         "review-tune",
         "ai-learn",
@@ -54,6 +55,10 @@ def test_web_alias_sim_ma20_select():
 
 def test_web_alias_sim_serenity_select():
     assert WEB_ACTION_ALIASES.get("sim-serenity-select") == "sim-serenity"
+
+
+def test_web_alias_sim_short_term_select():
+    assert WEB_ACTION_ALIASES.get("sim-short-term-select") == "sim-short-term"
 
 
 def test_dispatch_unknown_action():

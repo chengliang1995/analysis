@@ -21,6 +21,7 @@ const ACTION_BUSY_LABEL = {
   "sim-midterm-select": "观察池模拟选股中（评估观察池买点）…",
   "sim-ma20-select": "MA20回踩选股扫描中（20万模拟账户）…",
   "sim-serenity-select": "Serenity 卡脖子模拟选股中（20万账户）…",
+  "sim-short-term-select": "短线强势模拟选股中（20万账户）…",
   "ai-learn": "AI 策略学习中…",
   "midterm-track": "中线跟进评估中…",
 };
@@ -39,10 +40,11 @@ const ACTION_TIMEOUT_MS = {
   "sim-midterm-select": 900000,
   "sim-ma20-select": 1200000,
   "sim-serenity-select": 900000,
+  "sim-short-term-select": 900000,
   default: 180000,
 };
 const LONG_RUNNING_ACTIONS = new Set([
-  "midterm", "midterm-triple-volume", "triple-volume-watch", "report", "review", "scan", "short-term", "sector", "serenity", "serenity-track", "sim-backtest", "sim-midterm-select", "sim-ma20-select", "sim-serenity-select", "ai-learn", "midterm-track",
+  "midterm", "midterm-triple-volume", "triple-volume-watch", "report", "review", "scan", "short-term", "sector", "serenity", "serenity-track", "sim-backtest", "sim-midterm-select", "sim-ma20-select", "sim-serenity-select", "sim-short-term-select", "ai-learn", "midterm-track",
 ]);
 let lastDashboardData = null;
 
@@ -1549,6 +1551,7 @@ function renderSim(s) {
   renderSimMidterm(s.midterm);
   renderSimMa20(s.midterm_ma20);
   renderSimSerenity(s.serenity);
+  renderSimShortTerm(s.short_term);
 }
 
 function renderSimMidterm(mt) {
@@ -1731,6 +1734,59 @@ function renderSimSerenity(mt) {
       fmtPct(x.profit_pct), x.hold_days, x.exit_reason || "",
     ]),
     "暂无 Serenity 模拟平仓"
+  );
+}
+
+function renderSimShortTerm(mt) {
+  const m = mt || {};
+  const cfg = m.config || {};
+  const statsEl = document.getElementById("sim-short-term-stats");
+  const scanEl = document.getElementById("sim-short-term-scan-table");
+  const tableEl = document.getElementById("sim-short-term-table");
+  const closedEl = document.getElementById("sim-short-term-closed-table");
+  if (!statsEl) return;
+  const badge = document.getElementById("sim-short-term-badge");
+  if (badge) {
+    badge.textContent = `20万 · 涨停基因 · ${m.position_count || 0}/${cfg.max_positions || 5}仓`;
+  }
+  renderStats(statsEl, [
+    ["总权益", m.equity != null ? `${fmtMoney(m.equity)} 元` : "—"],
+    ["现金", m.cash != null ? `${fmtMoney(m.cash)} 元` : "—"],
+    ["总收益", m.total_return_pct != null ? fmtPct(m.total_return_pct) : "—"],
+    ["止盈/止损", `${cfg.take_profit_pct || 15}% / ${cfg.stop_loss_pct || -8}%`],
+  ]);
+  const scan = Array.isArray(m.last_scan) ? m.last_scan : [];
+  renderTable(
+    scanEl,
+    ["代码", "名称", "评分", "现价", "涨停20日", "市值亿", "量比", "板块"],
+    scan.map((x) => [
+      x.code, x.name, x.score || "—", x.price,
+      x.limit_up_count_20d ?? "—",
+      x.market_cap_yi != null ? Number(x.market_cap_yi).toFixed(1) : "—",
+      x.vol_ratio_5d != null ? Number(x.vol_ratio_5d).toFixed(2) : "—",
+      x.board || "—",
+    ]),
+    "暂无扫描结果，点击「短线强势模拟选股」"
+  );
+  const positions = Array.isArray(m.positions) ? m.positions : [];
+  renderTable(
+    tableEl,
+    ["代码", "名称", "评分", "数量", "买入", "现价", "浮盈%", "可卖"],
+    positions.map((x) => [
+      x.code, x.name, x.score || "—", x.quantity, x.buy_price, x.current_price,
+      fmtPct(x.profit_pct),
+      x.t_plus_one_locked ? "T+1锁" : (x.sellable_today !== false ? "可卖" : "—"),
+    ]),
+    "短线强势模拟空仓"
+  );
+  renderTable(
+    closedEl,
+    ["代码", "名称", "买入", "卖出", "收益%", "天数", "原因"],
+    (m.closed_trades || []).map((x) => [
+      x.code, x.name, x.buy_price, x.sell_price,
+      fmtPct(x.profit_pct), x.hold_days, x.exit_reason || "",
+    ]),
+    "暂无短线强势模拟平仓"
   );
 }
 
@@ -2005,7 +2061,7 @@ const MAIN_TAB_KEY = "quantpy_main_tab";
 const REAL_SUB_TAB_KEY = "quantpy_real_sub_tab";
 const SIM_SUB_TAB_KEY = "quantpy_sim_sub_tab";
 const REAL_SUB_TABS = new Set(["holdings", "midterm", "sector", "serenity", "ultra", "ops"]);
-const SIM_SUB_TABS = new Set(["ultra", "midterm", "ma20", "serenity"]);
+const SIM_SUB_TABS = new Set(["ultra", "midterm", "ma20", "serenity", "short_term"]);
 const ACTION_VIEW_MAP = {
   refresh: ["real", "holdings"],
   report: ["real", "holdings"],
@@ -2029,6 +2085,7 @@ const ACTION_VIEW_MAP = {
   "sim-midterm-select": ["sim", "midterm"],
   "sim-ma20-select": ["sim", "ma20"],
   "sim-serenity-select": ["sim", "serenity"],
+  "sim-short-term-select": ["sim", "short_term"],
 };
 
 function switchRealSubTab(tab) {
@@ -2578,6 +2635,11 @@ async function runAction(action, force, opts = {}) {
     if (board) qs.set("board", board);
     url = `/api/actions/sim-serenity-select?${qs.toString()}`;
   }
+  if (action === "sim-short-term-select") {
+    const qs = new URLSearchParams();
+    if (force) qs.set("force", "true");
+    url = `/api/actions/sim-short-term-select?${qs.toString()}`;
+  }
   if (action === "sim-midterm-select") {
     const qs = new URLSearchParams();
     if (force) qs.set("force", "true");
@@ -2649,7 +2711,7 @@ async function runAction(action, force, opts = {}) {
         body.data.triple_volume_watchlist = body.triple_volume_watchlist;
       }
       renderAll(body.data);
-      if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select", "sim-ma20-select", "sim-serenity-select"].includes(action)) {
+      if (["sim", "sim-review", "sim-backtest", "sim-midterm", "sim-midterm-select", "sim-ma20-select", "sim-serenity-select", "sim-short-term-select"].includes(action)) {
         refreshSimPanel().catch(() => {});
       }
     }

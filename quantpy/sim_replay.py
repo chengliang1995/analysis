@@ -21,6 +21,7 @@ import pandas as pd
 from quantpy.paths import DATA_DIR, SIM_REVIEW_DIR, SIM_STATE_FILE
 from quantpy.sim_midterm import ensure_midterm_state, ensure_midterm_ma20_state
 from quantpy.sim_serenity import ensure_serenity_state
+from quantpy.sim_short_term import ensure_short_term_state
 from quantpy.qstock_strategy_optimizer import StrategyOptimizer
 from quantpy.stock_data import get_market_spot, get_realtime_quotes, get_stock_hist
 from quantpy.ultra_short_scanner import UltraShortScanner
@@ -612,6 +613,7 @@ class SimReplayEngine:
                 ensure_midterm_state(state)
                 ensure_midterm_ma20_state(state)
                 ensure_serenity_state(state)
+                ensure_short_term_state(state)
                 self._upgrade_sim_config(state)
                 return state
             except json.JSONDecodeError:
@@ -674,6 +676,7 @@ class SimReplayEngine:
         ensure_midterm_state(state)
         ensure_midterm_ma20_state(state)
         ensure_serenity_state(state)
+        ensure_short_term_state(state)
         return state
 
     def _save_state(self) -> None:

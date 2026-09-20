@@ -664,9 +664,9 @@ def main() -> None:
             "sim-ma20", "review-tune", "review", "alerts", "web",
             "strategy-eval", "strategy-ai",
             "serenity", "serenity-track", "sim-serenity",
-            "short-term",
+            "short-term", "sim-short-term",
         ],
-        help="short-term=涨停基因短线; serenity/sim-serenity=卡脖子; review-tune=复盘后调优",
+        help="short-term/sim-short-term=涨停基因短线; serenity/sim-serenity=卡脖子",
     )
     parser.add_argument("--days", type=int, default=30, help="学习分析回溯天数")
     parser.add_argument("--prefilter", type=int, default=300, help="超短初筛数量")
@@ -818,6 +818,16 @@ def main() -> None:
                 theme=args.theme,
                 board_type=args.board_type,
                 board_code=args.board_code or None,
+                force=bool(args.force),
+                show_progress=True,
+                max_candidates=args.max_candidates,
+            )
+            print(result.get("message") or "")
+            _cli_exit(result)
+        elif args.command == "sim-short-term":
+            from quantpy.orchestration import run_action_sim_short_term
+
+            result = run_action_sim_short_term(
                 force=bool(args.force),
                 show_progress=True,
                 max_candidates=args.max_candidates,

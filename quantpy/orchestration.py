@@ -407,6 +407,41 @@ def run_action_sim_serenity(
     )
 
 
+def run_action_sim_short_term(
+    *,
+    force: bool = False,
+    show_progress: bool = True,
+    max_candidates: int = 30,
+    max_analyze: int = 400,
+) -> dict:
+    """短线强势模拟选股（独立 20 万账户）。"""
+    from quantpy.sim_replay import SimReplayEngine
+    from quantpy.sim_short_term import run_sim_short_term_select
+
+    engine = SimReplayEngine()
+    engine.reload_state()
+    result = run_sim_short_term_select(
+        engine,
+        show_progress=show_progress,
+        force=force,
+        max_candidates=max_candidates,
+        max_analyze=max_analyze,
+    )
+    if not isinstance(result, dict):
+        return _result(False, "短线模拟选股失败")
+    if result.get("error") or not result.get("ok", True):
+        return _result(
+            False,
+            result.get("message") or "短线模拟选股失败",
+            payload={"sim_short_term": result},
+        )
+    return _result(
+        True,
+        result.get("message") or "短线模拟选股完成",
+        payload={"sim_short_term": result},
+    )
+
+
 def run_action_review_tune(
     *,
     show_progress: bool = True,
@@ -713,6 +748,7 @@ CLI_ACTION_MAP: Dict[str, Callable[..., dict]] = {
     "midterm-track": run_action_midterm_track,
     "sim-ma20": run_action_sim_ma20,
     "sim-serenity": run_action_sim_serenity,
+    "sim-short-term": run_action_sim_short_term,
     "review-tune": run_action_review_tune,
     "ai-learn": run_action_ai_learn,
     "sim": run_action_sim,
@@ -732,6 +768,7 @@ CLI_ACTION_MAP: Dict[str, Callable[..., dict]] = {
 WEB_ACTION_ALIASES: Dict[str, str] = {
     "sim-ma20-select": "sim-ma20",
     "sim-serenity-select": "sim-serenity",
+    "sim-short-term-select": "sim-short-term",
 }
 
 

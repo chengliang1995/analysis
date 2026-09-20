@@ -4,6 +4,7 @@
         <button type="button" data-sim-sub="midterm">中线三倍量</button>
         <button type="button" data-sim-sub="ma20">MA20</button>
         <button type="button" data-sim-sub="serenity">卡脖子</button>
+        <button type="button" data-sim-sub="short_term">短线强势</button>
       </div>
 
       <div class="sub-tab-panel active" id="sim-sub-ultra" data-sim-panel="ultra">
@@ -76,9 +77,26 @@
           <div class="table-wrap" id="sim-serenity-scan-table"></div>
           <div class="table-wrap" id="sim-serenity-table"></div>
         </section>
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-head"><h2>Serenity 模拟平仓</h2><span class="badge">最近10笔</span></div>
+        <div class="table-wrap" id="sim-serenity-closed-table"></div>
+      </section>
+      </div>
+
+      <div class="sub-tab-panel" id="sim-sub-short-term" data-sim-panel="short_term">
         <section class="panel" style="margin-bottom:20px">
-          <div class="panel-head"><h2>Serenity 模拟平仓</h2><span class="badge">最近10笔</span></div>
-          <div class="table-wrap" id="sim-serenity-closed-table"></div>
+          <div class="panel-head">
+            <h2>短线强势模拟</h2>
+            <span class="badge" id="sim-short-term-badge">20万 · 涨停基因+MA多头 · 最多5仓</span>
+            <button type="button" class="secondary" data-action="sim-short-term-select" style="margin-left:auto;padding:4px 12px;font-size:0.8rem">短线强势模拟选股</button>
+          </div>
+          <div class="stats" id="sim-short-term-stats"></div>
+          <div class="table-wrap" id="sim-short-term-scan-table"></div>
+          <div class="table-wrap" id="sim-short-term-table"></div>
+        </section>
+        <section class="panel" style="margin-bottom:20px">
+          <div class="panel-head"><h2>短线强势模拟平仓</h2><span class="badge">最近10笔</span></div>
+          <div class="table-wrap" id="sim-short-term-closed-table"></div>
         </section>
       </div>
     </div>

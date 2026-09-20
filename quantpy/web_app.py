@@ -667,6 +667,13 @@ def api_action(action: str):
             "max_candidates": int(request.args.get("max_candidates") or 12),
             "show_progress": True,
         }
+    elif key in ("sim-short-term", "sim-short-term-select"):
+        kwargs = {
+            "force": str(request.args.get("force") or "").lower() in ("1", "true", "yes"),
+            "max_candidates": int(request.args.get("max_candidates") or 30),
+            "max_analyze": int(request.args.get("max_analyze") or 400),
+            "show_progress": True,
+        }
 
     try:
         result, log = _run_quiet(dispatch_action, action, action=action, **kwargs)
@@ -687,7 +694,7 @@ def api_action(action: str):
             "midterm", "midterm_content", "level_alerts", "sim_midterm", "sim_midterm_ma20",
             "ai_learning", "midterm_tracker", "portfolio_review", "selection_tuning",
             "review", "backtest", "sector", "serenity", "serenity_track", "sim_serenity",
-            "short_term", "review_content",
+            "short_term", "sim_short_term", "review_content",
         ):
             if k in payload and payload[k] is not None:
                 extra[k] = payload[k]
@@ -769,6 +776,11 @@ def api_action(action: str):
             summary = (extra["sim_serenity"] or {}).get("summary")
             if summary:
                 out["data"]["sim"]["serenity"] = summary
+        if extra.get("sim_short_term") is not None:
+            out["data"].setdefault("sim", out["data"].get("sim") or {})
+            summary = (extra["sim_short_term"] or {}).get("summary")
+            if summary:
+                out["data"]["sim"]["short_term"] = summary
         if extra.get("midterm_tracker") is not None:
             out["data"]["midterm_tracker"] = extra["midterm_tracker"]
         if extra.get("level_alerts") is not None:
