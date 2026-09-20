@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-09-20 09:51 | 3447f5c
+
+- **message**: fix: RSI 横盘 NaN 与涨停策略板块阈值对齐
+- **why**: 横盘时 avg_loss==0 产生 NaN 导致 RSI 判断静默失效；limit_up_strategy 固定 9.8% 误判创业板/科创板涨停
+- **files**:
+  - `quantpy/qstock_strategy_optimizer.py` — RSI 零损失分支；`limit_up_pct_threshold` 共用
+  - `quantpy/midterm_portfolio_advisor.py` — `_rsi_series` 同步零损失处理
+  - `examples/limit_up_strategy_demo.py` — 传入 code
+  - `tests/test_core_strategy.py` — 横盘 RSI / 板块阈值回归
+- **stats**: 4 files changed, +124/-11
+- **chat**: 采纳两处回归修复并提交
+
+---
+
 ## 2026-09-20 09:40 | 85859c9
 
 - **message**: fix: 盈亏口径对齐、证据驱动选股政策与学习闭环
