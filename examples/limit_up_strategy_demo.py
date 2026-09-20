@@ -45,7 +45,7 @@ def single_stock_analysis():
         print(f"成功获取 {len(hist_data)} 条数据")
 
         # 应用涨停策略
-        df_signal = optimizer.limit_up_strategy(hist_data, lookback_days=10)
+        df_signal = optimizer.limit_up_strategy(hist_data, lookback_days=10, code=code)
 
         # 计算涨跌幅
         df_signal['pct_chg'] = ((df_signal['close'] - df_signal['close'].shift(1)) /

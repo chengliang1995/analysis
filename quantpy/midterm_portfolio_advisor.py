@@ -351,12 +351,17 @@ def _calc_obv(hist: pd.DataFrame) -> pd.Series:
 
 
 def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
-    """通达信 SMA 风格 RSI 序列。"""
+    """通达信 SMA 风格 RSI 序列。avg_loss==0 → 上涨 100 / 横盘 50。"""
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
-    rs = gain / loss.replace(0, float("nan"))
-    return 100 - 100 / (1 + rs)
+    rsi = pd.Series(float("nan"), index=close.index, dtype=float)
+    valid = loss > 0
+    rsi.loc[valid] = 100 - 100 / (1 + gain.loc[valid] / loss.loc[valid])
+    zero_loss = (loss == 0) & loss.notna()
+    rsi.loc[zero_loss & (gain > 0)] = 100.0
+    rsi.loc[zero_loss & (gain == 0)] = 50.0
+    return rsi
 
 
 def _ma60_trend_label(close: pd.Series) -> str:

@@ -69,9 +69,14 @@ class StrategyOptimizer:
         avg_gain = gain.rolling(window=period).mean()
         avg_loss = loss.rolling(window=period).mean()
 
-        # 计算RSI
-        rs = avg_gain / avg_loss
-        result['RSI'] = 100 - (100 / (1 + rs))
+        # avg_loss==0：单边上涨 → 100；横盘（gain=loss=0）→ 50；避免除零 NaN
+        rsi = pd.Series(np.nan, index=avg_gain.index, dtype=float)
+        valid_loss = avg_loss > 0
+        rsi.loc[valid_loss] = 100 - (100 / (1 + avg_gain.loc[valid_loss] / avg_loss.loc[valid_loss]))
+        zero_loss = (avg_loss == 0) & avg_loss.notna()
+        rsi.loc[zero_loss & (avg_gain > 0)] = 100.0
+        rsi.loc[zero_loss & (avg_gain == 0)] = 50.0
+        result['RSI'] = rsi
 
         return result
 
@@ -292,6 +297,14 @@ class StrategyOptimizer:
             return pd.to_numeric(df['pct_chg'], errors='coerce')
         return df['close'].pct_change() * 100
 
+    @staticmethod
+    def limit_up_pct_threshold(code: str = "") -> float:
+        """涨停阈值：主板 9.8%，创业板/科创板 19.5%。"""
+        code = str(code or "").zfill(6)
+        if code.startswith(("300", "301", "688", "689")):
+            return 19.5
+        return 9.8
+
     def check_limit_up_signal(self, df: pd.DataFrame,
                               lookback_days: int = 10,
                               code: str = "") -> Optional[Dict]:
@@ -303,8 +316,7 @@ class StrategyOptimizer:
         if df.empty or len(df) < lookback_days:
             return None
 
-        code = str(code or "").zfill(6)
-        threshold = 19.5 if code.startswith(("300", "301", "688", "689")) else 9.8
+        threshold = self.limit_up_pct_threshold(code)
 
         pct_chg = self._calc_pct_chg(df)
         recent = df.iloc[-lookback_days:].copy()
@@ -339,7 +351,8 @@ class StrategyOptimizer:
         }
 
     def limit_up_strategy(self, df: pd.DataFrame,
-                          lookback_days: int = 10) -> pd.DataFrame:
+                          lookback_days: int = 10,
+                          code: str = "") -> pd.DataFrame:
         """
         涨停板选股策略
         10个交易日内有涨停，且最近一个交易日的收盘价未跌破涨停当天的开盘价格
@@ -347,6 +360,7 @@ class StrategyOptimizer:
         Args:
             df: 价格数据，需包含 'open', 'high', 'low', 'close'
             lookback_days: 回溯天数
+            code: 股票代码（创业板/科创板用 19.5%，主板用 9.8%）
 
         Returns:
             信号DataFrame
@@ -354,7 +368,8 @@ class StrategyOptimizer:
         result = df.copy()
         pct_chg = self._calc_pct_chg(result)
         result['pct_chg'] = pct_chg
-        result['is_limit_up'] = (pct_chg >= 9.8).astype(int)
+        threshold = self.limit_up_pct_threshold(code)
+        result['is_limit_up'] = (pct_chg >= threshold).astype(int)
         result['has_limit_up'] = (
             result['is_limit_up'].rolling(window=lookback_days, min_periods=1).max()
         ).astype(int)
