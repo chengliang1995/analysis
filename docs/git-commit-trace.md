@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-09-20 14:15 | a40e9eb
+
+- **message**: feat: 短线强势选股接入模拟盘 20 万子账户
+- **why**: 将 short-term picker 结果接入独立模拟仓，便于与超短/Serenity/中线隔离回测
+- **files**:
+  - `quantpy/sim_short_term.py` — 20 万子账户买卖与出场
+  - `quantpy/daily_advisor.py` / `orchestration.py` / `web_app.py` — CLI/Web `sim-short-term`
+  - `quantpy/sim_replay.py` / `web_dashboard.py` — 状态 ensure 与面板数据
+  - `static/dashboard.js` / `templates/partials/*` — 模拟盘「短线强势」Tab
+  - `tests/test_sim_short_term.py` / `test_orchestration_dispatch.py` — 回归
+- **stats**: 12 files changed, +659/-8
+- **chat**: 短线选股加入模拟仓并提交同步
+
+---
+
 ## 2026-09-20 14:00 | b869539
 
 - **message**: feat: 接入 Serenity 卡脖子与短线强势选股，并优化仪表盘 Tab
