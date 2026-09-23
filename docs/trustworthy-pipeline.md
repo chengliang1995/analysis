@@ -60,5 +60,9 @@ python daily_advisor.py review-tune
 
 ## 5. 定时任务
 
-- 相位以 `scripts/phases.json` 为准；模拟复盘由 `run_daily` 内 `review_interval` 触发，不依赖单独 AI 相位。
+- 相位以 `scripts/phases.json` 为准；`daily_runner.ps1` 按其中 `steps[].argv` 执行。
+- 早盘模拟选股顺序：**短线 `sim-short-term` → 卡脖子 `sim-serenity`（无主题时自动热门概念）→ 超短 `sim` → 中线 `sim-midterm-select`**（短线/卡脖子优先，避免超短耗尽超时窗口）。
+- 收盘同序做出场/复盘（中线为 `sim-midterm`）。
+- 模拟复盘由 `run_daily` 内 `review_interval` 触发，不依赖单独 AI 相位。
 - 日志目录 `logs/` 保留 ≥14 天（`paths.RETENTION_DAYS`）。
+- 改相位后需重跑：`powershell -ExecutionPolicy Bypass -File scripts/setup_scheduled_tasks.ps1`（超时等以 json 为准）。

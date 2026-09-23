@@ -890,8 +890,52 @@ class SimReplayEngine:
                 )
         return picks
 
+    def _resolve_ultra_exit(
+        self,
+        p: dict,
+        *,
+        price: float,
+        low: float,
+        high: float,
+        hold_days: int,
+        hold_no_sell: bool = False,
+    ) -> tuple[Optional[float], str]:
+        """超短真实平仓优先级：止损 > 到期 > 止盈/落袋；封板仅推迟止盈类。
+
+        成交触发价：
+        - 止损：若已跌破止损价，按 min(现价, 止损)（跳空按市价兑现浮亏）
+        - 止盈：触及后按 take（未跳空开盘更高仍按现价与 take 的合理成交）
+        - 到期/落袋：按现价
+        """
+        stop = float(p.get("stop_loss") or 0)
+        take = float(p.get("take_profit") or 0)
+        buy = float(p.get("buy_price") or 0)
+
+        # 1) 止损：纪律优先，封板不得锁死浮亏
+        if stop > 0 and low <= stop:
+            fill = min(float(price), stop)
+            return fill, f"止损({self.config.stop_loss_pct}%)"
+
+        # 2) 到期：强制兑现，不因封板拖延
+        if hold_days >= self.config.max_hold_days:
+            return float(price), f"超短到期({self.config.max_hold_days}交易日)"
+
+        # 3) 封板强势：只推迟止盈/落袋，不停损与到期
+        if hold_no_sell:
+            return None, ""
+
+        if take > 0 and high >= take:
+            # 涨停附近按止盈价；若现价已低于止盈（回落）仍按现价兑现
+            fill = float(price) if price < take else take
+            return fill, f"止盈({self.config.take_profit_pct}%)"
+
+        if hold_days >= 2 and buy > 0 and price >= buy * 1.03:
+            return float(price), "持2交易日盈利3%落袋"
+
+        return None, ""
+
     def check_exits_live(self, show_progress: bool = True) -> List[SimTrade]:
-        """根据最新价检查止盈止损。"""
+        """根据最新价检查止盈止损（真实可平：止损/到期不被封板锁死）。"""
         if not self.state["positions"]:
             return []
 
@@ -928,32 +972,22 @@ class SimReplayEngine:
                 continue
 
             strength = self.scanner.check_live_strength(code, q)
-            if strength.get("hold_no_sell"):
-                remain.append(p)
-                if show_progress:
-                    print(
-                        f"  持有 {p['name']}({code}) 当日强势封板"
-                        f"（+{strength.get('pct_chg', 0):.1f}%），暂不卖"
-                    )
-                continue
-
-            sell_price = None
-            reason = ""
-
-            if low <= p["stop_loss"]:
-                sell_price = p["stop_loss"]
-                reason = f"止损({self.config.stop_loss_pct}%)"
-            elif high >= p["take_profit"]:
-                sell_price = p["take_profit"]
-                reason = f"止盈({self.config.take_profit_pct}%)"
-            elif hold_days >= self.config.max_hold_days:
-                sell_price = price
-                reason = f"超短到期({self.config.max_hold_days}交易日)"
-            elif hold_days >= 2 and price >= p["buy_price"] * 1.03:
-                sell_price = price
-                reason = "持2交易日盈利3%落袋"
-
+            hold_no_sell = bool(strength.get("hold_no_sell"))
+            sell_price, reason = self._resolve_ultra_exit(
+                p,
+                price=price,
+                low=low,
+                high=high,
+                hold_days=hold_days,
+                hold_no_sell=hold_no_sell,
+            )
             p["sell_price_ref"] = round(price, 2)
+
+            if sell_price is None and hold_no_sell and show_progress:
+                print(
+                    f"  持有 {p['name']}({code}) 当日强势封板"
+                    f"（+{strength.get('pct_chg', 0):.1f}%），推迟止盈/落袋"
+                )
 
             if sell_price is not None:
                 trade = self._close_position(p, today, sell_price, reason, hold_days)
@@ -1178,8 +1212,12 @@ class SimReplayEngine:
         )
         if self.config.t_plus_one:
             suggestions.append(
-                "A股 T+1：当日买入无法当日卖出，止损/止盈自次一交易日生效。"
+                "A股 T+1：当日买入无法当日卖出，止损/止盈自次一交易日生效；"
+                "浮亏触及止损会按市价兑现，封板仅推迟止盈不锁止损/到期。"
             )
+        else:
+            suggestions.append("T+1 已关闭：允许当日买卖（仅回测实验用途）。")
+
         return suggestions
 
     def _save_review_report(self, review: dict) -> Path:
@@ -1346,24 +1384,14 @@ class SimReplayEngine:
             strength = self.scanner.check_bar_strength(
                 p["code"], close, high, low, bar_pct, pre_close, vol_ratio
             )
-            if strength.get("hold_no_sell"):
-                remain.append(p)
-                continue
-
-            sell_price = None
-            reason = ""
-            if low <= p["stop_loss"]:
-                sell_price = p["stop_loss"]
-                reason = "止损"
-            elif high >= p["take_profit"]:
-                sell_price = p["take_profit"]
-                reason = "止盈"
-            elif hold_days >= self.config.max_hold_days:
-                sell_price = close
-                reason = "到期"
-            elif hold_days >= 2 and close >= p["buy_price"] * 1.03:
-                sell_price = close
-                reason = "持2交易日盈利"
+            sell_price, reason = self._resolve_ultra_exit(
+                p,
+                price=close,
+                low=low,
+                high=high,
+                hold_days=hold_days,
+                hold_no_sell=bool(strength.get("hold_no_sell")),
+            )
 
             if sell_price is not None:
                 self._close_position(p, day, sell_price, reason, hold_days)

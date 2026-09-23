@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from quantpy.serenity_choke_advisor import STRATEGY_ID, load_latest_serenity, run_serenity_scan
+from quantpy.serenity_choke_advisor import STRATEGY_ID, run_serenity_scan
 from quantpy.sim_midterm import (
     _calc_midterm_quantity,
     _hold_days,
@@ -244,12 +244,9 @@ def run_serenity_sim_buy(
         if score < cfg.min_score:
             skipped.append({"code": code, "reason": f"评分{score:.0f}<{cfg.min_score}"})
             continue
-        # 空头结构不建仓
+        # 空头结构不建仓；纠缠/unknown 允许；追高已在评分降权，模拟仓不再硬拒
         if (rec.get("ma_structure") or "") == "空头":
             skipped.append({"code": code, "reason": "均线空头"})
-            continue
-        if rec.get("chase_ma20"):
-            skipped.append({"code": code, "reason": "MA20追高"})
             continue
         buy_price = float(rec.get("price") or 0)
         if buy_price <= 0:
@@ -370,18 +367,29 @@ def run_sim_serenity_select(
     try:
         ensure_serenity_state(engine.state)
         mt = engine.state["serenity"]
-        theme = (theme or "").strip() or str(mt.get("last_theme") or "")
-        if not theme and not board_code:
-            latest = load_latest_serenity()
-            theme = str((latest or {}).get("theme") or "")
-            board_code = board_code or (latest or {}).get("board_code")
+        from quantpy.serenity_choke_advisor import resolve_serenity_theme
+
+        resolved = resolve_serenity_theme(
+            theme=theme,
+            board_code=board_code,
+            last_theme=str(mt.get("last_theme") or ""),
+            board_type=board_type,
+            show_progress=show_progress,
+        )
+        theme = str(resolved.get("theme") or "")
+        board_code = resolved.get("board_code") or board_code
+        board_type = str(resolved.get("board_type") or board_type)
         if not theme and not board_code:
             return {
                 "ok": False,
-                "message": "请提供主题（--theme）或先在实盘跑一次 Serenity 扫描",
+                "message": "无法自动解析主题（板块列表为空），请手动填写 --theme",
                 "summary": enrich_serenity_sim(engine.state),
             }
-
+        if resolved.get("source") not in ("explicit", "last_theme") and show_progress:
+            _progress(
+                f"  自动主题：{theme or board_code}（来源 {resolved.get('source')}）",
+                show_progress,
+            )
         _progress("=" * 50, show_progress)
         _progress(f"模拟 Serenity 卡脖子选股 · 20万 · 主题={theme or board_code}", show_progress)
 
@@ -506,6 +514,7 @@ def enrich_serenity_sim(state: dict, quotes_df: Optional["pd.DataFrame"] = None)
         "pick_log": list(mt.get("pick_log") or [])[:20],
         "last_scan": list(mt.get("last_scan") or [])[:20],
         "last_theme": mt.get("last_theme", ""),
+        "last_buy_date": mt.get("last_buy_date", ""),
         "config": asdict(cfg),
         "strategy": STRATEGY_ID,
         "updated_at": mt.get("updated_at", ""),

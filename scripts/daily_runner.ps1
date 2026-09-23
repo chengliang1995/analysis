@@ -1,7 +1,7 @@
 # 每日任务执行器（带日志 + 状态标记）
+# 相位步骤单一数据源：scripts/phases.json
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("morning", "close", "report", "triple-volume", "ma20-am", "ma20-pm", "all")]
     [string]$Phase
 )
 
@@ -16,6 +16,7 @@ $LogDir = Join-Path $ProjectRoot "logs"
 $DataDir = Join-Path $ProjectRoot "data"
 $Advisor = Join-Path $ProjectRoot "daily_advisor.py"
 $StatusFile = Join-Path $DataDir "scheduler_status.json"
+$PhasesFile = Join-Path $ProjectRoot "scripts\phases.json"
 
 # 抑制 py_mini_racer 等依赖的 UserWarning（避免 PowerShell 把 stderr 当异常）
 $env:PYTHONWARNINGS = "ignore::UserWarning"
@@ -23,6 +24,24 @@ $env:PYTHONIOENCODING = "utf-8"
 
 if (-not (Test-Path $Python)) {
     Write-Error "未找到虚拟环境: $Python"
+    exit 1
+}
+if (-not (Test-Path $PhasesFile)) {
+    Write-Error "找不到相位定义: $PhasesFile"
+    exit 1
+}
+
+$phasesCfg = Get-Content $PhasesFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$phaseMap = @{}
+foreach ($p in $phasesCfg.phases) {
+    if ($p.id) {
+        $phaseMap[[string]$p.id] = $p
+    }
+}
+
+$known = @($phaseMap.Keys) + @("all")
+if ($known -notcontains $Phase) {
+    Write-Error ("未知相位: {0}；可选: {1}" -f $Phase, ($known -join ", "))
     exit 1
 }
 
@@ -104,46 +123,60 @@ function Invoke-Step {
     }
 }
 
+function Get-StepArgv {
+    param($Step)
+    # 优先 { "argv": ["cmd", ...] }，兼容旧版字符串/数组步骤
+    if ($null -eq $Step) { return @() }
+    if ($Step.PSObject -and ($Step.PSObject.Properties.Name -contains "argv")) {
+        return @($Step.argv | ForEach-Object { [string]$_ })
+    }
+    if ($Step -is [string]) {
+        return @($Step)
+    }
+    return @($Step | ForEach-Object { [string]$_ })
+}
+
+function Invoke-PhaseSteps {
+    param([string]$PhaseId)
+
+    $cfg = $phaseMap[$PhaseId]
+    if (-not $cfg) {
+        throw "相位未定义: $PhaseId"
+    }
+    $steps = @($cfg.steps)
+    if (-not $steps -or $steps.Count -eq 0) {
+        throw "相位无步骤: $PhaseId"
+    }
+
+    $idx = 0
+    foreach ($step in $steps) {
+        $idx++
+        $argv = Get-StepArgv -Step $step
+        if ($argv.Count -eq 0 -or [string]::IsNullOrWhiteSpace($argv[0])) {
+            Write-StepLine "WARN: 跳过空步骤 #$idx"
+            continue
+        }
+        $title = "[{0}/{1}] {2}" -f $idx, $steps.Count, ($argv -join " ")
+        Invoke-Step -Title $title -StepArgs $argv
+    }
+}
+
 Set-Location $ProjectRoot
 Write-StepLine "Start $Phase at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-SchedulerStatus -PhaseName $Phase -State "running" -Message "started"
 
 try {
-    switch ($Phase) {
-        "morning" {
-            Invoke-Step "Refresh quotes" @("refresh")
-            Invoke-Step "Sim morning select" @("sim")
+    if ($Phase -eq "all") {
+        foreach ($pid in @($phasesCfg.phases | ForEach-Object { [string]$_.id })) {
+            & $PSCommandPath -Phase $pid
+            if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+                exit $LASTEXITCODE
+            }
         }
-        "close" {
-            Invoke-Step "Collect close" @("refresh")
-            Invoke-Step "Sim exit check" @("sim")
-            Invoke-Step "Sim status" @("sim-status")
-        }
-        "report" {
-            # report 内已含观察池评估（orchestration / generate_daily_report），勿再跑 triple-volume-watch
-            Invoke-Step "Daily report" @("report", "--prefilter", "300", "--min-score", "35")
-            Invoke-Step "Portfolio" @("portfolio")
-        }
-        "triple-volume" {
-            # 计划任务在窗口边缘也可能偏几分钟，强制执行避免跳过
-            Invoke-Step "Triple volume select" @("midterm-triple-volume", "--force")
-        }
-        "ma20-am" {
-            Invoke-Step "MA20 pullback scan (AM)" @("sim-ma20", "--force")
-        }
-        "ma20-pm" {
-            Invoke-Step "MA20 pullback scan (PM)" @("sim-ma20", "--force")
-        }
-        "all" {
-            & $PSCommandPath -Phase morning
-            & $PSCommandPath -Phase ma20-am
-            & $PSCommandPath -Phase ma20-pm
-            & $PSCommandPath -Phase triple-volume
-            & $PSCommandPath -Phase close
-            & $PSCommandPath -Phase report
-            exit $LASTEXITCODE
-        }
+        exit 0
     }
+
+    Invoke-PhaseSteps -PhaseId $Phase
 
     Write-StepLine "Done $Phase at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     if ($script:StepFailures -gt 0) {

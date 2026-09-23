@@ -489,6 +489,93 @@ def load_latest_serenity() -> dict:
         return {}
 
 
+# 定时/无主题时优先匹配的卡脖子相关关键词（概念板块名模糊命中）
+_CHOKE_THEME_KEYWORDS = (
+    "芯片", "半导体", "光模块", "算力", "国产替代", "稀土", "机器人",
+    "锂电", "光伏", "存储", "先进封装", "工业母机", "军工", "卫星",
+    "传感器", "鸿蒙", "信创", "AI", "人工智能", "液冷",
+)
+
+
+def resolve_serenity_theme(
+    *,
+    theme: str = "",
+    board_code: Optional[str] = None,
+    last_theme: str = "",
+    board_type: str = "concept",
+    show_progress: bool = False,
+) -> Dict[str, Any]:
+    """解析 Serenity 主题，供模拟仓定时任务在无手工主题时自动选板。
+
+    优先级：显式 theme/board_code → last_theme → 最近扫描 → 跟进批次 → 热门概念（卡脖子关键词优先）。
+    """
+    theme = str(theme or "").strip()
+    board_code = str(board_code).strip() if board_code else None
+    board_type = board_type if board_type in ("concept", "industry") else "concept"
+    if theme or board_code:
+        return {
+            "theme": theme,
+            "board_code": board_code,
+            "board_type": board_type,
+            "source": "explicit",
+        }
+
+    last = str(last_theme or "").strip()
+    if last:
+        return {
+            "theme": last,
+            "board_code": None,
+            "board_type": board_type,
+            "source": "last_theme",
+        }
+
+    latest = load_latest_serenity()
+    if latest.get("theme") or latest.get("board_code"):
+        return {
+            "theme": str(latest.get("theme") or ""),
+            "board_code": latest.get("board_code") or None,
+            "board_type": latest.get("board_type") or board_type,
+            "source": "latest_scan",
+        }
+
+    picks = _load_picks()
+    batches = list(picks.get("batches") or [])
+    if batches:
+        t = str((batches[-1] or {}).get("theme") or "").strip()
+        if t:
+            return {
+                "theme": t,
+                "board_code": None,
+                "board_type": board_type,
+                "source": "picks_batch",
+            }
+
+    boards = fetch_board_list(board_type, force_refresh=False, verbose=show_progress) or []
+    if not boards:
+        boards = fetch_board_list(board_type, force_refresh=True, verbose=show_progress) or []
+
+    def _kw_hit(name: str) -> bool:
+        n = str(name or "")
+        return any(k.lower() in n.lower() for k in _CHOKE_THEME_KEYWORDS)
+
+    preferred = [b for b in boards if _kw_hit(str(b.get("name") or ""))]
+    pool = preferred or boards
+    if not pool:
+        return {
+            "theme": "",
+            "board_code": None,
+            "board_type": board_type,
+            "source": "none",
+        }
+    top = max(pool, key=lambda b: float(b.get("board_score") or 0))
+    return {
+        "theme": str(top.get("name") or ""),
+        "board_code": str(top.get("code") or "") or None,
+        "board_type": board_type,
+        "source": "hot_keyword" if preferred else "hot_fallback",
+    }
+
+
 def _append_pick_batch(theme: str, candidates: List[dict]) -> None:
     state = _load_picks()
     today = datetime.now().strftime("%Y-%m-%d")

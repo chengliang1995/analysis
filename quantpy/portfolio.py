@@ -735,14 +735,20 @@ class PortfolioManager:
             suggestions.append(f"当前仅使用 {invested_pct}% 资金，若看好市场可逐步加仓优质标的。")
 
         for p in positions:
-            if p["profit_pct"] <= -8:
+            if not p.get("quote_ok", True) or p.get("profit_pct") is None:
                 suggestions.append(
-                    f"{p['name']}({p['code']}) 浮亏 {p['profit_pct']:.1f}%，"
+                    f"{p['name']}({p['code']}) 缺行情，浮盈暂不计；请稍后刷新后再评估。"
+                )
+                continue
+            profit_pct = float(p["profit_pct"])
+            if profit_pct <= -8:
+                suggestions.append(
+                    f"{p['name']}({p['code']}) 浮亏 {profit_pct:.1f}%，"
                     f"占仓 {p['weight_pct']:.1f}%。评估买入逻辑，考虑 -5%~-8% 止损线。"
                 )
-            elif p["profit_pct"] >= 15:
+            elif profit_pct >= 15:
                 suggestions.append(
-                    f"{p['name']}({p['code']}) 浮盈 {p['profit_pct']:.1f}%，"
+                    f"{p['name']}({p['code']}) 浮盈 {profit_pct:.1f}%，"
                     "可考虑分批止盈，锁定部分利润。"
                 )
 
@@ -753,8 +759,14 @@ class PortfolioManager:
                 f"{max_weight['weight_pct']:.1f}% 偏高，建议单票≤30%。"
             )
 
-        losers = [p for p in positions if p["profit_pct"] < -3]
-        winners = [p for p in positions if p["profit_pct"] > 3]
+        losers = [
+            p for p in positions
+            if p.get("profit_pct") is not None and float(p["profit_pct"]) < -3
+        ]
+        winners = [
+            p for p in positions
+            if p.get("profit_pct") is not None and float(p["profit_pct"]) > 3
+        ]
         if losers and winners:
             suggestions.append(
                 f"持仓分化明显：盈利 {len(winners)} 只、亏损 {len(losers)} 只。"

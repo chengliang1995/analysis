@@ -37,6 +37,19 @@ from quantpy.sim_replay import (
     run_sim_status,
 )
 from quantpy.report_format import format_markdown_table, truncate_display
+
+
+def _fmt_num(value, spec: str, missing: str = "—") -> str:
+    """缺行情时 current_price / profit_pct 可能为 None。"""
+    if value is None:
+        return missing
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return missing
+    if number != number:
+        return missing
+    return format(number, spec)
 from quantpy.ai_learning_optimizer import load_latest_ai_learning
 from quantpy.midterm_portfolio_advisor import run_midterm_advice, load_latest_midterm_advice
 from quantpy.midterm_portfolio_advisor import run_midterm_advice
@@ -369,10 +382,10 @@ def generate_daily_report(
                 p["code"],
                 p["name"],
                 p["quantity"],
-                f"{float(p['cost_price']):.2f}",
-                f"{float(p['current_price']):.2f}",
-                f"{p['profit_pct']:+.2f}",
-                f"{float(p['weight_pct']):.2f}",
+                f"{_fmt_num(p['cost_price'], '.2f')}",
+                f"{_fmt_num(p.get('current_price'), '.2f')}",
+                f"{_fmt_num(p.get('profit_pct'), '+.2f')}",
+                f"{_fmt_num(p.get('weight_pct'), '.2f')}",
             ]
             for p in portfolio_stats["positions"]
         ]
@@ -392,10 +405,10 @@ def generate_daily_report(
                     "超短" if c.get("bucket") == "ultra_short" else "中线",
                     c["code"],
                     c["name"],
-                    f"{float(c['cost_price']):.3f}",
-                    f"{float(c['sell_price']):.3f}",
-                    f"{c.get('profit_pct', 0):+.2f}",
-                    f"{c.get('profit_amount', 0):+.0f}",
+                    f"{_fmt_num(c.get('cost_price'), '.3f')}",
+                    f"{_fmt_num(c.get('sell_price'), '.3f')}",
+                    f"{_fmt_num(c.get('profit_pct'), '+.2f')}",
+                    f"{_fmt_num(c.get('profit_amount'), '+.0f')}",
                 ]
                 for c in closed[:10]
             ]
@@ -418,7 +431,7 @@ def generate_daily_report(
                 r["name"],
                 r["trend"],
                 r["midterm_score"],
-                f"{r.get('profit_pct', 0):+.2f}",
+                f"{_fmt_num(r.get('profit_pct'), '+.2f')}",
                 r["rsi"],
                 r["action"],
                 truncate_display(r.get("tags", ""), 20),
@@ -442,11 +455,11 @@ def generate_daily_report(
                     a["signal_label"],
                     a["code"],
                     truncate_display(a["name"], 8),
-                    f"{a['price']:.2f}",
-                    f"{a['support']:.2f}",
-                    f"{a['resistance']:.2f}",
+                    f"{_fmt_num(a.get('price'), '.2f')}",
+                    f"{_fmt_num(a.get('support'), '.2f')}",
+                    f"{_fmt_num(a.get('resistance'), '.2f')}",
                     a["alert_label"],
-                    f"{a['distance_pct']:.2f}",
+                    f"{_fmt_num(a.get('distance_pct'), '.2f')}",
                 ]
                 for a in level_alerts["alerts"]
             ]
@@ -476,10 +489,10 @@ def generate_daily_report(
             [
                 r["code"],
                 r["name"],
-                f"{r.get('price', 0):.2f}",
-                f"{r.get('market_cap_yi', 0):.1f}" if r.get("market_cap_yi") is not None else "—",
+                f"{_fmt_num(r.get('price'), '.2f')}",
+                f"{_fmt_num(r.get('market_cap_yi'), '.1f')}",
                 r["midterm_score"],
-                f"{r.get('pct_chg', 0):.2f}",
+                f"{_fmt_num(r.get('pct_chg'), '.2f')}",
                 r.get("rsi", ""),
                 truncate_display(r.get("reason", ""), 28),
             ]

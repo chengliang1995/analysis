@@ -462,6 +462,7 @@ def enrich_short_term_sim(state: dict, quotes_df: Optional["pd.DataFrame"] = Non
         "closed_trades": closed[:10],
         "pick_log": list(mt.get("pick_log") or [])[:20],
         "last_scan": list(mt.get("last_scan") or [])[:20],
+        "last_buy_date": mt.get("last_buy_date", ""),
         "config": asdict(cfg),
         "strategy": STRATEGY_ID,
         "updated_at": mt.get("updated_at", ""),

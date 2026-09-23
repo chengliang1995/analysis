@@ -707,8 +707,8 @@ class MidtermPortfolioAdvisor:
                 self.analyze_stock(
                     code=p["code"],
                     name=p.get("name", ""),
-                    cost_price=float(p.get("cost_price", 0)),
-                    weight_pct=float(p.get("weight_pct", 0)),
+                    cost_price=_num(p.get("cost_price")),
+                    weight_pct=_num(p.get("weight_pct")),
                 )
             )
         reviews.sort(key=lambda x: x.get("midterm_score", 0) if x.get("ok") else -1, reverse=True)
@@ -737,8 +737,8 @@ class MidtermPortfolioAdvisor:
             }
 
         mid_bucket = portfolio_stats.get("buckets", {}).get("midterm", {})
-        bucket_capital = float(mid_bucket.get("capital", portfolio_stats.get("midterm_capital", 150000)))
-        invested_pct = float(mid_bucket.get("invested_pct", 0))
+        bucket_capital = _num(mid_bucket.get("capital")) or _num(portfolio_stats.get("midterm_capital")) or 150000
+        invested_pct = _num(mid_bucket.get("invested_pct"))
         reviews = reviews or self.review_holdings(positions)
         review_map = {r["code"]: r for r in reviews if r.get("ok")}
 
@@ -764,7 +764,7 @@ class MidtermPortfolioAdvisor:
         for p in positions:
             code = str(p["code"]).zfill(6)
             r = review_map.get(code, {})
-            weight = float(p.get("weight_pct", 0))
+            weight = _num(p.get("weight_pct"))
             name = p.get("name", code)
             trend = r.get("trend", "未知")
             action = r.get("action", "观望")
@@ -780,7 +780,7 @@ class MidtermPortfolioAdvisor:
                     "reason": "单票占比过高", "target_weight_pct": reduce_to,
                 })
 
-            if trend == "空头" and float(p.get("profit_pct", 0)) < -5:
+            if trend == "空头" and _num(p.get("profit_pct")) < -5:
                 suggestions.append(
                     f"【减仓】{name} 趋势空头且浮亏，中线逻辑偏弱，优先处理。"
                 )
@@ -1372,8 +1372,8 @@ def build_daily_midterm_operations(
         if p.get("bucket", _classify_bucket(p.get("strategy", ""))) == "midterm"
     ]
     mid_bucket = portfolio_stats.get("buckets", {}).get("midterm", {})
-    bucket_capital = float(mid_bucket.get("capital", portfolio_stats.get("midterm_capital", 150000)))
-    invested_pct = float(mid_bucket.get("invested_pct", 0))
+    bucket_capital = _num(mid_bucket.get("capital")) or _num(portfolio_stats.get("midterm_capital")) or 150000
+    invested_pct = _num(mid_bucket.get("invested_pct"))
 
     review_map = {str(r["code"]).zfill(6): r for r in reviews if r.get("ok")}
     alert_map = {str(a["code"]).zfill(6): a for a in alert_list}
@@ -1401,8 +1401,9 @@ def build_daily_midterm_operations(
         r = review_map.get(code, {})
         alert = alert_map.get(code)
         action = r.get("action", "观望")
-        profit_pct = float(p.get("profit_pct", r.get("profit_pct", 0)))
-        weight_pct = float(p.get("weight_pct", r.get("weight_pct", 0)))
+        # 键存在但值为 None（缺行情）时 .get 默认值不会生效
+        profit_pct = _num(p.get("profit_pct") if p.get("profit_pct") is not None else r.get("profit_pct"))
+        weight_pct = _num(p.get("weight_pct") if p.get("weight_pct") is not None else r.get("weight_pct"))
         reasons: List[str] = list(r.get("action_reasons") or [])
 
         for act in opt_action_map.get(code, []):
@@ -1499,7 +1500,7 @@ def build_daily_midterm_operations(
             "capital": bucket_capital,
             "invested_pct": invested_pct,
             "position_count": len(midterm_positions),
-            "market_value": float(mid_bucket.get("market_value", 0)),
+            "market_value": _num(mid_bucket.get("market_value")),
         },
         "stock_operations": stock_operations,
         "new_buy_hints": new_buy_hints,
@@ -1545,7 +1546,7 @@ def format_midterm_report_markdown(result: dict) -> str:
             r["name"],
             r["trend"],
             r["midterm_score"],
-            f"{r.get('profit_pct', 0):+.2f}",
+            f"{_num(r.get('profit_pct')):+.2f}",
             r["rsi"],
             r.get("support", ""),
             r.get("resistance", ""),
@@ -1576,7 +1577,7 @@ def format_midterm_report_markdown(result: dict) -> str:
                 s["name"],
                 s.get("action", ""),
                 s.get("trend", ""),
-                f"{s.get('profit_pct', 0):+.1f}",
+                f"{_num(s.get('profit_pct')):+.1f}",
                 s.get("rsi", ""),
                 s.get("support", ""),
                 s.get("resistance", ""),

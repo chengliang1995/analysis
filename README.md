@@ -159,8 +159,10 @@ python daily_advisor.py alerts
 
 | 时间 | 任务 | 内容 |
 |------|------|------|
-| 周一至周五 09:35 | QuantPyStock-Morning | 刷新行情 + 模拟早盘选股 |
-| 周一至周五 15:10 | QuantPyStock-Close | 采集收盘 + 模拟卖出检查 |
+| 周一至周五 09:35 | QuantPyStock-Morning | 刷新 + 模拟选股（**超短 → 短线 → 中线**） |
+| 周一至周五 11:00 / 13:30 | QuantPyStock-Ma20Am/Pm | MA20 突破 + MA5 回踩模拟选股 |
+| 周一至周五 14:45 | QuantPyStock-TripleVolume | 三倍量选股 |
+| 周一至周五 15:10 | QuantPyStock-Close | 刷新 + 出场检查（超短 → 短线 → 中线复盘） |
 | 周一至周五 15:25 | QuantPyStock-Report | 每日报告 + 个人仓位 |
 
 ```powershell

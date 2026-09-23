@@ -18,35 +18,52 @@ def hold_trading_days(buy_date: str, sell_date: str) -> int:
 
     Returns max(len(calendar) - 1, 0). Falls back to business-day count, then
     calendar days, when the exchange calendar cannot be loaded.
+
+    Live sessions often lack today's unfinished bar in hist calendars; if
+    ``sell_date`` is today (weekday) and missing from the calendar, append it
+    so hold/expiry exits are not stuck at 0.
     """
     buy_d = str(buy_date or "")[:10]
     sell_d = str(sell_date or "")[:10]
     if not buy_d or not sell_d:
         return 0
+    cal: list = []
     try:
         from quantpy.midterm_pick_tracker import _trading_days_between
 
-        cal = _trading_days_between(buy_d, sell_d)
-        if cal:
-            return max(len(cal) - 1, 0)
+        cal = list(_trading_days_between(buy_d, sell_d) or [])
     except Exception:
-        pass
-    try:
-        import pandas as pd
+        cal = []
+    if not cal:
+        try:
+            import pandas as pd
 
-        buy = pd.Timestamp(buy_d)
-        sell = pd.Timestamp(sell_d)
-        return max(int(len(pd.bdate_range(buy, sell)) - 1), 0)
-    except (ValueError, TypeError):
-        pass
-    try:
-        from datetime import datetime
+            buy = pd.Timestamp(buy_d)
+            sell = pd.Timestamp(sell_d)
+            return max(int(len(pd.bdate_range(buy, sell)) - 1), 0)
+        except (ValueError, TypeError):
+            pass
+        try:
+            from datetime import datetime as _dt
 
-        buy = datetime.strptime(buy_d, "%Y-%m-%d")
-        sell = datetime.strptime(sell_d, "%Y-%m-%d")
-        return max((sell - buy).days, 0)
-    except ValueError:
-        return 0
+            return max((_dt.strptime(sell_d, "%Y-%m-%d") - _dt.strptime(buy_d, "%Y-%m-%d")).days, 0)
+        except ValueError:
+            return 0
+
+    # 盘中 hist 常缺当日未收盘 bar → 持仓天数少计 1，到期/持仓纪律失效
+    if sell_d not in cal:
+        try:
+            from datetime import datetime as _dt
+
+            sell_ts = _dt.strptime(sell_d, "%Y-%m-%d")
+            today = _dt.now().strftime("%Y-%m-%d")
+            if sell_d == today and sell_ts.weekday() < 5:
+                if not cal or sell_d > cal[-1]:
+                    cal = list(cal) + [sell_d]
+        except ValueError:
+            pass
+
+    return max(len(cal) - 1, 0)
 
 
 def realized_cash_pnl(
